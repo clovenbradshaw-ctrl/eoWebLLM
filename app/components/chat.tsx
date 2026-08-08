@@ -43,6 +43,7 @@ import {
   DEFAULT_TOPIC,
   Model,
   ModelClient,
+  type PlanTrace,
 } from "../store";
 
 import {
@@ -630,6 +631,91 @@ function ThinkingPanel(props: { thinking: string; open: boolean }) {
         }}
       >
         {props.thinking.trim()}
+      </div>
+    </details>
+  );
+}
+
+// The holonic DEFINE → EVALUATE → RECONCILE trace (see PlanTrace in
+// store/chat.ts, populated in onUserInput's onFinish), shown the same way
+// ThinkingPanel shows a model's own <think> block: a reasoning-style
+// affordance the reader can open, one step from the message it explains
+// (LAWS.md L2b), not only visible in the separate EOT log panel. Reader-
+// facing evidence, not decoration — every line here is a real field off
+// the trace the turn actually produced, so "is this running / can I
+// verify it" is answerable by opening this panel, not by trusting a claim.
+function PlanPanel(props: { trace: PlanTrace }) {
+  const t = props.trace;
+  const hadViolations = t.initialViolations.length > 0;
+  const status = !hadViolations
+    ? "clean on first pass"
+    : t.reconciled
+      ? t.finalCompliant
+        ? "revised — now compliant"
+        : "revised — still flagged"
+      : "flagged, not revised";
+  return (
+    <details
+      style={{
+        margin: "0 0 10px",
+        padding: "8px 12px",
+        borderRadius: 8,
+        border: "1px solid var(--border-in-light)",
+        background: "var(--gray)",
+        fontSize: "13px",
+      }}
+    >
+      <summary
+        style={{
+          cursor: "pointer",
+          color: "var(--black)",
+          opacity: 0.6,
+          userSelect: "none",
+        }}
+      >
+        {`\u{1F4CB} Plan — ${t.kind} · ${t.delivery} · ${status}`}
+      </summary>
+      <div
+        style={{
+          marginTop: 8,
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          opacity: 0.85,
+        }}
+      >
+        {t.reason && <div>Why: {t.reason}</div>}
+        <div>
+          Contract: delivery={t.delivery}, minWords={t.minWords}
+          {t.mathExpression && `, ${t.mathExpression} = ${t.mathValue}`}
+        </div>
+        {hadViolations ? (
+          <div>
+            <div style={{ opacity: 0.7 }}>Initial check found:</div>
+            {t.initialViolations.map((v, i) => (
+              <div key={i}>
+                – [{v.type}/{v.severity}] {v.detail}
+              </div>
+            ))}
+            {t.reconciled ? (
+              <div style={{ marginTop: 4 }}>
+                Rewrote once to fix these.{" "}
+                {t.finalCompliant
+                  ? "Recheck: compliant."
+                  : `Recheck: still non-compliant — ${t.finalViolations.map((v) => v.type).join(", ")} (shipped anyway, flagged here rather than looping).`}
+              </div>
+            ) : (
+              <div style={{ marginTop: 4, opacity: 0.7 }}>
+                Rewrite did not run (background call failed) — shipped as
+                drafted, flagged here.
+              </div>
+            )}
+          </div>
+        ) : (
+          <div style={{ opacity: 0.7 }}>
+            No violations on the first pass — no rewrite needed.
+          </div>
+        )}
       </div>
     </details>
   );
@@ -1711,6 +1797,9 @@ function ChatInner() {
                               thinking={thinking}
                               open={open && !!message.streaming}
                             />
+                          )}
+                          {!isUser && message.planTrace && (
+                            <PlanPanel trace={message.planTrace} />
                           )}
                           {!isUser && message.webResults !== undefined && (
                             <WebSearchPanel

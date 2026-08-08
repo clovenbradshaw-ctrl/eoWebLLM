@@ -7,7 +7,7 @@
 // would mean rearchitecting eoWebLLM's turn loop around multi-section
 // assembly; a bigger, separate change. What IS ported is the part that
 // applies unmodified to a single-shot turn: one small model call (DEFINE)
-// decides what SHAPE this ask needs — kind, form (prose/screenplay/code),
+// decides what SHAPE this ask needs — an emergent kind and delivery contract,
 // and a compliance contract (minWords/require/forbid) — and after the
 // reply is generated, a pure mechanical check (EVALUATE) measures the
 // reply against that contract and against whatever evidence this turn
@@ -33,11 +33,10 @@ DECIDE:
 
 1. kind — a short label, in your own words, for what this response actually is. Examples: greeting, small talk, factual question, how-to, opinion, code request, creative writing.
 
-2. form — how the answer is DELIVERED:
-   - "prose": normal paragraphs.
-   - "screenplay": scene-based script with INT./EXT. scene headings, action lines, and ALL-CAPS character dialogue. Only when the reader asks for a script or screenplay.
-   - "code": working source (JavaScript/CSS/HTML). Only when the reader asks for code.
-   - "reply": a direct answer, no special structure.
+2. delivery — how the answer is DELIVERED, in your own words. Do not choose
+   from a preset taxonomy. Name the concrete form the reader asked for, such
+   as a terse answer, implementation patch, scene, decision memo, proof, or
+   something else the request itself calls for.
 
 3. compliance — YOUR OWN definition of what would make this specific answer complete:
    - "minWords": the length THIS answer actually needs — could be under ten words for a greeting. Never copy a template number.
@@ -46,7 +45,7 @@ DECIDE:
 
 Reply with ONLY a JSON object. No prose, no code fences, no commentary. The values below illustrate field TYPES, not recommended settings:
 
-{"kind":"a few words","form":"prose"|"screenplay"|"code"|"reply","reason":"one short sentence justifying kind and form","compliance":{"minWords":42,"require":["..."],"forbid":["..."]}}`;
+{"kind":"an emergent name for this response","delivery":"the concrete delivery form","reason":"one short sentence justifying the kind and delivery","compliance":{"minWords":42,"require":["..."],"forbid":["..."]}}`;
 
 export interface AnswerCompliance {
   minWords: number;
@@ -57,17 +56,15 @@ export interface AnswerCompliance {
 
 export interface AnswerSpec {
   kind: string;
-  form: "prose" | "screenplay" | "code" | "reply";
+  delivery: string;
   reason: string;
   compliance: AnswerCompliance;
 }
 
-function normalizeCompliance(c: any, form: string): AnswerCompliance {
+function normalizeCompliance(c: any): AnswerCompliance {
   const minWords = Number.isFinite(c?.minWords)
     ? Math.max(0, Math.min(2000, Math.floor(c.minWords)))
-    : form === "code"
-      ? 2
-      : DEFAULT_MIN_WORDS;
+    : DEFAULT_MIN_WORDS;
   const list = (x: any): string[] =>
     Array.isArray(x)
       ? x
@@ -79,35 +76,32 @@ function normalizeCompliance(c: any, form: string): AnswerCompliance {
     minWords,
     require: list(c?.require),
     forbid: list(c?.forbid),
-    language:
-      form === "code" && /^(js|css|html)$/i.test(String(c?.language || ""))
-        ? String(c.language).toLowerCase()
-        : form === "code"
-          ? "js"
-          : null,
+    language: null,
   };
 }
 
 function normalizeSpec(p: any): AnswerSpec {
-  const form = /^(prose|screenplay|code|reply)$/i.test(p?.form || "")
-    ? (String(p.form).toLowerCase() as AnswerSpec["form"])
-    : "reply";
+  const delivery =
+    String(p?.delivery || p?.form || "direct response")
+      .trim()
+      .slice(0, 160) || "direct response";
   const kind =
     String(p?.kind || "")
       .trim()
-      .slice(0, 60) || form;
+      .slice(0, 60) || delivery;
   return {
     kind,
-    form,
+    delivery,
     reason: String(p?.reason || "").slice(0, 240),
-    compliance: normalizeCompliance(p?.compliance, form),
+    compliance: normalizeCompliance(p?.compliance),
   };
 }
 
 function isSpecShaped(obj: any): boolean {
   if (!obj || typeof obj !== "object") return false;
   if (typeof obj.kind === "string" && obj.kind.trim()) return true;
-  if (typeof obj.form === "string") return true;
+  if (typeof obj.delivery === "string" || typeof obj.form === "string")
+    return true;
   return false;
 }
 
@@ -153,13 +147,13 @@ export function parsePlannerReply(raw: string): AnswerSpec {
   // Salvage: pull kind/form/reason/compliance straight off the raw text
   // when nothing parsed as valid JSON.
   const kindM = text.match(/"kind"\s*:\s*"([^"]*)"/i);
-  const formM = text.match(/"form"\s*:\s*"(prose|screenplay|code|reply)"/i);
+  const deliveryM = text.match(/"(?:delivery|form)"\s*:\s*"([^"]*)"/i);
   const reasonM = text.match(/"reason"\s*:\s*"([^"]*)"/i);
   const minWordsM = text.match(/"minWords"\s*:\s*(\d+)/i);
-  if (kindM || formM) {
+  if (kindM || deliveryM) {
     return normalizeSpec({
       kind: kindM ? kindM[1] : undefined,
-      form: formM ? formM[1] : undefined,
+      delivery: deliveryM ? deliveryM[1] : undefined,
       reason: reasonM
         ? reasonM[1]
         : "planner reply was malformed JSON — salvaged",
@@ -172,66 +166,52 @@ export function parsePlannerReply(raw: string): AnswerSpec {
   });
 }
 
-// A short, ordinary chat turn ("hi", "thanks", "what about the beater
-// motor?") never needed form/compliance shaping in the first place — the
-// default "reply" spec IS what defineAnswerSpec would return for it, just
-// paid for with a full extra background model round-trip before the
-// visible answer can even start streaming. LAWS.md L11c: exhaust a
-// mechanical, no-model-call signal before reaching for a model. This is
-// that signal — a short allowlist of the cases where form genuinely
-// differs from plain prose (an explicit code/screenplay ask) or where the
-// ask is long enough that a real compliance contract (a minWords floor
-// beyond the default, a "must include X") plausibly matters. Everything
-// else skips DEFINE entirely: zero added latency for the common case.
-const FORM_SIGNAL_RE =
-  /\b(screenplay|script|scene|dialogue|write (?:me )?(?:some |a )?(?:code|function|component|class|html|css|javascript|typescript|python|program)|\.js\b|\.css\b|\.html\b)\b/i;
-const SUBSTANTIAL_WORD_COUNT = 25;
-
-export function needsPlanning(question: string): boolean {
-  const q = String(question || "").trim();
-  if (!q) return false;
-  if (FORM_SIGNAL_RE.test(q)) return true;
-  return q.split(/\s+/).filter(Boolean).length >= SUBSTANTIAL_WORD_COUNT;
-}
+// System 1 / System 2 (Kahneman), not a mechanical pre-gate: the earlier
+// version of this file gated DEFINE behind a regex guessing which turns
+// "needed" it, so ordinary chat could skip the round trip and stay fast.
+// That guess was itself the problem — a fixed pattern deciding in advance
+// what a question needs is exactly the kind of judgment this file exists
+// to hand to the model instead. The fix is not a smarter regex; it's
+// moving DEFINE to run AFTER the fast, unshaped System-1 draft already
+// exists (see chat.ts's onFinish) — unconditionally, every turn — so
+// nothing ever blocks the first token, and the only cost that can still
+// show up is System 2's own bounded reconcile rewrite, paid only when its
+// own judgment of the draft finds something wrong with it.
 
 /**
- * The DEFINE evaluation: one small model call decides form and the
- * compliance contract for this turn. `generate` is the caller's model
- * seam (same background-call pattern as planTools/planSearchQuery). Call
- * this only when needsPlanning(question) is true — see its header for why.
+ * The DEFINE evaluation, run against the System-1 draft that already
+ * exists (`draft`) rather than before it — the model judges what a good
+ * answer to this question looks like having already seen what it wrote,
+ * which is also just how a person self-edits. `generate` is the caller's
+ * model seam (same background-call pattern as planTools/planSearchQuery).
  */
 export async function defineAnswerSpec({
   question,
+  draft,
   webEnabled = false,
   generate,
 }: {
   question: string;
+  draft: string;
   webEnabled?: boolean;
   generate: (systemPrompt: string, userPrompt: string) => Promise<string>;
 }): Promise<AnswerSpec> {
   const user = [
     `Question: ${question}`,
     `Web research enabled: ${webEnabled ? "yes" : "no"}`,
+    "",
+    "The answer already given:",
+    String(draft || "").slice(0, 4000),
   ].join("\n");
   const raw = await generate(PLANNER_SYSTEM_PROMPT, user);
   return parsePlannerReply(raw);
 }
 
-function formDirective(form: string): string {
-  if (form === "screenplay") {
-    return "Write this as a SCREENPLAY scene: a scene heading (an INT./EXT. line), action lines, and character dialogue with the speaker's name in ALL CAPS on its own line.";
-  }
-  if (form === "code") {
-    return "Write this as CODE only — no prose, no explanation, no commentary about the code.";
-  }
-  return "";
-}
-
 /** The system-block addition for this turn's decided form/compliance — empty for the common "reply" case, so most turns add nothing. */
 export function buildFormBlock(spec: AnswerSpec): string | null {
   const lines: string[] = [];
-  const directive = formDirective(spec.form);
-  if (directive) lines.push(directive);
+  if (spec.delivery !== "direct response")
+    lines.push(`Deliver this as: ${spec.delivery}.`);
   if (spec.compliance.require.length) {
     lines.push(`This answer must: ${spec.compliance.require.join("; ")}.`);
   }
@@ -267,35 +247,6 @@ export interface ComplianceReport {
   violations: ComplianceViolation[];
 }
 
-function codeSyntaxFloor(
-  language: string,
-  content: string,
-): { ok: boolean; reason?: string } {
-  if (language === "js") {
-    try {
-      new Function(content);
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, reason: (e as Error).message };
-    }
-  }
-  if (language === "css") {
-    const open = (content.match(/{/g) ?? []).length;
-    const close = (content.match(/}/g) ?? []).length;
-    return open === close
-      ? { ok: true }
-      : { ok: false, reason: `unbalanced braces: ${open} { vs ${close} }` };
-  }
-  if (language === "html") {
-    const hasHtml = /<html[\s>]/i.test(content);
-    const hasClose = /<\/html>/i.test(content);
-    return hasHtml && hasClose
-      ? { ok: true }
-      : { ok: false, reason: "missing <html>...</html>" };
-  }
-  return { ok: true };
-}
-
 export function evaluateCompliance(
   draft: string,
   spec: AnswerSpec,
@@ -303,9 +254,9 @@ export function evaluateCompliance(
   const raw = String(draft || "");
   const violations: ComplianceViolation[] = [];
   const words = raw.split(/\s+/).filter(Boolean).length;
-  const { form, compliance } = spec;
+  const { compliance } = spec;
 
-  if (form !== "code") {
+  {
     const hard = LEAK_HARD.exec(raw);
     if (hard) {
       violations.push({
@@ -332,30 +283,6 @@ export function evaluateCompliance(
       detail: `only ${words} words — needs at least ${compliance.minWords}`,
     });
   }
-  if (form === "screenplay") {
-    const shaped =
-      /^\s*(?:INT\.?\s*\.?|EXT\.?\s*\.?|INT\.?\s*\/\s*EXT\.?)\s+[A-Z0-9]/im.test(
-        raw,
-      ) || /^\s*[A-Z][A-Z0-9 '.-]{1,30}$/m.test(raw);
-    if (!shaped) {
-      violations.push({
-        type: "structure",
-        severity: "blocker",
-        detail:
-          "no scene heading or dialogue block — this was not written as a screenplay",
-      });
-    }
-  } else if (form === "code") {
-    const lang = compliance.language || "js";
-    const s = codeSyntaxFloor(lang, raw);
-    if (!s.ok)
-      violations.push({
-        type: "structure",
-        severity: "blocker",
-        detail: `code syntax floor: ${s.reason}`,
-      });
-  }
-
   return {
     compliant: !violations.some((v) => v.severity === "blocker"),
     violations,
@@ -366,18 +293,18 @@ export function evaluateCompliance(
 
 export async function reconcileDraft({
   question,
-  form,
+  delivery,
   draft,
   violations,
   generate,
 }: {
   question: string;
-  form: string;
+  delivery: string;
   draft: string;
   violations: ComplianceViolation[];
   generate: (systemPrompt: string, userPrompt: string) => Promise<string>;
 }): Promise<string> {
-  const sys = `You are rewriting an answer to pass its compliance review. Fix ONLY the violations listed. Keep the assigned form (${form}). Never mention sources, citations, or "the material" in the writing.`;
+  const sys = `You are rewriting an answer to pass its compliance review. Fix ONLY the violations listed. Keep the assigned delivery (${delivery}). Never mention sources, citations, or "the material" in the writing.`;
   const user = [
     `Reader's question: ${question}`,
     "",

@@ -38,10 +38,8 @@ import {
 import { planTools, planSearchQuery } from "../client/eo-tool-router";
 import {
   defineAnswerSpec,
-  buildFormBlock,
   evaluateCompliance,
   reconcileDraft,
-  needsPlanning,
   type AnswerSpec,
 } from "../client/eo-holonic-plan";
 import {
@@ -71,6 +69,11 @@ import {
   formatCorpusContext,
   type EoSource,
 } from "../client/eo-corpus";
+import {
+  defineTaskPlan,
+  runTaskPlan,
+  selectThinkingSystem,
+} from "../client/eo-task-plan";
 
 export type ChatMessage = RequestMessage & {
   date: string;
@@ -100,17 +103,17 @@ export type ChatMessage = RequestMessage & {
   // the whole fetched snippet.
   webSnippets?: Snippet[];
   // The holonic DEFINE → EVALUATE → RECONCILE trace (see eo-holonic-plan.ts),
-  // structured so the UI can show it inline — a "how this answer was shaped"
-  // panel next to Reasoning/Web search, not buried in the EOT log a reader
-  // has to know to open (LAWS.md L2b: one step from the artifact). Set only
-  // on turns where needsPlanning/needsMathCheck actually fired a DEFINE or
-  // math call; absent, not empty, on the ordinary-chat fast path.
+  // structured so the UI can show it inline — a "how this answer was
+  // judged" panel next to Reasoning/Web search, not buried in the EOT log
+  // a reader has to know to open (LAWS.md L2b: one step from the
+  // artifact). System 2 runs every turn (see onFinish) — this is always
+  // set on an assistant turn.
   planTrace?: PlanTrace;
 };
 
 export interface PlanTrace {
   kind: string;
-  form: string;
+  delivery: string;
   reason: string;
   minWords: number;
   mathExpression?: string;
@@ -818,50 +821,70 @@ export const useChatStore = createPersistStore(
           }
         }
 
-        // holonic DEFINE (see eo-holonic-plan.ts): one small background call
-        // decides this turn's form (prose/screenplay/code/reply) and its own
-        // compliance contract, rather than every turn being answered as
-        // undifferentiated prose. Gated by needsPlanning — a mechanical,
-        // no-model-call check — so ordinary short chat ("hi", "thanks",
-        // "what about the beater motor?") never pays for a background round
-        // trip whose answer would be the default "reply" spec anyway; a
-        // fast reply stays fast. Fails open to the "reply" default when it
-        // does run — a parse failure only ever means no extra form
-        // directive is added, never a blocked turn.
-        let answerSpec: AnswerSpec | null = null;
-        if (userContent.trim() && needsPlanning(userContent.trim())) {
+        // A complex turn first becomes a legal task graph. The model only
+        // proposes task wording; eo-task-controller admits and sequences work
+        // through cube-addressed controller operations, with a separate surf
+        // and review for every dependency-ready task.
+        const thinkingSystem = selectThinkingSystem(userContent.trim());
+        if (userContent.trim() && thinkingSystem === "system2") {
           try {
-            answerSpec = await defineAnswerSpec({
-              question: userContent.trim(),
-              webEnabled: !!session0.webSearchEnabled,
-              generate: (systemPrompt, userPrompt) =>
-                eoRunBackground(
-                  llm,
-                  [
-                    createMessage({ role: "system", content: systemPrompt }),
-                    createMessage({ role: "user", content: userPrompt }),
-                  ],
-                  {
-                    model: modelConfig.model,
-                    cache: useAppConfig.getState().cacheType,
-                    stream: false,
-                  },
-                  EO_ROUTER_TIMEOUT_MS,
-                ),
-            });
-            const formBlock = buildFormBlock(answerSpec);
-            if (formBlock) extraSystemBlocks.push(formBlock);
-            get().pushEoLog(
-              "task",
-              `plan: kind="${answerSpec.kind}" form=${answerSpec.form} minWords=${answerSpec.compliance.minWords}${answerSpec.reason ? ` — ${answerSpec.reason}` : ""}`,
+            const background = (systemPrompt: string, userPrompt: string) =>
+              eoRunBackground(
+                llm,
+                [
+                  createMessage({ role: "system", content: systemPrompt }),
+                  createMessage({ role: "user", content: userPrompt }),
+                ],
+                {
+                  model: modelConfig.model,
+                  cache: useAppConfig.getState().cacheType,
+                  stream: false,
+                },
+                EO_ROUTER_TIMEOUT_MS,
+              );
+            const taskPlan = await defineTaskPlan(
+              userContent.trim(),
+              background,
             );
+            if (taskPlan.tasks.length >= 2) {
+              const taskRun = await runTaskPlan({
+                question: userContent.trim(),
+                plan: taskPlan,
+                sources,
+                generate: background,
+              });
+              if (taskRun.context) extraSystemBlocks.push(taskRun.context);
+              get().pushEoLog(
+                "task",
+                `System 2 task controller: ${taskRun.controller.tasks.length} task(s), ` +
+                  `${taskRun.controller.tasks.filter((t) => t.status === "completed").length} completed, ` +
+                  `${taskRun.controller.tasks.filter((t) => t.status === "dropped").length} dropped, ` +
+                  `closure=${taskRun.controller.closed}`,
+              );
+            }
           } catch (err) {
+            // Planning trouble must fail open to the ordinary direct answer.
             get().pushEoLog(
               "error",
-              `plan: DEFINE call failed — ${(err as Error).message}`,
+              `task controller: ${(err as Error).message}`,
             );
           }
         }
+
+        // holonic DEFINE — moved to a System-1/System-2 split (Kahneman's
+        // terms, chosen deliberately over a mechanical pre-gate): System 1
+        // is this turn's ordinary streamed answer, generated immediately,
+        // never blocked on a planning call and never pre-shaped by one — no
+        // regex heuristic decides in advance whether "this ask needs
+        // planning," because that guess is itself the thing a fixed
+        // pattern can't make well. System 2 is DEFINE → EVALUATE →
+        // RECONCILE, which now runs AFTER the System-1 draft exists (see
+        // onFinish below), unconditionally, every turn — slow and
+        // deliberate, but never gating the fast path's first token. The
+        // model judges its own draft against a spec it writes after seeing
+        // it, and only pays the extra (visible, reconciled) cost when its
+        // own judgment finds something to fix.
+        let answerSpec: AnswerSpec | null = null;
 
         // math DEFINE (see eo-math-check.ts): the model never does the
         // arithmetic. Gated by needsMathCheck — a mechanical regex, no
@@ -1065,6 +1088,49 @@ export const useChatStore = createPersistStore(
                 message = message.replace(/<think>\s*<\/think>/g, "");
               }
 
+              // System 2: DEFINE now, against the System-1 draft that
+              // already exists — unconditional, every turn, no mechanical
+              // pre-gate deciding in advance whether this turn "needed" it.
+              // Runs after generation so it never delays the first token;
+              // its only visible cost is a reconcile rewrite, and only when
+              // its own judgment of the draft actually finds something
+              // wrong with it.
+              if (userContent.trim()) {
+                try {
+                  answerSpec = await defineAnswerSpec({
+                    question: userContent.trim(),
+                    draft: message,
+                    webEnabled: !!session0.webSearchEnabled,
+                    generate: (systemPrompt, userPrompt) =>
+                      eoRunBackground(
+                        llm,
+                        [
+                          createMessage({
+                            role: "system",
+                            content: systemPrompt,
+                          }),
+                          createMessage({ role: "user", content: userPrompt }),
+                        ],
+                        {
+                          model: modelConfig.model,
+                          cache: useAppConfig.getState().cacheType,
+                          stream: false,
+                        },
+                        EO_ROUTER_TIMEOUT_MS,
+                      ),
+                  });
+                  get().pushEoLog(
+                    "task",
+                    `plan: kind="${answerSpec.kind}" delivery=${answerSpec.delivery} minWords=${answerSpec.compliance.minWords}${answerSpec.reason ? ` — ${answerSpec.reason}` : ""}`,
+                  );
+                } catch (err) {
+                  get().pushEoLog(
+                    "error",
+                    `plan: DEFINE call failed — ${(err as Error).message}`,
+                  );
+                }
+              }
+
               // holonic EVALUATE → RECONCILE (see eo-holonic-plan.ts and
               // eo-math-check.ts): a pure mechanical check against the
               // DEFINE-decided compliance contract (leak vocabulary,
@@ -1076,7 +1142,7 @@ export const useChatStore = createPersistStore(
               // doesn't clear it, so a stubborn violation is visible
               // rather than looping.
               if (answerSpec || mathResult) {
-                const form = answerSpec?.form ?? "reply";
+                const delivery = answerSpec?.delivery ?? "direct response";
                 let eva = answerSpec
                   ? evaluateCompliance(message, answerSpec)
                   : { compliant: true, violations: [] };
@@ -1102,7 +1168,7 @@ export const useChatStore = createPersistStore(
                   try {
                     const revised = await reconcileDraft({
                       question: userContent.trim(),
-                      form,
+                      delivery,
                       draft: message,
                       violations: eva.violations,
                       generate: (systemPrompt, userPrompt) =>
@@ -1128,6 +1194,7 @@ export const useChatStore = createPersistStore(
                     });
                     if (revised && revised.trim()) {
                       message = revised.trim();
+                      reconciled = true;
                       eva = answerSpec
                         ? evaluateCompliance(message, answerSpec)
                         : { compliant: true, violations: [] };
@@ -1157,6 +1224,25 @@ export const useChatStore = createPersistStore(
                       : `reconcile: still non-compliant — ${eva.violations.map((v) => v.type).join(", ")} (shipped flagged, not blocked)`,
                   );
                 }
+
+                // Visible trace (see PlanTrace above, PlanPanel in chat.tsx):
+                // the same DEFINE/EVALUATE/RECONCILE outcome just logged to
+                // the EOT panel, also attached to the message itself so the
+                // reader sees it inline, one step from the artifact, the way
+                // a reasoning block works — not only in a log they have to
+                // know to open.
+                botMessage.planTrace = {
+                  kind: answerSpec?.kind ?? "arithmetic",
+                  delivery: answerSpec?.delivery ?? "direct response",
+                  reason: answerSpec?.reason ?? "",
+                  minWords: answerSpec?.compliance.minWords ?? 0,
+                  mathExpression: mathResult ? mathExpression : undefined,
+                  mathValue: mathResult?.formatted ?? undefined,
+                  initialViolations,
+                  reconciled,
+                  finalCompliant: eva.compliant,
+                  finalViolations: eva.violations,
+                };
               }
 
               // Mechanical citation surface: the talker was never told
