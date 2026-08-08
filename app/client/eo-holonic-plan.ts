@@ -80,19 +80,42 @@ function normalizeCompliance(c: any): AnswerCompliance {
   };
 }
 
+// A small model asked to fill this JSON template sometimes scrambles which
+// field is which — observed live: a 1B model put its actual multi-sentence
+// answer into "delivery" (a label like "prose" or "a scene" is a few words,
+// never a full answer) and left "reason" as the schema's own placeholder
+// hint text, verbatim, unfilled. Neither is a parse failure — both are
+// valid JSON strings — so parsePlannerReply's structural checks can't catch
+// it; this is a content sanity check on top of it. A real delivery LABEL is
+// short; anything long enough to be prose is data that leaked into the
+// wrong field, not a legitimate emergent label, and is discarded rather
+// than shown to the reader as if it were one.
+const MAX_LABEL_WORDS = 8;
+const PLACEHOLDER_REASON =
+  "one short sentence justifying the kind and delivery";
+
+function looksLikeLabel(s: string): boolean {
+  return s.split(/\s+/).filter(Boolean).length <= MAX_LABEL_WORDS;
+}
+
 function normalizeSpec(p: any): AnswerSpec {
+  const rawDelivery = String(p?.delivery || p?.form || "").trim();
   const delivery =
-    String(p?.delivery || p?.form || "direct response")
-      .trim()
-      .slice(0, 160) || "direct response";
+    rawDelivery && looksLikeLabel(rawDelivery)
+      ? rawDelivery.slice(0, 160)
+      : "direct response";
+  const rawKind = String(p?.kind || "").trim();
   const kind =
-    String(p?.kind || "")
-      .trim()
-      .slice(0, 60) || delivery;
+    rawKind && looksLikeLabel(rawKind) ? rawKind.slice(0, 60) : delivery;
+  const rawReason = String(p?.reason || "").trim();
+  const reason =
+    rawReason.toLowerCase() === PLACEHOLDER_REASON
+      ? ""
+      : rawReason.slice(0, 240);
   return {
     kind,
     delivery,
-    reason: String(p?.reason || "").slice(0, 240),
+    reason,
     compliance: normalizeCompliance(p?.compliance),
   };
 }
