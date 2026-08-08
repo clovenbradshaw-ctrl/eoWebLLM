@@ -1,6 +1,17 @@
 import withSerwistInit from "@serwist/next";
 
-const mode = process.env.BUILD_MODE ?? "export";
+// Plain `next dev` (the "dev" script) sets no BUILD_MODE and must NOT
+// silently become export mode — export mode forces output:'export' and
+// basePath:'/eoWebLLM', neither of which next dev's HMR/chunk serving
+// handles well, combined with the serwist service worker aggressively
+// precaching stale chunk paths across restarts. That combination was the
+// actual cause of the recurring ChunkLoadError/hydration-mismatch/404
+// cycle seen all session, not a source-code bug. Only "build"/"export"/
+// "export:dev" ever set BUILD_MODE explicitly (see package.json); "dev"
+// deliberately does not, and defaulting it to "standalone" here — not
+// "export" — is what actually makes it a normal, stable local dev server
+// with no basePath and no static-export constraints.
+const mode = process.env.BUILD_MODE ?? "standalone";
 console.log("[Next] build mode", mode);
 
 const disableChunk = !!process.env.DISABLE_CHUNK || mode === "export";
@@ -23,6 +34,9 @@ const cspHeader = `
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Allows an isolated local test server to avoid replacing the active
+  // developer server's chunks in `.next`. Production keeps the default.
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   webpack(config, { isServer }) {
     config.module.rules.push({
       test: /\.svg$/,

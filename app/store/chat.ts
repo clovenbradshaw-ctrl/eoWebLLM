@@ -67,12 +67,14 @@ import {
 import {
   retrieveCorpus,
   formatCorpusContext,
+  type CorpusPassage,
   type EoSource,
 } from "../client/eo-corpus";
 import {
   defineTaskPlan,
+  probeReading,
+  routeReading,
   runTaskPlan,
-  selectThinkingSystem,
 } from "../client/eo-task-plan";
 
 export type ChatMessage = RequestMessage & {
@@ -797,12 +799,14 @@ export const useChatStore = createPersistStore(
         // No prefix is ever promoted to "the file", and a later question can
         // surface a different part of the same raw source.
         const sources = session0.eoSources ?? [];
+        let corpusPassages: CorpusPassage[] = [];
         if (
           sources.some((s) => s.enabled && s.textReadable) &&
           userContent.trim()
         ) {
           try {
             const passages = await retrieveCorpus(userContent.trim(), sources);
+            corpusPassages = passages;
             const corpusBlock = formatCorpusContext(
               userContent.trim(),
               sources,
@@ -821,12 +825,10 @@ export const useChatStore = createPersistStore(
           }
         }
 
-        // A complex turn first becomes a legal task graph. The model only
-        // proposes task wording; eo-task-controller admits and sequences work
-        // through cube-addressed controller operations, with a separate surf
-        // and review for every dependency-ready task.
-        const thinkingSystem = selectThinkingSystem(userContent.trim());
-        if (userContent.trim() && thinkingSystem === "system2") {
+        // Every reader turn begins with a cheap System-1 probe. The resulting
+        // route is a declared policy over encountered coverage, alternatives,
+        // contradictions, and gaps—not a classifier over the request wording.
+        if (userContent.trim()) {
           try {
             const background = (systemPrompt: string, userPrompt: string) =>
               eoRunBackground(
@@ -842,31 +844,56 @@ export const useChatStore = createPersistStore(
                 },
                 EO_ROUTER_TIMEOUT_MS,
               );
-            const taskPlan = await defineTaskPlan(
-              userContent.trim(),
-              background,
+            const probe = await probeReading({
+              question: userContent.trim(),
+              sources,
+              passages: corpusPassages,
+              generate: background,
+            });
+            const thinkingSystem = routeReading(probe.trace);
+            extraSystemBlocks.push(
+              [
+                "INITIAL READING (provisional; revise if better grounds emerge):",
+                probe.trace.tentativeReading,
+                `Reading trace: candidates=${probe.trace.candidateReadings}; coverage=${probe.trace.supportCoverage}; evidence=${probe.trace.evidenceRelation}; claim=${probe.trace.claimType}; consequence=${probe.trace.consequence}.`,
+                `Reading rationale: ${probe.trace.rationale}`,
+              ].join("\n"),
             );
-            if (taskPlan.tasks.length >= 2) {
-              const taskRun = await runTaskPlan({
-                question: userContent.trim(),
-                plan: taskPlan,
-                sources,
-                generate: background,
-              });
-              if (taskRun.context) extraSystemBlocks.push(taskRun.context);
-              get().pushEoLog(
-                "task",
-                `System 2 task controller: ${taskRun.controller.tasks.length} task(s), ` +
-                  `${taskRun.controller.tasks.filter((t) => t.status === "completed").length} completed, ` +
-                  `${taskRun.controller.tasks.filter((t) => t.status === "dropped").length} dropped, ` +
-                  `closure=${taskRun.controller.closed}`,
+            get().pushEoLog(
+              "task",
+              `System 1 probe: candidates=${probe.trace.candidateReadings}, coverage=${probe.trace.supportCoverage}, evidence=${probe.trace.evidenceRelation}, claim=${probe.trace.claimType}; route=${thinkingSystem}`,
+            );
+
+            // Slow work starts only after the first reading encountered a
+            // live alternative, distributed/conflicting/missing evidence, or
+            // a claim that exceeds retrieval.
+            if (thinkingSystem === "system2") {
+              const taskPlan = await defineTaskPlan(
+                userContent.trim(),
+                background,
               );
+              if (taskPlan.tasks.length >= 2) {
+                const taskRun = await runTaskPlan({
+                  question: userContent.trim(),
+                  plan: taskPlan,
+                  sources,
+                  generate: background,
+                });
+                if (taskRun.context) extraSystemBlocks.push(taskRun.context);
+                get().pushEoLog(
+                  "task",
+                  `System 2 task controller: ${taskRun.controller.tasks.length} task(s), ` +
+                    `${taskRun.controller.tasks.filter((t) => t.status === "completed").length} completed, ` +
+                    `${taskRun.controller.tasks.filter((t) => t.status === "dropped").length} dropped, ` +
+                    `closure=${taskRun.controller.closed}`,
+                );
+              }
             }
           } catch (err) {
-            // Planning trouble must fail open to the ordinary direct answer.
+            // A failed probe or slow path must fail open to the direct answer.
             get().pushEoLog(
               "error",
-              `task controller: ${(err as Error).message}`,
+              `reading probe/task controller: ${(err as Error).message}`,
             );
           }
         }
