@@ -37,17 +37,17 @@ export interface ToolDecision {
   fellBack: boolean;
 }
 
-const ROUTER_SYSTEM_PROMPT_HEADER = `You are the tool router for a chat assistant. Read the reader's latest message and the short list of tools below, then decide which of them (if any) this ONE message actually needs. Most messages need none.
-
-TOOLS AVAILABLE THIS TURN:
+// Kept deliberately short: this runs on a local in-browser model with no
+// max_tokens control available (see EO_ROUTER_TIMEOUT_MS in chat.ts) — a
+// long system prompt invites a long, rambling reply on a small model, which
+// is exactly what a background routing call can't afford.
+const ROUTER_SYSTEM_PROMPT_HEADER = `Tool router. Tools available:
 `;
 
 const ROUTER_SYSTEM_PROMPT_FOOTER = `
-Pick a tool only when answering well genuinely depends on it — a specific, checkable, possibly-time-sensitive fact for web_search; a file the reader just attached for file_context. Do NOT pick a tool for greetings, small talk, opinions, follow-ups about what the assistant already said, or questions about the assistant itself — invoking a tool there just pulls in noise.
-
-Reply with ONLY a JSON object, no prose, no code fences:
-{"tools":["tool_name", "..."],"reason":"one short sentence"}
-An empty tools array is a normal, common answer.`;
+Pick a tool only if the message genuinely needs it. Most messages need none.
+Reply with ONLY this JSON, nothing else, under 20 words total:
+{"tools":[],"reason":"..."}`;
 
 function buildRouterPrompt(tools: ToolSpec[]): string {
   const list = tools.map((t) => `- ${t.name}: ${t.description}`).join("\n");

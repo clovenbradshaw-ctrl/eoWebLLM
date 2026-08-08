@@ -99,6 +99,7 @@ import {
   formatBinaryStructureBlock,
   tryDecodeText,
 } from "../client/eo-binary-structure";
+import type { WebSearchResult } from "../client/eo-websearch";
 
 export function ScrollDownToast(prop: { show: boolean; onclick: () => void }) {
   return (
@@ -635,6 +636,59 @@ function ThinkingPanel(props: { thinking: string; open: boolean }) {
   );
 }
 
+// The "what did it search" affordance: a collapsible list of the actual
+// web_search results that grounded this reply, each title a real clickable
+// link to the source — not a claim the model made, structured data the
+// store attached (see ChatMessage.webResults / eo-tool-router.ts).
+function WebSearchPanel(props: { results: WebSearchResult[] }) {
+  return (
+    <details
+      style={{
+        margin: "0 0 10px",
+        padding: "8px 12px",
+        borderRadius: 8,
+        border: "1px solid var(--border-in-light)",
+        background: "var(--gray)",
+        fontSize: "13px",
+      }}
+    >
+      <summary
+        style={{
+          cursor: "pointer",
+          color: "var(--black)",
+          opacity: 0.7,
+          userSelect: "none",
+        }}
+      >
+        {`🔎 Web search — ${props.results.length} result${props.results.length === 1 ? "" : "s"}`}
+      </summary>
+      <div
+        style={{
+          marginTop: 8,
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
+        }}
+      >
+        {props.results.map((r, i) => (
+          <div key={i}>
+            <a
+              href={r.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ fontWeight: 600 }}
+            >
+              {r.title}
+            </a>
+            <span style={{ opacity: 0.5 }}> · {r.source}</span>
+            <div style={{ opacity: 0.75, marginTop: 2 }}>{r.snippet}</div>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 export function DeleteImageButton(props: { deleteImage: () => void }) {
   return (
     <div className={styles["delete-image"]} onClick={props.deleteImage}>
@@ -1141,6 +1195,12 @@ function ChatInner() {
       for (const file of files) {
         const buffer = new Uint8Array(await file.arrayBuffer());
         const structure = findBinaryStructure(buffer);
+        // PDF text extraction (eo-pdf.ts, pdfjs-dist) is disabled for now:
+        // pdfjs-dist's legacy build pulls in the native `canvas` package on
+        // a Node-only fallback path that webpack insists on trying to
+        // bundle regardless of resolve.alias/fallback overrides, breaking
+        // the whole app's compile. A PDF still gets the mechanical
+        // structure summary below, just not extracted text.
         const text = tryDecodeText(buffer);
 
         const parts = [formatBinaryStructureBlock(file.name, structure)];
@@ -1263,6 +1323,13 @@ function ChatInner() {
 
       {showEoLog && (
         <div className={styles["eot-panel"]}>
+          <div
+            className={styles["eot-panel-close"]}
+            onClick={() => setShowEoLog(false)}
+            title="Close system log"
+          >
+            ✕ Close
+          </div>
           {!session.eoLog?.length ? (
             <div className={styles["eot-panel-empty"]}>
               EOT — nothing has run yet this session. Send a message to see surf
@@ -1483,6 +1550,9 @@ function ChatInner() {
                               thinking={thinking}
                               open={open && !!message.streaming}
                             />
+                          )}
+                          {!isUser && !!message.webResults?.length && (
+                            <WebSearchPanel results={message.webResults} />
                           )}
                           <Markdown
                             content={rest}

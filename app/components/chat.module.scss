@@ -333,6 +333,30 @@
   color: #4d6b52;
 }
 
+// Fixed to the panel's own viewport (not the page) so it's reachable no
+// matter how far the log's content has scrolled — the panel is a
+// position:absolute overlay with its own scroll, so the header's toggle
+// button that opened it can end up scrolled out of view with no other way
+// back to the app.
+.eot-panel-close {
+  position: sticky;
+  top: 0;
+  float: right;
+  margin: -16px -20px 12px 12px;
+  padding: 8px 14px;
+  background: #161b17;
+  color: #7ee787;
+  border: 1px solid #2d3b30;
+  border-radius: 0 0 0 8px;
+  cursor: pointer;
+  font-size: 12.5px;
+  z-index: 11;
+
+  &:hover {
+    background: #21281f;
+  }
+}
+
 .eot-entry-kind {
   opacity: 0.7;
   margin-right: 6px;

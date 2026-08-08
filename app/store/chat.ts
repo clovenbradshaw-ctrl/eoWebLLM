@@ -33,7 +33,6 @@ import {
   webSearch,
   formatWebSearchBlock,
   stripCitationBrackets,
-  attachSourcesFooter,
 } from "../client/eo-websearch";
 import { planTools } from "../client/eo-tool-router";
 
@@ -45,6 +44,11 @@ export type ChatMessage = RequestMessage & {
   stopReason?: ChatCompletionFinishReason;
   model?: Model;
   usage?: CompletionUsage;
+  // The actual web_search results (if any) that grounded this reply — kept
+  // structured, not baked into the text, so the UI can render a clickable
+  // "what did it search" affordance instead of a markdown footer the reader
+  // has to scroll past the answer to find.
+  webResults?: Awaited<ReturnType<typeof webSearch>>;
 };
 
 export function createMessage(override: Partial<ChatMessage>): ChatMessage {
@@ -125,6 +129,13 @@ export const BOT_HELLO: ChatMessage = createMessage({
 // context window never grows past a fixed ceiling.
 const EO_HISTORY_TURNS = 8;
 const EO_FOLD_TIMEOUT_MS = 30000;
+// The router call (eo-tool-router) has no way to cap the model's output
+// length — LLMConfig carries no max_tokens knob the WebLLM engine call
+// forwards — so on a slow local model a verbose reply can blow past the
+// ordinary fold timeout even though the router prompt asks for one line of
+// JSON. Give it more slack before treating it as failed; a slow verdict
+// still fails open (see the try/catch around planTools in onUserInput).
+const EO_ROUTER_TIMEOUT_MS = 45000;
 
 // The WebLLM engine is single-flight: background calls (fold/summary, topic)
 // must never overlap each other or the streaming answer. eoFoldInFlight guards
@@ -566,8 +577,15 @@ export const useChatStore = createPersistStore(
         // citations exist (see formatWebSearchBlock in eo-websearch.ts).
         let turnWebResults: Awaited<ReturnType<typeof webSearch>> = [];
         if (session0.webSearchEnabled && userContent.trim()) {
+          // Router failure (parse failure OR the background call itself
+          // timing out/erroring on a slow local model) must fail OPEN, same
+          // as eochat's own `lookup` field: a verdict that never arrived is
+          // not evidence the question didn't need a search — it's just a
+          // model that was too slow to answer the routing question. Only a
+          // decision that POSITIVELY said "no tools" suppresses the search.
+          let decision: Awaited<ReturnType<typeof planTools>>;
           try {
-            const decision = await planTools({
+            decision = await planTools({
               question: userContent.trim(),
               tools: [
                 {
@@ -590,14 +608,22 @@ export const useChatStore = createPersistStore(
                     cache: useAppConfig.getState().cacheType,
                     stream: false,
                   },
-                  EO_FOLD_TIMEOUT_MS,
+                  EO_ROUTER_TIMEOUT_MS,
                 ),
             });
-            get().pushEoLog(
-              "web",
-              `route: ${decision.tools.length ? decision.tools.join(", ") : "no tools"} — ${decision.reason}${decision.fellBack ? " (fell back)" : ""}`,
-            );
-            if (decision.tools.includes("web_search")) {
+          } catch (err) {
+            decision = {
+              tools: ["web_search"],
+              reason: `router call failed — ${(err as Error).message}`,
+              fellBack: true,
+            };
+          }
+          get().pushEoLog(
+            "web",
+            `route: ${decision.tools.length ? decision.tools.join(", ") : "no tools"} — ${decision.reason}${decision.fellBack ? " (fell back)" : ""}`,
+          );
+          if (decision.tools.includes("web_search")) {
+            try {
               const results = await webSearch(userContent.trim());
               turnWebResults = results;
               const block = formatWebSearchBlock(userContent.trim(), results);
@@ -606,12 +632,12 @@ export const useChatStore = createPersistStore(
                 "web",
                 `web: ${results.length} result(s) for "${userContent.trim().slice(0, 80)}"`,
               );
+            } catch (err) {
+              get().pushEoLog(
+                "error",
+                `web: search failed — ${(err as Error).message}`,
+              );
             }
-          } catch (err) {
-            get().pushEoLog(
-              "error",
-              `web: routing/search failed — ${(err as Error).message}`,
-            );
           }
         }
 
@@ -769,14 +795,14 @@ export const useChatStore = createPersistStore(
                 message = message.replace(/<think>\s*<\/think>/g, "");
               }
               // Mechanical citation surface: the talker was never told
-              // citations exist, so strip any [n] it wrote anyway, then
-              // attach the real source list ourselves — attribution the
-              // model cannot fabricate because it never authors it.
+              // citations exist, so strip any [n] it wrote anyway. The real
+              // source list is attached as structured data (webResults),
+              // not text — the UI renders it as a clickable panel (see
+              // WebSearchPanel in chat.tsx) instead of a markdown footer the
+              // reader has to scroll past the answer to find.
               if (turnWebResults.length) {
-                message = attachSourcesFooter(
-                  stripCitationBrackets(message),
-                  turnWebResults,
-                );
+                message = stripCitationBrackets(message);
+                botMessage.webResults = turnWebResults;
               }
               botMessage.content = message;
               get().onNewMessage(botMessage, llm);
