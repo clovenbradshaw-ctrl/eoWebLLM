@@ -337,6 +337,69 @@ const useModels = (mlcllm: MlcLLMApi | undefined) => {
   }, [config.modelClientType, mlcllm]);
 };
 
+// Start the selected in-browser model as soon as the engine is available.
+// Chat remains usable while this runs, but the usual first-turn download wait
+// is moved to app startup and its progress is shown in the existing session UI.
+const usePreloadModel = (webllm: WebLLMApi | undefined, active: boolean) => {
+  const config = useAppConfig();
+  const chatStore = useChatStore();
+  const attempted = useRef(new Set<string>());
+
+  useEffect(() => {
+    if (!webllm || !active || config.modelClientType !== ModelClient.WEBLLM)
+      return;
+    const model = config.modelConfig.model;
+    if (attempted.current.has(model)) return;
+    attempted.current.add(model);
+    let cancelled = false;
+
+    chatStore.updateCurrentSession((session) => {
+      session.modelLoadProgress = { progress: 0, text: `Preparing ${model}` };
+    });
+    webllm
+      .preload(
+        {
+          ...config.modelConfig,
+          cache: config.cacheType,
+          enable_thinking: config.enableThinking,
+        },
+        (progress, text) => {
+          if (cancelled) return;
+          chatStore.updateCurrentSession((session) => {
+            session.modelLoadProgress = { progress, text };
+          });
+        },
+      )
+      .then(() => {
+        if (cancelled) return;
+        chatStore.updateCurrentSession((session) => {
+          session.modelLoadProgress = null;
+        });
+        chatStore.pushEoLog("task", `model: ${model} ready before first turn`);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        chatStore.updateCurrentSession((session) => {
+          session.modelLoadProgress = null;
+        });
+        chatStore.pushEoLog(
+          "error",
+          `model preload failed — ${(err as Error).message}`,
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    webllm,
+    active,
+    config.modelClientType,
+    config.modelConfig,
+    config.cacheType,
+    config.enableThinking,
+  ]);
+};
+
 export function Home() {
   const hasHydrated = useHasHydrated();
   const { webllm, isWebllmActive } = useWebLLM();
@@ -347,6 +410,7 @@ export function Home() {
   useLoadUrlParam();
   useStopStreamingMessages();
   useModels(mlcllm);
+  usePreloadModel(webllm, isWebllmActive);
   useLogLevel(webllm);
   useGithubAutoSync();
 

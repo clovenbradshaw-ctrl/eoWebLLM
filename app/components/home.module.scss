@@ -150,6 +150,11 @@
   }
 }
 
+.sidebar-collapse {
+  flex: none;
+  margin-right: 8px;
+}
+
 .sidebar-logo {
   height: 48px;
 
@@ -247,22 +252,22 @@
 }
 
 .narrow-sidebar {
+  padding: 12px 8px;
+
   .sidebar-header {
-    display: block;
+    display: flex;
+    justify-content: center;
+    padding: 4px 0 14px;
   }
+
+  .sidebar-collapse { margin: 0; }
 
   .sidebar-title,
   .sidebar-sub-title {
     display: none;
   }
 
-  .sidebar-logo {
-    position: relative;
-    display: flex;
-    justify-content: center;
-    height: calc(100% - 20px);
-    flex: inherit;
-  }
+  .sidebar-logo { display: none; }
 
   .sidebar-header-bar {
     flex-direction: column;

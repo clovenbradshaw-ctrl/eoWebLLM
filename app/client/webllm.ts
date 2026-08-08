@@ -36,6 +36,7 @@ type WebLLMHandler = ServiceWorkerWebLLMHandler | WebWorkerWebLLMHandler;
 export class WebLLMApi implements LLMApi {
   private llmConfig?: LLMConfig;
   private initialized = false;
+  private initializing?: Promise<void>;
   webllm: WebLLMHandler;
 
   constructor(
@@ -76,11 +77,31 @@ export class WebLLMApi implements LLMApi {
     if (!this.llmConfig) {
       throw Error("llmConfig is undefined");
     }
-    this.webllm.engine.setInitProgressCallback((report: InitProgressReport) => {
-      onProgress?.(report.progress, report.text);
-    });
-    await this.webllm.engine.reload(this.llmConfig.model, this.llmConfig);
-    this.initialized = true;
+    if (!this.initializing) {
+      this.initializing = (async () => {
+        this.webllm.engine.setInitProgressCallback(
+          (report: InitProgressReport) => {
+            onProgress?.(report.progress, report.text);
+          },
+        );
+        await this.webllm.engine.reload(this.llmConfig!.model, this.llmConfig!);
+        this.initialized = true;
+      })().finally(() => {
+        this.initializing = undefined;
+      });
+    }
+    await this.initializing;
+  }
+
+  /** Download/compile the selected model before the reader sends a turn. */
+  async preload(
+    config: LLMConfig,
+    onProgress?: (progress: number, text: string) => void,
+  ): Promise<void> {
+    if (!this.initialized || this.isDifferentConfig(config)) {
+      this.llmConfig = { ...(this.llmConfig || {}), ...config };
+      await this.initModel(onProgress);
+    }
   }
 
   async chat(options: ChatOptions): Promise<void> {

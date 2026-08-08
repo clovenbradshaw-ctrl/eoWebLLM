@@ -680,6 +680,109 @@
   }
 }
 
+// EOChat-style source scope: sources are a first-class, inspectable part of
+// the conversation rather than a one-turn attachment hidden in the composer.
+.source-panel {
+  position: absolute;
+  z-index: 20;
+  top: 58px;
+  right: 14px;
+  width: min(360px, calc(100% - 28px));
+  max-height: min(540px, calc(100% - 80px));
+  overflow: auto;
+  padding: 14px;
+  box-sizing: border-box;
+  border: var(--border-in-light);
+  border-radius: 12px;
+  background: var(--white);
+  box-shadow: var(--shadow);
+}
+
+.source-panel-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+
+  button {
+    border: 0;
+    background: transparent;
+    color: var(--black);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+  }
+}
+
+.source-panel-kicker {
+  color: var(--primary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.source-panel-title {
+  margin-top: 2px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.source-panel-note,
+.source-empty {
+  color: var(--light-gray);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.source-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 10px;
+  padding: 6px 9px;
+  border: var(--border-in-light);
+  border-radius: 7px;
+  background: var(--second);
+  color: var(--black);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.source-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px;
+  border: var(--border-in-light);
+  border-radius: 8px;
+  cursor: pointer;
+
+  input { margin-top: 3px; accent-color: var(--primary); }
+}
+
+.source-row-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+
+  strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+  }
+
+  small { color: var(--light-gray); font-size: 10px; line-height: 1.35; }
+}
+
 @mixin single-line {
   white-space: nowrap;
   overflow: hidden;
