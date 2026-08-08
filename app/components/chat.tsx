@@ -93,12 +93,10 @@ import Image from "next/image";
 import { MLCLLMContext, WebLLMContext } from "../context";
 import { ChatImage } from "../typing";
 import ModelSelect from "./model-select";
-import { Terminal, Globe, Paperclip } from "lucide-react";
-import {
-  findBinaryStructure,
-  formatBinaryStructureBlock,
-  tryDecodeText,
-} from "../client/eo-binary-structure";
+import { Globe, Paperclip, TerminalWindow } from "@phosphor-icons/react";
+import { findBinaryStructure } from "../client/eo-binary-structure";
+import { isReadableUtf8, persistRawSource } from "../client/eo-corpus";
+import { nanoid } from "nanoid";
 import type { WebSearchResult } from "../client/eo-websearch";
 import type { GroundingReport, Snippet } from "../client/eo-citation-check";
 
@@ -785,6 +783,7 @@ function ChatInner() {
 
   const [showExport, setShowExport] = useState(false);
   const [showEoLog, setShowEoLog] = useState(false);
+  const [showSources, setShowSources] = useState(false);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [userInput, setUserInput] = useState("");
@@ -1255,12 +1254,10 @@ function ChatInner() {
     setAttachImages(images);
   }
 
-  // Arbitrary file upload — any type, not just images. Reads the raw bytes,
-  // runs eoreader6's modality-blind structure detector (eo-binary-structure)
-  // to find boundaries the format's own parser was never consulted for, and
-  // attempts a text decode so a readable file also gets read as text. Both
-  // land as a one-shot system-context block the next turn consumes (see
-  // chatStore.attachFileContext / session.pendingFileContext).
+  // Arbitrary file upload — any type, not just images. Original bytes are
+  // retained losslessly in OPFS; no prefix is sent as if it were the entire
+  // source. The eoreader6 boundary pass is source metadata, while turn-time
+  // surf later chooses passages from the complete enabled corpus.
   async function uploadFile() {
     const files: File[] = await new Promise((res) => {
       const fileInput = document.createElement("input");
@@ -1278,31 +1275,32 @@ function ChatInner() {
       for (const file of files) {
         const buffer = new Uint8Array(await file.arrayBuffer());
         const structure = findBinaryStructure(buffer);
-        // PDF text extraction (eo-pdf.ts, pdfjs-dist) is disabled for now:
-        // pdfjs-dist's legacy build pulls in the native `canvas` package on
-        // a Node-only fallback path that webpack insists on trying to
-        // bundle regardless of resolve.alias/fallback overrides, breaking
-        // the whole app's compile. A PDF still gets the mechanical
-        // structure summary below, just not extracted text.
-        const text = tryDecodeText(buffer);
-
-        const parts = [formatBinaryStructureBlock(file.name, structure)];
-        if (text) {
-          parts.push(
-            `FILE TEXT for "${file.name}" (first ${text.length} chars):\n\n${text}`,
-          );
-        }
-        chatStore.attachFileContext(parts.join("\n\n"));
+        const id = nanoid();
+        await persistRawSource(id, buffer);
+        const textReadable = isReadableUtf8(buffer);
+        chatStore.registerEoSource({
+          id,
+          name: file.name || "(unnamed file)",
+          byteLength: buffer.length,
+          mimeType: file.type || "application/octet-stream",
+          textReadable,
+          enabled: true,
+          addedAt: Date.now(),
+          structure: {
+            clearings: structure.clearings.length,
+            blockCount: structure.blockCount,
+          },
+        });
         chatStore.pushEoLog(
           "file",
-          `file: queued "${file.name}" (${buffer.length} bytes, ` +
-            `${structure.clearings.length} clearing(s)${text ? ", text decoded" : ""})`,
+          `file: ingested "${file.name}" — ${buffer.length} raw byte(s) in OPFS, ` +
+            `${structure.clearings.length} clearing(s), ${textReadable ? "UTF-8 corpus" : "binary corpus"}`,
         );
       }
       showToast(
         files.length === 1
-          ? `${files[0].name} attached — will be sent with your next message`
-          : `${files.length} files attached — will be sent with your next message`,
+          ? `${files[0].name} added to this chat's source corpus`
+          : `${files.length} files added to this chat's source corpus`,
       );
     } finally {
       setUploadingFile(false);
@@ -1382,7 +1380,15 @@ function ChatInner() {
           </div>
           <div className="window-action-button">
             <IconButton
-              icon={<Terminal size={16} />}
+              icon={<Paperclip size={16} />}
+              bordered
+              title="Sources — this chat's local corpus"
+              onClick={() => setShowSources((v) => !v)}
+            />
+          </div>
+          <div className="window-action-button">
+            <IconButton
+              icon={<TerminalWindow size={17} />}
               bordered
               title="EOT — system log"
               onClick={() => setShowEoLog((v) => !v)}
@@ -1438,6 +1444,78 @@ function ChatInner() {
             ))
           )}
         </div>
+      )}
+
+      {showSources && (
+        <aside className={styles["source-panel"]} aria-label="Source corpus">
+          <div className={styles["source-panel-header"]}>
+            <div>
+              <div className={styles["source-panel-kicker"]}>Source corpus</div>
+              <div className={styles["source-panel-title"]}>
+                {session.eoSources?.length ?? 0} local source
+                {(session.eoSources?.length ?? 0) === 1 ? "" : "s"}
+              </div>
+            </div>
+            <button
+              onClick={() => setShowSources(false)}
+              aria-label="Close sources"
+            >
+              ×
+            </button>
+          </div>
+          <p className={styles["source-panel-note"]}>
+            Original files stay in this browser in full. Each turn surfaces only
+            matching passages from the enabled sources.
+          </p>
+          <button
+            className={styles["source-add"]}
+            onClick={uploadFile}
+            disabled={uploadingFile}
+          >
+            <Paperclip size={14} /> {uploadingFile ? "Adding…" : "Add sources"}
+          </button>
+          <div className={styles["source-list"]}>
+            {!session.eoSources?.length ? (
+              <div className={styles["source-empty"]}>
+                No sources yet. Add a file to make it available to this chat.
+              </div>
+            ) : (
+              session.eoSources.map((source) => (
+                <label key={source.id} className={styles["source-row"]}>
+                  <input
+                    type="checkbox"
+                    checked={source.enabled}
+                    onChange={() =>
+                      chatStore.updateCurrentSession((current) => {
+                        current.eoSources = (current.eoSources ?? []).map(
+                          (s) =>
+                            s.id === source.id
+                              ? { ...s, enabled: !s.enabled }
+                              : s,
+                        );
+                      })
+                    }
+                  />
+                  <span className={styles["source-row-body"]}>
+                    <strong title={source.name}>{source.name}</strong>
+                    <small>
+                      {(source.byteLength / 1024).toLocaleString(undefined, {
+                        maximumFractionDigits: 1,
+                      })}{" "}
+                      KB ·{" "}
+                      {source.textReadable
+                        ? "text searchable"
+                        : "binary retained"}
+                      {source.structure
+                        ? ` · ${source.structure.clearings} ${source.structure.clearings === 1 ? "boundary" : "boundaries"}`
+                        : ""}
+                    </small>
+                  </span>
+                </label>
+              ))
+            )}
+          </div>
+        </aside>
       )}
 
       <div

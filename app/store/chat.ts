@@ -66,6 +66,11 @@ import {
   isAcknowledgment,
   type ConversationMemory,
 } from "../client/eo-memory";
+import {
+  retrieveCorpus,
+  formatCorpusContext,
+  type EoSource,
+} from "../client/eo-corpus";
 
 export type ChatMessage = RequestMessage & {
   date: string;
@@ -94,7 +99,27 @@ export type ChatMessage = RequestMessage & {
   // panel can show the exact sentence that grounded the answer instead of
   // the whole fetched snippet.
   webSnippets?: Snippet[];
+  // The holonic DEFINE → EVALUATE → RECONCILE trace (see eo-holonic-plan.ts),
+  // structured so the UI can show it inline — a "how this answer was shaped"
+  // panel next to Reasoning/Web search, not buried in the EOT log a reader
+  // has to know to open (LAWS.md L2b: one step from the artifact). Set only
+  // on turns where needsPlanning/needsMathCheck actually fired a DEFINE or
+  // math call; absent, not empty, on the ordinary-chat fast path.
+  planTrace?: PlanTrace;
 };
+
+export interface PlanTrace {
+  kind: string;
+  form: string;
+  reason: string;
+  minWords: number;
+  mathExpression?: string;
+  mathValue?: string;
+  initialViolations: { type: string; severity: string; detail: string }[];
+  reconciled: boolean;
+  finalCompliant: boolean;
+  finalViolations: { type: string; severity: string; detail: string }[];
+}
 
 export function createMessage(override: Partial<ChatMessage>): ChatMessage {
   return {
@@ -159,6 +184,11 @@ export interface ChatSession {
   // and cleared by the next onUserInput call, same one-shot handoff pattern
   // as the instruction gate's per-turn system block.
   pendingFileContext?: string | null;
+
+  // Metadata only. The original file bytes are retained separately in OPFS
+  // (eo-corpus.ts), so persisted chat state never contains an accidental copy
+  // of a book or archive.
+  eoSources?: EoSource[];
 
   // The verbatim "desk" of stated facts (see app/client/eo-memory.ts) — a
   // small, bounded backstop that survives even when a fact falls out of
@@ -372,6 +402,7 @@ function createEmptySession(): ChatSession {
     eoLastFoldIndex: 0,
     webSearchEnabled: false,
     pendingFileContext: null,
+    eoSources: [],
 
     template: createEmptyTemplate(),
   };
@@ -602,6 +633,16 @@ export const useChatStore = createPersistStore(
         });
       },
 
+      registerEoSource(source: EoSource) {
+        get().updateCurrentSession((session) => {
+          const existing = session.eoSources ?? [];
+          session.eoSources = [
+            ...existing.filter((s) => s.id !== source.id),
+            source,
+          ];
+        });
+      },
+
       async onUserInput(
         content: string,
         llm: LLMApi,
@@ -748,6 +789,35 @@ export const useChatStore = createPersistStore(
           extraSystemBlocks.push(memoryBlock);
         }
 
+        // Source corpus surf: the complete original bytes remain in OPFS.
+        // This turn only receives the best matching, byte-addressed passages.
+        // No prefix is ever promoted to "the file", and a later question can
+        // surface a different part of the same raw source.
+        const sources = session0.eoSources ?? [];
+        if (
+          sources.some((s) => s.enabled && s.textReadable) &&
+          userContent.trim()
+        ) {
+          try {
+            const passages = await retrieveCorpus(userContent.trim(), sources);
+            const corpusBlock = formatCorpusContext(
+              userContent.trim(),
+              sources,
+              passages,
+            );
+            if (corpusBlock) extraSystemBlocks.push(corpusBlock);
+            get().pushEoLog(
+              "file",
+              `surf: ${passages.length} passage(s) from ${sources.filter((s) => s.enabled && s.textReadable).length} enabled source(s)`,
+            );
+          } catch (err) {
+            get().pushEoLog(
+              "error",
+              `source corpus: ${(err as Error).message}`,
+            );
+          }
+        }
+
         // holonic DEFINE (see eo-holonic-plan.ts): one small background call
         // decides this turn's form (prose/screenplay/code/reply) and its own
         // compliance contract, rather than every turn being answered as
@@ -803,6 +873,7 @@ export const useChatStore = createPersistStore(
         // computation to perform. Fails open: any extraction/compute
         // failure just means no math directive is added.
         let mathResult: MathResult | null = null;
+        let mathExpression = "";
         if (userContent.trim() && needsMathCheck(userContent.trim())) {
           try {
             const mathSpec = await defineMathSpec({
@@ -829,6 +900,7 @@ export const useChatStore = createPersistStore(
               );
               if (result.ok) {
                 mathResult = result;
+                mathExpression = mathSpec.expression;
                 const mathBlock = buildMathBlock(mathSpec, result);
                 if (mathBlock) extraSystemBlocks.push(mathBlock);
                 get().pushEoLog(
@@ -1020,6 +1092,8 @@ export const useChatStore = createPersistStore(
                     };
                   }
                 }
+                const initialViolations = eva.violations;
+                let reconciled = false;
                 if (!eva.compliant) {
                   get().pushEoLog(
                     "task",

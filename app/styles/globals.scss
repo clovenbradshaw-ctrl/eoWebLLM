@@ -5,23 +5,23 @@
   --theme: light;
 
   /* color */
-  --white: white;
-  --black: rgb(48, 48, 48);
-  --gray: rgb(240, 240, 240);
-  --light-gray: rgb(120, 120, 120);
-  --primary: rgb(90, 96, 135);
-  --second: rgb(228, 229, 241);
-  --hover-color: #f3f3f3;
-  --bar-color: rgba(0, 0, 0, 0.1);
+  --white: #fffdfa;
+  --black: #26241f;
+  --gray: #f4f2ed;
+  --light-gray: #8c877c;
+  --primary: #1f5a4c;
+  --second: #f1eee7;
+  --hover-color: #f2efe8;
+  --bar-color: #e0dace;
   --theme-color: var(--gray);
-  --mlc-icon-color: rgb(6, 37, 120);
+  --mlc-icon-color: #1f5a4c;
 
   /* shadow */
-  --shadow: 50px 50px 100px 10px rgb(0, 0, 0, 0.1);
-  --card-shadow: 0px 2px 4px 0px rgb(0, 0, 0, 0.05);
+  --shadow: 0 20px 60px -24px rgba(38, 36, 31, 0.25);
+  --card-shadow: 0 1px 2px rgba(38, 36, 31, 0.06);
 
   /* stroke */
-  --border-in-light: 1px solid rgb(222, 222, 222);
+  --border-in-light: 1px solid #e0dace;
   --border-in-dark: 1px solid rgb(136, 136, 136);
 }
 
@@ -29,18 +29,18 @@
   --theme: dark;
 
   /* color */
-  --white: rgb(30, 30, 30);
-  --black: rgb(187, 187, 187);
-  --gray: rgb(21, 21, 21);
-  --light-gray: rgb(120, 120, 120);
-  --primary: rgb(60, 72, 144);
-  --second: rgb(36, 40, 52);
-  --hover-color: #323232;
+  --white: #24221e;
+  --black: #eee9df;
+  --gray: #181714;
+  --light-gray: #aea79a;
+  --primary: #78b9a8;
+  --second: #302d27;
+  --hover-color: #37332c;
   --mlc-icon-color: #ffffff;
 
-  --bar-color: rgba(255, 255, 255, 0.1);
+  --bar-color: #595348;
 
-  --border-in-light: 1px solid rgba(255, 255, 255, 0.192);
+  --border-in-light: 1px solid #4b463e;
   --border-in-dark: 1px solid rgb(255, 255, 255, 0.56);
 
   --theme-color: var(--gray);

@@ -3,17 +3,20 @@ import { useEffect, useRef, useMemo } from "react";
 import styles from "./home.module.scss";
 
 import { IconButton } from "./button";
-import SettingsIcon from "../icons/gear.svg";
-import GithubIcon from "../icons/github.svg";
-import InternetIcon from "../icons/internet.svg";
 import MlcIcon from "../icons/mlc.svg";
-import AddIcon from "../icons/add.svg";
-import DeleteIcon from "../icons/delete.svg";
-import TemplateIcon from "../icons/chat.svg";
-import DragIcon from "../icons/drag.svg";
-import LightIcon from "../icons/light.svg";
-import DarkIcon from "../icons/dark.svg";
-import AutoIcon from "../icons/auto.svg";
+import {
+  CaretLeft,
+  CaretRight,
+  Chats,
+  CircleHalf,
+  GearSix,
+  GithubLogo,
+  GlobeSimple,
+  Moon,
+  Plus,
+  Sun,
+  Trash,
+} from "@phosphor-icons/react";
 
 import Locale from "../locales";
 
@@ -128,6 +131,7 @@ function useDragSideBar() {
   return {
     onDragStart,
     shouldNarrow,
+    toggleSideBar,
   };
 }
 
@@ -135,7 +139,7 @@ export function SideBar(props: { className?: string }) {
   const chatStore = useChatStore();
 
   // drag side bar
-  const { onDragStart, shouldNarrow } = useDragSideBar();
+  const { onDragStart, shouldNarrow, toggleSideBar } = useDragSideBar();
   const navigate = useNavigate();
   const config = useAppConfig();
   const isMobileScreen = useMobileScreen();
@@ -165,6 +169,16 @@ export function SideBar(props: { className?: string }) {
       }}
     >
       <div className={styles["sidebar-header"]}>
+        <IconButton
+          icon={
+            shouldNarrow ? <CaretRight size={17} /> : <CaretLeft size={17} />
+          }
+          title={
+            shouldNarrow ? "Expand conversations" : "Collapse conversations"
+          }
+          onClick={toggleSideBar}
+          className={styles["sidebar-collapse"]}
+        />
         <div className={styles["sidebar-title-container"]}>
           <div className={styles["sidebar-title"]}>{Locale.Title}</div>
           <div className={styles["sidebar-sub-title"]}>{Locale.Subtitle}</div>
@@ -176,7 +190,7 @@ export function SideBar(props: { className?: string }) {
 
       <div className={styles["sidebar-header-bar"]}>
         <IconButton
-          icon={<TemplateIcon />}
+          icon={<Chats size={18} />}
           text={shouldNarrow ? undefined : Locale.Template.Name}
           className={styles["sidebar-bar-button"]}
           onClick={() => {
@@ -185,7 +199,7 @@ export function SideBar(props: { className?: string }) {
           shadow
         />
         <IconButton
-          icon={<SettingsIcon />}
+          icon={<GearSix size={18} />}
           text={shouldNarrow ? undefined : Locale.Settings.Title}
           className={styles["sidebar-bar-button"]}
           onClick={() => {
@@ -210,7 +224,7 @@ export function SideBar(props: { className?: string }) {
         <div className={styles["sidebar-actions"]}>
           <div className={styles["sidebar-action"] + " " + styles.mobile}>
             <IconButton
-              icon={<DeleteIcon />}
+              icon={<Trash size={18} />}
               onClick={async () => {
                 if (await showConfirm(Locale.Home.DeleteChat)) {
                   chatStore.deleteSession(chatStore.currentSessionIndex);
@@ -220,12 +234,16 @@ export function SideBar(props: { className?: string }) {
           </div>
           <div className={styles["sidebar-action"]}>
             <a href={WEBLLM_HOME_URL} target="_blank" rel="noopener noreferrer">
-              <IconButton icon={<InternetIcon />} shadow />
+              <IconButton icon={<GlobeSimple size={18} />} shadow />
             </a>
           </div>
           <div className={styles["sidebar-action"]}>
             <a href={REPO_URL} target="_blank" rel="noopener noreferrer">
-              <IconButton icon={<GithubIcon />} shadow />
+              <IconButton
+                icon={<GithubLogo size={18} />}
+                shadow
+                title="eoWebLLM on GitHub"
+              />
             </a>
           </div>
           <div className={styles["sidebar-action"]}>
@@ -233,11 +251,11 @@ export function SideBar(props: { className?: string }) {
               icon={
                 <>
                   {theme === Theme.Auto ? (
-                    <AutoIcon />
+                    <CircleHalf size={18} />
                   ) : theme === Theme.Light ? (
-                    <LightIcon />
+                    <Sun size={18} />
                   ) : theme === Theme.Dark ? (
-                    <DarkIcon />
+                    <Moon size={18} />
                   ) : null}
                 </>
               }
@@ -248,7 +266,7 @@ export function SideBar(props: { className?: string }) {
         </div>
         <div>
           <IconButton
-            icon={<AddIcon />}
+            icon={<Plus size={18} />}
             text={shouldNarrow ? undefined : Locale.Home.NewChat}
             onClick={() => {
               chatStore.newSession();
@@ -263,7 +281,7 @@ export function SideBar(props: { className?: string }) {
         className={styles["sidebar-drag"]}
         onPointerDown={(e) => onDragStart(e as any)}
       >
-        <DragIcon />
+        <CaretRight size={13} />
       </div>
     </div>
   );

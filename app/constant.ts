@@ -2,8 +2,8 @@ import { prebuiltAppConfig } from "@mlc-ai/web-llm";
 import { ModelRecord } from "./client/api";
 import { getQuantization, getSize } from "./utils";
 
-export const OWNER = "mlc-ai";
-export const REPO = "web-llm-chat";
+export const OWNER = "clovenbradshaw-ctrl";
+export const REPO = "eoWebLLM";
 export const WEBLLM_HOME_URL = "https://webllm.mlc.ai";
 export const REPO_URL = `https://github.com/${OWNER}/${REPO}`;
 export const ISSUE_URL = `https://github.com/${OWNER}/${REPO}/issues`;
@@ -55,7 +55,9 @@ export const GITHUB_ACCESS_TOKEN_RELAY_URL =
 export const DEFAULT_SIDEBAR_WIDTH = 320;
 export const MAX_SIDEBAR_WIDTH = 500;
 export const MIN_SIDEBAR_WIDTH = 260;
-export const NARROW_SIDEBAR_WIDTH = 100;
+// EOChat's collapsed left rail is a compact navigation strip, not a second
+// narrow content column.
+export const NARROW_SIDEBAR_WIDTH = 56;
 
 export const ACCESS_CODE_PREFIX = "nk-";
 
