@@ -5,18 +5,30 @@ import Locale, { getLang } from "../locales";
 import { showToast } from "../components/ui-lib";
 import { ModelConfig, Model, useAppConfig, ConfigType } from "./config";
 import { createEmptyTemplate, Template } from "./template";
+import { DEFAULT_INPUT_TEMPLATE, DEFAULT_MODELS, StoreKey } from "../constant";
 import {
-  DEFAULT_INPUT_TEMPLATE,
-  DEFAULT_MODELS,
-  DEFAULT_SYSTEM_TEMPLATE,
-  StoreKey,
-} from "../constant";
-import { RequestMessage, MultimodalContent, LLMApi } from "../client/api";
+  RequestMessage,
+  MultimodalContent,
+  LLMApi,
+  LLMConfig,
+} from "../client/api";
 import { estimateTokenLength } from "../utils/token";
 import { nanoid } from "nanoid";
 import { createPersistStore } from "../utils/store";
 import { ChatCompletionFinishReason, CompletionUsage } from "@mlc-ai/web-llm";
 import { ChatImage } from "../typing";
+import {
+  emptySummary,
+  EoSummary,
+  buildSummarySystemMessage,
+  buildSummaryUpdatePrompt,
+  buildFoldPrompt,
+  parseFold,
+  updateSummaryWithFold,
+  advanceSummaryFold,
+} from "../client/eo-discourse";
+import { createInstructionGate } from "../client/eo-gate";
+import { getInstructionFolds } from "../client/eo-instructions";
 
 export type ChatMessage = RequestMessage & {
   date: string;
@@ -57,6 +69,10 @@ export interface ChatSession {
   clearContextIndex?: number;
   isGenerating: boolean;
 
+  // eoWebLLM bounded-context state (see app/client/eo-discourse.ts)
+  eoSummary?: EoSummary | null;
+  eoLastFoldIndex: number;
+
   template: Template;
 }
 
@@ -65,6 +81,94 @@ export const BOT_HELLO: ChatMessage = createMessage({
   role: "assistant",
   content: Locale.Store.BotHello,
 });
+
+// eoWebLLM bounded-context tuning: this many recent turns stay verbatim,
+// everything older lives only as the PAST DISCOURSE summary + folds, so the
+// context window never grows past a fixed ceiling.
+const EO_HISTORY_TURNS = 8;
+const EO_FOLD_TIMEOUT_MS = 30000;
+
+// The WebLLM engine is single-flight: background calls (fold/summary, topic)
+// must never overlap each other or the streaming answer. eoFoldInFlight guards
+// the fold chain; eoEngineBusy tracks a background call that may still occupy
+// the engine (including a timed-out ghost) and the next user turn aborts it.
+let eoFoldInFlight = false;
+let eoEngineBusy = false;
+
+// Run one non-streaming background model call, tracking engine occupancy.
+function eoRunBackground(
+  llm: LLMApi,
+  messages: RequestMessage[],
+  config: LLMConfig,
+  timeoutMs: number,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("eo background model call timed out"));
+    }, timeoutMs);
+    eoEngineBusy = true;
+    llm.chat({
+      messages,
+      config,
+      onFinish(message) {
+        eoEngineBusy = false;
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(message);
+      },
+      onError(err) {
+        eoEngineBusy = false;
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      },
+    });
+  });
+}
+
+// surf: build the RULES IN FORCE block for the current turn from the eochat
+// instruction set, keyword-surfaced against the question + recent history.
+function eoBuildInstructionBlock(
+  question: string,
+  session: ChatSession,
+  clearContextIndex: number,
+): string | null {
+  try {
+    const folds = getInstructionFolds();
+    if (!folds.length) return null;
+    const history = getRecentUserQuestions(session, clearContextIndex, 3);
+    const report = createInstructionGate(folds).gate({ question, history });
+    return report.systemMessage || null;
+  } catch (err) {
+    log.warn("[eo] instruction gate failed:", err);
+    return null;
+  }
+}
+
+function getRecentUserQuestions(
+  session: ChatSession,
+  clearContextIndex: number,
+  n: number,
+): string[] {
+  const out: string[] = [];
+  const msgs = session.messages;
+  for (
+    let i = msgs.length - 1;
+    i >= Math.max(clearContextIndex, 0) && out.length < n;
+    i -= 1
+  ) {
+    const m = msgs[i];
+    if (!m || m.role !== "user" || m.isError) continue;
+    const t = getMessageTextContent(m).trim();
+    if (t) out.push(t);
+  }
+  return out;
+}
 
 function createEmptySession(): ChatSession {
   return {
@@ -80,6 +184,8 @@ function createEmptySession(): ChatSession {
     lastUpdate: Date.now(),
     lastSummarizeIndex: 0,
     isGenerating: false,
+    eoSummary: null,
+    eoLastFoldIndex: 0,
 
     template: createEmptyTemplate(),
   };
@@ -322,7 +428,7 @@ export const useChatStore = createPersistStore(
         });
 
         // get recent messages
-        const recentMessages = get().getMessagesWithMemory();
+        const recentMessages = get().getMessagesWithMemory(userContent);
         const sendMessages = recentMessages.concat(userMessage);
 
         log.debug("Messages: ", sendMessages);
@@ -340,7 +446,13 @@ export const useChatStore = createPersistStore(
           session.isGenerating = true;
         });
 
-        // make request
+        // make request — the engine is single-flight, so first interrupt any
+        // background fold/topic call that may still occupy it
+        if (eoEngineBusy) {
+          eoEngineBusy = false;
+          eoFoldInFlight = false;
+          llm.abort();
+        }
         llm.chat({
           messages: sendMessages,
           config: {
@@ -391,103 +503,59 @@ export const useChatStore = createPersistStore(
         });
       },
 
-      getMemoryPrompt() {
+      getMessagesWithMemory(nextQuestion?: string) {
         const session = get().currentSession();
-
-        return {
-          role: "system",
-          content:
-            session.memoryPrompt.length > 0
-              ? Locale.Store.Prompt.History(session.memoryPrompt)
-              : "",
-          date: "",
-        } as ChatMessage;
-      },
-
-      getMessagesWithMemory() {
-        const session = get().currentSession();
-        const config = useAppConfig.getState();
-        const modelConfig = config.modelConfig;
         const clearContextIndex = session.clearContextIndex ?? 0;
-        const messages = session.messages.slice();
-        const totalMessageCount = session.messages.length;
 
-        // in-context prompts
-        const contextPrompts = session.template.context.slice();
+        const out: ChatMessage[] = [];
 
-        // system prompts, to get close to OpenAI Web ChatGPT
-        const shouldInjectSystemPrompts = config.enableInjectSystemPrompts;
-
-        var systemPrompts: ChatMessage[] = [];
-        systemPrompts = shouldInjectSystemPrompts
-          ? [
-              createMessage({
-                role: "system",
-                content: fillTemplateWith("", {
-                  ...config,
-                  template: DEFAULT_SYSTEM_TEMPLATE,
-                }),
-              }),
-            ]
-          : [];
-        if (shouldInjectSystemPrompts) {
-          log.debug(
-            "[Global System Prompt] ",
-            systemPrompts.at(0)?.content ?? "empty",
-          );
-        }
-
-        // long term memory
-        const shouldSendLongTermMemory =
-          config.sendMemory &&
-          session.memoryPrompt &&
-          session.memoryPrompt.length > 0 &&
-          session.lastSummarizeIndex > clearContextIndex;
-        const longTermMemoryPrompts = shouldSendLongTermMemory
-          ? [get().getMemoryPrompt()]
-          : [];
-        const longTermMemoryStartIndex = session.lastSummarizeIndex;
-
-        // short term memory
-        const shortTermMemoryStartIndex = Math.max(
-          0,
-          totalMessageCount - config.historyMessageCount,
+        // 0. instruction gate (surf): rules in force for THIS turn
+        const gateBlock = eoBuildInstructionBlock(
+          nextQuestion?.trim() ?? "",
+          session,
+          clearContextIndex,
         );
-
-        // lets concat send messages, including 4 parts:
-        // 0. system prompt: to get close to OpenAI Web ChatGPT
-        // 1. long term memory: summarized memory messages
-        // 2. pre-defined in-context prompts
-        // 3. short term memory: latest n messages
-        // 4. newest input message
-        const memoryStartIndex = shouldSendLongTermMemory
-          ? Math.min(longTermMemoryStartIndex, shortTermMemoryStartIndex)
-          : shortTermMemoryStartIndex;
-        // and if user has cleared history messages, we should exclude the memory too.
-        const contextStartIndex = Math.max(clearContextIndex, memoryStartIndex);
-        const maxTokenThreshold = modelConfig.max_tokens;
-
-        // get recent messages as much as possible
-        const reversedRecentMessages = [];
-        for (
-          let i = totalMessageCount - 1, tokenCount = 0;
-          i >= contextStartIndex && tokenCount < maxTokenThreshold;
-          i -= 1
-        ) {
-          const msg = messages[i];
-          if (!msg || msg.isError) continue;
-          tokenCount += estimateTokenLength(getMessageTextContent(msg));
-          reversedRecentMessages.push(msg);
+        if (gateBlock) {
+          out.push(createMessage({ role: "system", content: gateBlock }));
         }
-        // concat all messages
-        const recentMessages = [
-          ...systemPrompts,
-          ...longTermMemoryPrompts,
-          ...contextPrompts,
-          ...reversedRecentMessages.reverse(),
-        ];
 
-        return recentMessages;
+        // 1. pre-defined in-context prompts (reader-defined template context)
+        for (const c of session.template.context) {
+          const text = getMessageTextContent(c);
+          if (c.role === "system" && text.trim()) {
+            out.push(createMessage({ role: "system", content: text }));
+          }
+        }
+
+        // 2. PAST DISCOURSE: the folded summary once turns fall out of the
+        //    verbatim window (raw history is never resent past this point)
+        const userTurnCount = session.messages.filter(
+          (m) => m.role === "user" && !m.isError,
+        ).length;
+        if (
+          clearContextIndex === 0 &&
+          userTurnCount > EO_HISTORY_TURNS &&
+          session.eoSummary
+        ) {
+          const summaryText = buildSummarySystemMessage(session.eoSummary);
+          if (summaryText) {
+            out.push(createMessage({ role: "system", content: summaryText }));
+          }
+        }
+
+        // 3. verbatim recent turns (bounded recency window)
+        const windowStart = Math.max(
+          clearContextIndex,
+          session.messages.length - EO_HISTORY_TURNS * 2,
+        );
+        for (let i = windowStart; i < session.messages.length; i += 1) {
+          const m = session.messages[i];
+          if (!m || m.isError || m.streaming) continue;
+          if (m.role === "system") continue;
+          out.push(m);
+        }
+
+        return out;
       },
 
       updateMessage(
@@ -506,6 +574,8 @@ export const useChatStore = createPersistStore(
         get().updateCurrentSession((session) => {
           session.messages = [];
           session.memoryPrompt = "";
+          session.eoSummary = null;
+          session.eoLastFoldIndex = 0;
         });
       },
 
@@ -530,113 +600,129 @@ export const useChatStore = createPersistStore(
               content: Locale.Store.Prompt.Topic,
             }),
           );
-          llm.chat({
-            messages: topicMessages,
-            config: {
+          // one background engine call per turn: if the topic call takes the
+          // slot now, the fold for this turn is deferred to a later onNewMessage
+          if (!eoEngineBusy) {
+            eoRunBackground(
+              llm,
+              topicMessages,
+              {
+                model: modelConfig.model,
+                cache: useAppConfig.getState().cacheType,
+                stream: false,
+                enable_thinking: false, // never think for topic
+              },
+              EO_FOLD_TIMEOUT_MS,
+            )
+              .then((message) => {
+                get().updateCurrentSession(
+                  (session) =>
+                    (session.topic =
+                      message.length > 0 ? trimTopic(message) : DEFAULT_TOPIC),
+                );
+              })
+              .catch((err) => {
+                log.error("[Topic] ", err);
+              });
+          }
+        } else {
+          get().foldNextTurn(llm);
+        }
+      },
+
+      // fold: compress completed turns into the PAST DISCOURSE summary. Runs
+      // as one background model call (fold, then summary refresh), guarded so
+      // it never overlaps another engine call; the next user turn interrupts
+      // it. A fold that never completes is retried after the next turn.
+      foldNextTurn(llm: LLMApi) {
+        if (eoFoldInFlight || eoEngineBusy) return;
+        eoFoldInFlight = true;
+        const run = async () => {
+          try {
+            const modelConfig = useAppConfig.getState().modelConfig;
+            const foldConfig: LLMConfig = {
               model: modelConfig.model,
               cache: useAppConfig.getState().cacheType,
               stream: false,
-              enable_thinking: false, // never think for topic
-            },
-            onFinish(message) {
-              get().updateCurrentSession(
-                (session) =>
-                  (session.topic =
-                    message.length > 0 ? trimTopic(message) : DEFAULT_TOPIC),
+              enable_thinking: false,
+              temperature: modelConfig.temperature,
+            };
+            const session = get().currentSession();
+            const clearContextIndex = session.clearContextIndex ?? 0;
+            if (clearContextIndex > 0) return;
+
+            const msgs = session.messages;
+            const startIdx = session.eoLastFoldIndex ?? 0;
+            let userIdx = -1;
+            let assistantIdx = -1;
+            for (let i = startIdx; i < msgs.length - 1; i += 1) {
+              const m = msgs[i];
+              const next = msgs[i + 1];
+              if (
+                m &&
+                next &&
+                m.role === "user" &&
+                next.role === "assistant" &&
+                !m.isError &&
+                !next.isError &&
+                !next.streaming &&
+                next.content
+              ) {
+                userIdx = i;
+                assistantIdx = i + 1;
+                break;
+              }
+            }
+            if (userIdx < 0) return;
+
+            const question = getMessageTextContent(msgs[userIdx]);
+            const answer = getMessageTextContent(msgs[assistantIdx]);
+            const prev = session.eoSummary ?? emptySummary();
+
+            // phase 1: fold this turn to its discourse contribution
+            let turnFold: string;
+            try {
+              const rawFold = await eoRunBackground(
+                llm,
+                [{ role: "user", content: buildFoldPrompt(question, answer) }],
+                foldConfig,
+                EO_FOLD_TIMEOUT_MS,
               );
-            },
-          });
-        }
-        const summarizeIndex = Math.max(
-          session.lastSummarizeIndex,
-          session.clearContextIndex ?? 0,
-        );
-        let toBeSummarizedMsgs = messages
-          .filter((msg) => !msg.isError)
-          .slice(summarizeIndex);
+              turnFold = parseFold(rawFold);
+            } catch {
+              // interrupted or failed — leave unfolded so the next turn retries
+              return;
+            }
+            if (!turnFold) return;
 
-        const historyMsgLength = countMessages(toBeSummarizedMsgs);
+            // phase 2: refresh the running summary; fall back to a pure
+            // advance on any failure so no fold is ever lost
+            let next: EoSummary;
+            try {
+              const updatePrompt = buildSummaryUpdatePrompt(prev, [
+                ...(prev.folds ?? []),
+                turnFold,
+              ]);
+              const raw = await eoRunBackground(
+                llm,
+                [{ role: "user", content: updatePrompt }],
+                foldConfig,
+                EO_FOLD_TIMEOUT_MS,
+              );
+              next = updateSummaryWithFold(prev, turnFold, raw);
+            } catch {
+              next = advanceSummaryFold(prev, turnFold);
+            }
 
-        if (historyMsgLength > (modelConfig?.max_tokens ?? 4000)) {
-          const n = toBeSummarizedMsgs.length;
-          toBeSummarizedMsgs = toBeSummarizedMsgs.slice(
-            Math.max(0, n - config.historyMessageCount),
-          );
-        }
-
-        // add memory prompt
-        toBeSummarizedMsgs.unshift(get().getMemoryPrompt());
-
-        const lastSummarizeIndex = session.messages.length;
-
-        log.debug(
-          "[Chat History] ",
-          toBeSummarizedMsgs,
-          historyMsgLength,
-          config.compressMessageLengthThreshold,
-        );
-
-        if (
-          historyMsgLength > config.compressMessageLengthThreshold &&
-          config.sendMemory
-        ) {
-          /** Destruct max_tokens while summarizing
-           * this param is just shit
-           **/
-          const { max_tokens, ...modelcfg } = modelConfig;
-          // The first message must be from system
-          if (toBeSummarizedMsgs[0]?.role === "system") {
-            // Merge system prompts
-            toBeSummarizedMsgs[0].content =
-              Locale.Store.Prompt.Summarize + toBeSummarizedMsgs[0].content;
-          } else {
-            toBeSummarizedMsgs = [
-              createMessage({
-                role: "system",
-                content: Locale.Store.Prompt.Summarize,
-                date: "",
-              }),
-              ...toBeSummarizedMsgs,
-            ];
+            get().updateCurrentSession((session) => {
+              session.eoSummary = next;
+              session.eoLastFoldIndex = assistantIdx + 1;
+            });
+          } finally {
+            eoFoldInFlight = false;
           }
-          // The last message must be from user
-          if (
-            toBeSummarizedMsgs[toBeSummarizedMsgs.length - 1].role === "system"
-          ) {
-            toBeSummarizedMsgs = toBeSummarizedMsgs.concat([
-              createMessage({
-                role: "user",
-                content: "",
-                date: "",
-              }),
-            ]);
-          }
-
-          log.debug("summarizeSession", messages);
-          llm.chat({
-            messages: toBeSummarizedMsgs,
-            config: {
-              ...modelcfg,
-              stream: true,
-              model: modelConfig.model,
-              cache: useAppConfig.getState().cacheType,
-              enable_thinking: false, // never think for summarization
-            },
-            onUpdate(message) {
-              session.memoryPrompt = message;
-            },
-            onFinish(message) {
-              log.debug("[Memory] ", message);
-              get().updateCurrentSession((session) => {
-                session.lastSummarizeIndex = lastSummarizeIndex;
-                session.memoryPrompt = message; // Update the memory prompt for stored it in local storage
-              });
-            },
-            onError(err) {
-              log.error("[Summarize] ", err);
-            },
-          });
-        }
+        };
+        run();
       },
 
       stopStreaming() {
@@ -688,7 +774,7 @@ export const useChatStore = createPersistStore(
   },
   {
     name: StoreKey.Chat,
-    version: 0.1,
+    version: 0.2,
     migrate(persistedState, version): any {
       if (version < 0.1) {
         const store = persistedState as typeof DEFAULT_CHAT_STATE;
@@ -696,6 +782,14 @@ export const useChatStore = createPersistStore(
           s.messages.forEach((m) => {
             m.stopReason = "stop";
           });
+        });
+        return store;
+      }
+      if (version < 0.2) {
+        const store = persistedState as typeof DEFAULT_CHAT_STATE;
+        store.sessions.forEach((s) => {
+          s.eoSummary = null;
+          s.eoLastFoldIndex = 0;
         });
         return store;
       }

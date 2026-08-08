@@ -1,6 +1,6 @@
 <div align="center">
 
-# WebLLM Chat
+# eoWebLLM
 
 <a href="https://github.com/mlc-ai/web-llm"><img alt="Related Repository: WebLLM" src="https://img.shields.io/badge/Related_Repo-WebLLM-fafbfc?logo=github"></a>
 <a href="https://chat.webllm.ai"><img alt="Web App Deployed on GitHub Pages" src="https://img.shields.io/badge/Web_App-Deployed-32a852?logo=pwa"></a>
@@ -13,6 +13,19 @@
 [WebLLM Chat Demo Video](https://github.com/mlc-ai/web-llm-chat/assets/23090573/f700e27e-bb88-4068-bc8b-8a33ea5a4300)
 
 </div>
+
+## eochat intelligence (bounded context)
+
+**eoWebLLM** is a fork of [mlc-ai/web-llm-chat](https://github.com/mlc-ai/web-llm-chat) that ports the conversational engine of [clovenbradshaw-ctrl/eochat](https://github.com/clovenbradshaw-ctrl/eochat) so the context window **never grows**:
+
+- **surf** — an instruction gate surfaces the rules in force for each turn from eochat's `instruction-set` (see `app/client/eo-gate.ts` and `app/client/eo-instructions.ts`); folded folds stay named in an audit index instead of being dropped.
+- **fold** — every completed turn is folded to its discourse contribution and rolled into a running **PAST DISCOURSE** summary (`app/client/eo-discourse.ts`).
+- **prompt** — the model is prompted with the gate block + summary + a bounded recency window; raw history is never resent past a fixed ceiling.
+
+Sourced from:
+- [clovenbradshaw-ctrl/eochat](https://github.com/clovenbradshaw-ctrl/eochat) — conversational engine (`server/instruction-gate.js`, `server/conversation-summary.js`, `instruction-set/`)
+- [clovenbradshaw-ctrl/eo-constitution](https://github.com/clovenbradshaw-ctrl/eo-constitution) — constitutional rules backing the instruction set
+- [clovenbradshaw-ctrl/eoreader6](https://github.com/clovenbradshaw-ctrl/eoreader6) — reading-engine role (kept separate; not ported here)
 
 ## Overview
 
