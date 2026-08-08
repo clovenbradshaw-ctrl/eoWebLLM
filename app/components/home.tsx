@@ -27,6 +27,7 @@ import { SideBar } from "./sidebar";
 import { useAppConfig } from "../store/config";
 import { WebLLMApi } from "../client/webllm";
 import { ModelClient, useChatStore } from "../store";
+import { useGithubAutoSync } from "../store/sync-effect";
 import { MLCLLMContext, WebLLMContext } from "../context";
 import { MlcLLMApi } from "../client/mlcllm";
 
@@ -121,7 +122,7 @@ const useHasHydrated = () => {
 const loadAsyncFonts = () => {
   const linkEl = document.createElement("link");
   linkEl.rel = "stylesheet";
-  linkEl.href = "/fonts/font.css";
+  linkEl.href = `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/fonts/font.css`;
   document.head.appendChild(linkEl);
 };
 
@@ -347,6 +348,7 @@ export function Home() {
   useStopStreamingMessages();
   useModels(mlcllm);
   useLogLevel(webllm);
+  useGithubAutoSync();
 
   if (!hasHydrated || !webllm || !isWebllmActive) {
     return <Loading />;

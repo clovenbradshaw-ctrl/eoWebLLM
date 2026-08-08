@@ -9,7 +9,15 @@ import ClearIcon from "../icons/clear.svg";
 import EditIcon from "../icons/edit.svg";
 import EyeIcon from "../icons/eye.svg";
 
-import { Input, List, ListItem, Modal, Select, showConfirm } from "./ui-lib";
+import {
+  Input,
+  List,
+  ListItem,
+  Modal,
+  Select,
+  showConfirm,
+  showToast,
+} from "./ui-lib";
 import { ModelConfigList } from "./model-config";
 
 import { IconButton } from "./button";
@@ -19,7 +27,13 @@ import {
   Theme,
   useAppConfig,
   CacheType,
+  useGithubSyncStore,
 } from "../store";
+import {
+  startDeviceFlow,
+  pollForToken,
+  DeviceFlowStart,
+} from "../utils/github-auth";
 
 import Locale, {
   AllLangs,
@@ -188,6 +202,161 @@ function UserPromptModal(props: { onClose?: () => void }) {
         />
       )}
     </div>
+  );
+}
+
+function ConnectGithubModal(props: { onClose: () => void }) {
+  const githubStore = useGithubSyncStore();
+  const [state, setState] = useState<DeviceFlowStart | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let cancelled = false;
+
+    startDeviceFlow()
+      .then((start) => {
+        if (cancelled) return;
+        setState(start);
+        return pollForToken(start, controller.signal);
+      })
+      .then((token) => {
+        if (cancelled || !token) return;
+        githubStore.setToken(token);
+        showToast("Connected to GitHub.");
+        props.onClose();
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err?.message ?? "Failed to connect to GitHub.");
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div className="screen-model-container">
+      <Modal title="Connect GitHub" onClose={props.onClose}>
+        <div style={{ padding: "0 20px 20px", lineHeight: 1.6 }}>
+          {error && <p style={{ color: "var(--red, #e53e3e)" }}>{error}</p>}
+          {!error && !state && <p>Requesting a device code from GitHub…</p>}
+          {!error && state && (
+            <>
+              <p>
+                Enter this code at{" "}
+                <a
+                  href={state.verification_uri}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {state.verification_uri}
+                </a>
+                :
+              </p>
+              <p style={{ fontSize: 28, fontWeight: 700, letterSpacing: 4 }}>
+                {state.user_code}
+              </p>
+              <p>Waiting for approval…</p>
+            </>
+          )}
+          <p style={{ fontSize: 12, opacity: 0.7 }}>
+            The resulting access token is stored only in this browser&apos;s
+            local storage.
+          </p>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+function GithubSyncSection() {
+  const githubStore = useGithubSyncStore();
+  const [showConnectModal, setShowConnectModal] = useState(false);
+  const connected = githubStore.isConnected();
+
+  const statusText = !connected
+    ? "Not connected"
+    : githubStore.syncStatus === "error"
+      ? `Sync failed: ${githubStore.lastError}`
+      : githubStore.lastSyncTime
+        ? `Last synced ${new Date(githubStore.lastSyncTime).toLocaleString()}`
+        : "Connected — waiting for first sync";
+
+  return (
+    <List>
+      <ListItem
+        title="GitHub History Sync"
+        subTitle="Automatically back up chat history to a private GitHub repo via the eoWebLLM GitHub App"
+      >
+        {connected ? (
+          <IconButton
+            text="Disconnect"
+            onClick={async () => {
+              if (await showConfirm("Disconnect from GitHub?")) {
+                githubStore.disconnect();
+              }
+            }}
+          />
+        ) : (
+          <IconButton
+            text="Connect GitHub"
+            bordered
+            onClick={() => setShowConnectModal(true)}
+          />
+        )}
+      </ListItem>
+
+      {connected && (
+        <>
+          <ListItem
+            title="Repository owner"
+            subTitle="GitHub username or org that owns the target repo"
+          >
+            <input
+              type="text"
+              placeholder="e.g. clovenbradshaw-ctrl"
+              value={githubStore.owner}
+              onChange={(e) =>
+                githubStore.setRepo(e.currentTarget.value, githubStore.repo)
+              }
+            ></input>
+          </ListItem>
+          <ListItem
+            title="Repository name"
+            subTitle="Must be a private repo with the eoWebLLM App installed on it"
+          >
+            <input
+              type="text"
+              placeholder="e.g. eowebllm-history"
+              value={githubStore.repo}
+              onChange={(e) =>
+                githubStore.setRepo(githubStore.owner, e.currentTarget.value)
+              }
+            ></input>
+          </ListItem>
+          <ListItem title="Sync status" subTitle={statusText}>
+            {githubStore.syncStatus === "error" ? (
+              <IconButton
+                text="Retry"
+                onClick={() => {
+                  import("../utils/github-sync").then(({ pushHistory }) =>
+                    pushHistory(useChatStore.getState().sessions),
+                  );
+                }}
+              />
+            ) : undefined}
+          </ListItem>
+        </>
+      )}
+
+      {showConnectModal && (
+        <ConnectGithubModal onClose={() => setShowConnectModal(false)} />
+      )}
+    </List>
   );
 }
 
@@ -563,6 +732,8 @@ export function Settings() {
         {shouldShowPromptModal && (
           <UserPromptModal onClose={() => setShowPromptModal(false)} />
         )}
+
+        <GithubSyncSection />
 
         <DangerItems />
       </div>

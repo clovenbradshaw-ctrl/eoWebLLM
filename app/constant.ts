@@ -37,7 +37,20 @@ export enum StoreKey {
   Prompt = "prompt-store",
   Update = "chat-update",
   Sync = "sync",
+  GithubSync = "github-sync-store",
 }
+
+// eoWebLLM GitHub App (https://github.com/apps/eowebllm) — public Client ID,
+// safe to inline. Used for the Device Flow login (no client secret needed).
+export const GITHUB_APP_CLIENT_ID = "Iv23livftc7ZekSCjCvL";
+
+// GitHub's device-flow token endpoints don't support CORS, so a static site
+// can't call them directly — these two n8n webhooks are a dumb CORS-adding
+// relay (no secrets held there; device flow needs none).
+export const GITHUB_DEVICE_CODE_RELAY_URL =
+  "https://n8n.intelechia.com/webhook/github-device-code";
+export const GITHUB_ACCESS_TOKEN_RELAY_URL =
+  "https://n8n.intelechia.com/webhook/github-access-token";
 
 export const DEFAULT_SIDEBAR_WIDTH = 320;
 export const MAX_SIDEBAR_WIDTH = 500;
@@ -59,7 +72,7 @@ export const DEFAULT_INPUT_TEMPLATE = `{{input}}`; // input / time / model / lan
 
 export const DEFAULT_SYSTEM_TEMPLATE = `
 You are an AI large language model assistant trained by {{provider}}.
-You are currently engaging with users on WebLLM Chat, an open-source AI Chatbot UI developed by MLC.ai (Machine Learning Compilation).
+You are currently engaging with users on eoWebLLM, an open-source AI Chatbot UI built on WebLLM Chat (MLC.ai) with eochat's surf/fold instruction set.
 Model display_name:  {{model}}
 The current date and time is {{time}}.
 Latex inline format: \\(x^2\\) 
