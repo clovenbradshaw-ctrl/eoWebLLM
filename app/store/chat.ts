@@ -39,8 +39,17 @@ import { planTools, planSearchQuery } from "../client/eo-tool-router";
 import {
   checkGrounding,
   annotateVoids,
+  snipCitations,
   type GroundingReport,
+  type Snippet,
 } from "../client/eo-citation-check";
+import {
+  applyTurn,
+  buildMemoryMessage,
+  checkRecallDenial,
+  isAcknowledgment,
+  type ConversationMemory,
+} from "../client/eo-memory";
 
 export type ChatMessage = RequestMessage & {
   date: string;
@@ -64,6 +73,11 @@ export type ChatMessage = RequestMessage & {
   // shown to the model, computed after generation, same seam as eochat's
   // checkGrounding.
   groundingReport?: GroundingReport;
+  // Per-result "snip" (see eo-citation-check.ts): the one clause of each
+  // search result that actually overlaps the reply's own words, so the
+  // panel can show the exact sentence that grounded the answer instead of
+  // the whole fetched snippet.
+  webSnippets?: Snippet[];
 };
 
 export function createMessage(override: Partial<ChatMessage>): ChatMessage {
@@ -129,6 +143,11 @@ export interface ChatSession {
   // and cleared by the next onUserInput call, same one-shot handoff pattern
   // as the instruction gate's per-turn system block.
   pendingFileContext?: string | null;
+
+  // The verbatim "desk" of stated facts (see app/client/eo-memory.ts) — a
+  // small, bounded backstop that survives even when a fact falls out of
+  // EO_HISTORY_TURNS and the PAST DISCOURSE fold has paraphrased it away.
+  eoMemory?: ConversationMemory;
 
   template: Template;
 }
@@ -585,6 +604,12 @@ export const useChatStore = createPersistStore(
         // question, just the model's own read of it, same seam eochat's
         // defineAnswerSpec planner uses for its `lookup` field.
         const session0 = get().currentSession();
+        // The desk's turn counter (see eo-memory.ts) — this turn's index
+        // among user turns, computed before this turn's own message is
+        // appended, same basis getMessagesWithMemory uses for userTurnCount.
+        const turnIndex = session0.messages.filter(
+          (m) => m.role === "user" && !m.isError,
+        ).length;
         const extraSystemBlocks: string[] = [];
         // Populated only if web_search actually ran this turn; onFinish below
         // uses it to mechanically strip any self-authored [n] brackets and
@@ -696,6 +721,15 @@ export const useChatStore = createPersistStore(
             session.pendingFileContext = null;
           });
           get().pushEoLog("file", `file: attached context for this turn`);
+        }
+
+        // conversation memory (the "desk", see eo-memory.ts): a verbatim
+        // backstop for stated facts, injected every turn regardless of
+        // whether EO_HISTORY_TURNS or the PAST DISCOURSE fold still holds
+        // the turn that stated them.
+        const memoryBlock = buildMemoryMessage(session0.eoMemory);
+        if (memoryBlock) {
+          extraSystemBlocks.push(memoryBlock);
         }
 
         let mContent: string | MultimodalContent[] = userContent;
@@ -868,6 +902,11 @@ export const useChatStore = createPersistStore(
                   });
                   message = annotateVoids(message, report);
                   botMessage.groundingReport = report;
+                  // Snipping (see eo-citation-check.ts, ported from
+                  // eochat's citation-check.js bestClause): show the one
+                  // clause of each result that actually overlaps the
+                  // reply's vocabulary, not the whole fetched snippet.
+                  botMessage.webSnippets = snipCitations(message, citations);
                   get().pushEoLog(
                     "web",
                     report.clean
@@ -876,6 +915,33 @@ export const useChatStore = createPersistStore(
                   );
                 }
               }
+
+              // Conversation memory (the "desk", see eo-memory.ts): advance
+              // it with this turn's exchange, then check the finished
+              // answer for a false denial of something already recorded
+              // here — the exact failure mode the desk exists to catch
+              // (a fact fell out of EO_HISTORY_TURNS, the fold paraphrased
+              // it away, and the model denies it was ever said).
+              const acked = isAcknowledgment(message);
+              const denial = checkRecallDenial({
+                question: userContent.trim(),
+                answer: message,
+                facts: session0.eoMemory?.facts ?? [],
+              });
+              if (denial.verdict === "FLAGGED") {
+                get().pushEoLog(
+                  "error",
+                  `memory: false denial of a recorded fact — ${denial.flags[0]?.detail ?? ""}`,
+                );
+              }
+              get().updateCurrentSession((session) => {
+                session.eoMemory = applyTurn(session.eoMemory, turnIndex, {
+                  userText: userContent.trim(),
+                  assistantText: message,
+                  confirmed: acked,
+                });
+              });
+
               botMessage.content = message;
               get().onNewMessage(botMessage, llm);
             }

@@ -329,7 +329,7 @@ function buildUnionIndex(citations: CitationEntry[]): Index {
 const ABBREV =
   /(?:\b(?:mr|mrs|ms|dr|st|prof|rev|hon|vol|no|pp?|ch|ed|fig|cf|vs|etc|al|inc|ltd|jan|feb|mar|apr|jun|jul|aug|sept?|oct|nov|dec)|\b[A-Z])\.$/i;
 
-function splitSentences(
+export function splitSentences(
   text: string,
 ): { text: string; start: number; end: number }[] {
   const out: { text: string; start: number; end: number }[] = [];
@@ -495,4 +495,97 @@ export function annotateVoids(
     out = out.slice(0, f.end) + ` [⊘ not in search results]` + out.slice(f.end);
   }
   return out;
+}
+
+// ── Snipping: show the exact words that grounded the reply, not the whole
+// source ──────────────────────────────────────────────────────────────────
+//
+// Ported from citation-check.js's bestClause/significantWords/autoAttach-
+// Citations family. The disclosure panel used to dump a whole search
+// snippet per result regardless of whether the reply used it — correct but
+// noisy: the reader has to read the full snippet to find the sentence that
+// actually did the grounding. This finds, per citation, the ONE clause of
+// its own text with the highest vocabulary overlap against the reply —
+// literal bytes from the source, never a paraphrase — so the panel can show
+// "here is the exact sentence that backed this" instead of everything that
+// was fetched.
+
+const SNIP_MIN_SIGNIFICANT_WORDS = 3;
+const SNIP_MAX_CHARS = 160;
+const SNIP_MIN_SOURCE_CHARS = 20;
+
+function significantWords(s: string): Set<string> {
+  const set = new Set<string>();
+  for (const w of String(s || "")
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)) {
+    if (w.length >= 4 && !CLAIM_STOPWORDS.has(w)) set.add(w);
+  }
+  return set;
+}
+
+export interface Snippet {
+  index: number;
+  clause: string | null;
+  score: number;
+}
+
+/**
+ * The clause of `citation.text` (split on sentence-ish boundaries) whose own
+ * vocabulary overlaps `replyWords` the most. Returns null when no clause
+ * clears the significance floor — silence is correct there, not a guess at
+ * which sentence "must" be the relevant one.
+ */
+function bestClause(
+  sourceText: string,
+  wordsWanted: Set<string>,
+): { clause: string; hits: number } | null {
+  const clauses = String(sourceText || "")
+    .split(/(?<=[.!?;])\s+/)
+    .map((c) => c.trim())
+    .filter(Boolean);
+  let best: string | null = null;
+  let bestHits = 0;
+  for (const c of clauses) {
+    if (c.length < SNIP_MIN_SOURCE_CHARS) continue;
+    const cWords = significantWords(c);
+    if (!cWords.size) continue;
+    let hits = 0;
+    for (const w of wordsWanted) if (cWords.has(w)) hits++;
+    if (hits > bestHits) {
+      bestHits = hits;
+      best = c;
+    }
+  }
+  if (!best) return null;
+  if (best.length <= SNIP_MAX_CHARS) return { clause: best, hits: bestHits };
+  const cut = best.slice(0, SNIP_MAX_CHARS);
+  const lastSpace = cut.lastIndexOf(" ");
+  const trimmed = (lastSpace > 40 ? cut.slice(0, lastSpace) : cut) + "…";
+  return { clause: trimmed, hits: bestHits };
+}
+
+/**
+ * For each citation, the single clause of its own text that most overlaps
+ * the reply's vocabulary — the "here is the exact sentence that grounded
+ * this" a reader wants instead of a full snippet. A citation with no clause
+ * clearing SNIP_MIN_SIGNIFICANT_WORDS gets `clause: null`, meaning nothing
+ * in the reply drew from it specifically (it may still have been read).
+ */
+export function snipCitations(
+  reply: string,
+  citations: CitationEntry[],
+): Snippet[] {
+  const replyWords = significantWords(reply);
+  return citations.map((c) => {
+    if (
+      replyWords.size < SNIP_MIN_SIGNIFICANT_WORDS ||
+      c.text.length < SNIP_MIN_SOURCE_CHARS
+    ) {
+      return { index: c.index, clause: null, score: 0 };
+    }
+    const best = bestClause(c.text, replyWords);
+    if (!best) return { index: c.index, clause: null, score: 0 };
+    return { index: c.index, clause: best.clause, score: best.hits };
+  });
 }

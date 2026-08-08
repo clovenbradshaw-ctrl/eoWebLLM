@@ -100,7 +100,7 @@ import {
   tryDecodeText,
 } from "../client/eo-binary-structure";
 import type { WebSearchResult } from "../client/eo-websearch";
-import type { GroundingReport } from "../client/eo-citation-check";
+import type { GroundingReport, Snippet } from "../client/eo-citation-check";
 
 export function ScrollDownToast(prop: { show: boolean; onclick: () => void }) {
   return (
@@ -645,8 +645,10 @@ function WebSearchPanel(props: {
   results: WebSearchResult[];
   query?: string;
   groundingReport?: GroundingReport;
+  snippets?: Snippet[];
 }) {
   const report = props.groundingReport;
+  const snipFor = (i: number) => props.snippets?.find((s) => s.index === i + 1);
   return (
     <details
       style={{
@@ -683,20 +685,48 @@ function WebSearchPanel(props: {
           gap: 8,
         }}
       >
-        {props.results.map((r, i) => (
-          <div key={i}>
-            <a
-              href={r.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ fontWeight: 600 }}
-            >
-              {r.title}
-            </a>
-            <span style={{ opacity: 0.5 }}> · {r.source}</span>
-            <div style={{ opacity: 0.75, marginTop: 2 }}>{r.snippet}</div>
-          </div>
-        ))}
+        {props.results.map((r, i) => {
+          const snip = snipFor(i);
+          return (
+            <div key={i}>
+              <a
+                href={r.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ fontWeight: 600 }}
+              >
+                {r.title}
+              </a>
+              <span style={{ opacity: 0.5 }}> · {r.source}</span>
+              {snip?.clause ? (
+                <div style={{ marginTop: 2 }}>
+                  <mark
+                    style={{
+                      background: "var(--primary)",
+                      opacity: 0.85,
+                      color: "var(--white)",
+                      padding: "0 2px",
+                      borderRadius: 3,
+                    }}
+                  >
+                    {snip.clause}
+                  </mark>
+                </div>
+              ) : (
+                // No clause overlapped the reply's own words — show only a
+                // short lead-in, not the whole fetched snippet, so a result
+                // the reply didn't actually draw from doesn't read as if it
+                // did (LAWS.md L3: no silent over-disclosure either).
+                <div
+                  style={{ opacity: 0.6, marginTop: 2, fontStyle: "italic" }}
+                >
+                  {r.snippet.slice(0, 100)}
+                  {r.snippet.length > 100 ? "…" : ""}
+                </div>
+              )}
+            </div>
+          );
+        })}
         {report && !report.clean && (
           <div
             style={{
@@ -937,7 +967,14 @@ function ChatInner() {
       return;
     }
     if (shouldSubmit(e) && promptHints.length === 0) {
-      onSubmit(userInput);
+      // Read the textarea's own live DOM value, not the closed-over
+      // `userInput` state — a fast Enter right after the last keystroke can
+      // fire before React has committed that keystroke's onInput, and
+      // onSubmit silently no-ops on an empty/stale string with no feedback
+      // to the reader (LAWS.md L1d: failure must be a signal). The DOM
+      // value is authoritative at the instant of this keydown; React state
+      // is one render behind it in exactly this race.
+      onSubmit(e.currentTarget.value);
       e.preventDefault();
     }
   };
@@ -1602,6 +1639,7 @@ function ChatInner() {
                               results={message.webResults}
                               query={message.webQuery}
                               groundingReport={message.groundingReport}
+                              snippets={message.webSnippets}
                             />
                           )}
                           <Markdown
