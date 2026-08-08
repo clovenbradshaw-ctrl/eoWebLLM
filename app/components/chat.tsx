@@ -100,6 +100,7 @@ import {
   tryDecodeText,
 } from "../client/eo-binary-structure";
 import type { WebSearchResult } from "../client/eo-websearch";
+import type { GroundingReport } from "../client/eo-citation-check";
 
 export function ScrollDownToast(prop: { show: boolean; onclick: () => void }) {
   return (
@@ -640,7 +641,12 @@ function ThinkingPanel(props: { thinking: string; open: boolean }) {
 // web_search results that grounded this reply, each title a real clickable
 // link to the source — not a claim the model made, structured data the
 // store attached (see ChatMessage.webResults / eo-tool-router.ts).
-function WebSearchPanel(props: { results: WebSearchResult[] }) {
+function WebSearchPanel(props: {
+  results: WebSearchResult[];
+  query?: string;
+  groundingReport?: GroundingReport;
+}) {
+  const report = props.groundingReport;
   return (
     <details
       style={{
@@ -660,7 +666,14 @@ function WebSearchPanel(props: { results: WebSearchResult[] }) {
           userSelect: "none",
         }}
       >
-        {`🔎 Web search — ${props.results.length} result${props.results.length === 1 ? "" : "s"}`}
+        {`🔎 Searched "${props.query ?? ""}" — ${props.results.length} result${props.results.length === 1 ? "" : "s"}`}
+        {report && (
+          <span style={{ marginLeft: 8 }}>
+            {report.clean
+              ? `· ✓ grounded (${report.atomsChecked} checked)`
+              : `· ⚠ ${report.findings.length} unsupported claim${report.findings.length === 1 ? "" : "s"}`}
+          </span>
+        )}
       </summary>
       <div
         style={{
@@ -684,6 +697,39 @@ function WebSearchPanel(props: { results: WebSearchResult[] }) {
             <div style={{ opacity: 0.75, marginTop: 2 }}>{r.snippet}</div>
           </div>
         ))}
+        {report && !report.clean && (
+          <div
+            style={{
+              borderTop: "1px solid var(--border-in-light)",
+              paddingTop: 8,
+            }}
+          >
+            <div style={{ opacity: 0.7, marginBottom: 4 }}>
+              Claims not found verbatim in the search results above (marked
+              inline as [⊘ not in search results]):
+            </div>
+            {report.findings
+              .filter((f) => !f.echoesQuestion)
+              .map((f, i) => (
+                <div key={i} style={{ opacity: 0.75 }}>
+                  &ldquo;{f.text}&rdquo;
+                </div>
+              ))}
+            {report.truncated && (
+              <div style={{ opacity: 0.6, marginTop: 4, fontStyle: "italic" }}>
+                {report.truncated.dropped} more unsupported claim
+                {report.truncated.dropped === 1 ? "" : "s"} not shown (
+                {report.truncated.reported} of {report.truncated.total} total).
+              </div>
+            )}
+          </div>
+        )}
+        {!props.results.length && (
+          <div style={{ opacity: 0.6, fontStyle: "italic" }}>
+            No results found for this query — the reply below is not grounded in
+            a web search.
+          </div>
+        )}
       </div>
     </details>
   );
@@ -1551,8 +1597,12 @@ function ChatInner() {
                               open={open && !!message.streaming}
                             />
                           )}
-                          {!isUser && !!message.webResults?.length && (
-                            <WebSearchPanel results={message.webResults} />
+                          {!isUser && message.webResults !== undefined && (
+                            <WebSearchPanel
+                              results={message.webResults}
+                              query={message.webQuery}
+                              groundingReport={message.groundingReport}
+                            />
                           )}
                           <Markdown
                             content={rest}

@@ -33,8 +33,14 @@ import {
   webSearch,
   formatWebSearchBlock,
   stripCitationBrackets,
+  distillQuery,
 } from "../client/eo-websearch";
-import { planTools } from "../client/eo-tool-router";
+import { planTools, planSearchQuery } from "../client/eo-tool-router";
+import {
+  checkGrounding,
+  annotateVoids,
+  type GroundingReport,
+} from "../client/eo-citation-check";
 
 export type ChatMessage = RequestMessage & {
   date: string;
@@ -49,6 +55,15 @@ export type ChatMessage = RequestMessage & {
   // "what did it search" affordance instead of a markdown footer the reader
   // has to scroll past the answer to find.
   webResults?: Awaited<ReturnType<typeof webSearch>>;
+  // The query actually sent to the search backend this turn (may differ from
+  // the raw question — see distillQuery in eo-websearch.ts) — the "what is
+  // being searched" disclosure the reader sees before the results themselves.
+  webQuery?: string;
+  // Mechanical grounding check (see eo-citation-check.ts): did every checkable
+  // claim in the reply actually occur in this turn's search snippets. Never
+  // shown to the model, computed after generation, same seam as eochat's
+  // checkGrounding.
+  groundingReport?: GroundingReport;
 };
 
 export function createMessage(override: Partial<ChatMessage>): ChatMessage {
@@ -576,6 +591,7 @@ export const useChatStore = createPersistStore(
         // attach the real source list — the talker itself is never told
         // citations exist (see formatWebSearchBlock in eo-websearch.ts).
         let turnWebResults: Awaited<ReturnType<typeof webSearch>> = [];
+        let turnWebQuery = "";
         if (session0.webSearchEnabled && userContent.trim()) {
           // Router failure (parse failure OR the background call itself
           // timing out/erroring on a slow local model) must fail OPEN, same
@@ -624,9 +640,39 @@ export const useChatStore = createPersistStore(
           );
           if (decision.tools.includes("web_search")) {
             try {
-              const results = await webSearch(userContent.trim());
+              const rawQuestion = userContent.trim();
+              const { query: rewrittenQuery, rewritten } =
+                await planSearchQuery({
+                  question: rawQuestion,
+                  fallback: distillQuery(rawQuestion) || rawQuestion,
+                  generate: (systemPrompt, userPrompt) =>
+                    eoRunBackground(
+                      llm,
+                      [
+                        createMessage({
+                          role: "system",
+                          content: systemPrompt,
+                        }),
+                        createMessage({ role: "user", content: userPrompt }),
+                      ],
+                      {
+                        model: modelConfig.model,
+                        cache: useAppConfig.getState().cacheType,
+                        stream: false,
+                      },
+                      EO_ROUTER_TIMEOUT_MS,
+                    ),
+                });
+              turnWebQuery = rewrittenQuery;
+              get().pushEoLog(
+                "web",
+                rewritten
+                  ? `query: "${rawQuestion.slice(0, 60)}" -> "${turnWebQuery}"`
+                  : `query: "${turnWebQuery}" (rewrite unavailable, used fallback)`,
+              );
+              const results = await webSearch(turnWebQuery);
               turnWebResults = results;
-              const block = formatWebSearchBlock(userContent.trim(), results);
+              const block = formatWebSearchBlock(turnWebQuery, results);
               extraSystemBlocks.push(block);
               get().pushEoLog(
                 "web",
@@ -800,9 +846,35 @@ export const useChatStore = createPersistStore(
               // not text — the UI renders it as a clickable panel (see
               // WebSearchPanel in chat.tsx) instead of a markdown footer the
               // reader has to scroll past the answer to find.
-              if (turnWebResults.length) {
+              //
+              // LAWS.md L2e — absence is auditable: a search that ran and
+              // found nothing must render differently from a turn that never
+              // searched at all, or the reader can't tell "checked, nothing
+              // there" from "never checked". Gated on turnWebQuery (set the
+              // moment a search is attempted), not turnWebResults.length, so
+              // a zero-result search still surfaces as a disclosed gap.
+              if (turnWebQuery) {
                 message = stripCitationBrackets(message);
                 botMessage.webResults = turnWebResults;
+                botMessage.webQuery = turnWebQuery;
+                if (turnWebResults.length) {
+                  const citations = turnWebResults.map((r, i) => ({
+                    index: i + 1,
+                    source_id: r.url,
+                    text: r.snippet,
+                  }));
+                  const report = checkGrounding(message, citations, {
+                    question: userContent.trim(),
+                  });
+                  message = annotateVoids(message, report);
+                  botMessage.groundingReport = report;
+                  get().pushEoLog(
+                    "web",
+                    report.clean
+                      ? `grounding: clean (${report.atomsChecked} claim(s) checked)`
+                      : `grounding: ${report.findings.length} unsupported claim(s) of ${report.atomsChecked} checked${report.truncated ? ` (${report.truncated.dropped} more truncated)` : ""}`,
+                  );
+                }
               }
               botMessage.content = message;
               get().onNewMessage(botMessage, llm);

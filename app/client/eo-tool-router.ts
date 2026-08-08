@@ -148,3 +148,60 @@ export async function planTools({
     fellBack: true,
   };
 }
+
+// A raw conversational question ("what's wrong with my Taylor C709 shake
+// machine, it keeps giving E-4") makes a bad search-engine query verbatim —
+// too long, too conversational, buries the actual noun phrase a search index
+// matches against. eo-websearch.ts's distillQuery handles the mechanical
+// case (strip "what is"/"how do I" scaffolding) but has no way to shorten a
+// long, meandering question to its real subject, or to pull the right terms
+// out of a follow-up ("what about the beater motor?") that only makes sense
+// with the prior turn in view. Same seam as planTools above: one small,
+// cheap background model call that reads the actual question and writes the
+// query, rather than a regex trying to guess it.
+const QUERY_SYSTEM_PROMPT = `Search query writer. Read the reader's message and write the best short web-search-engine query for it: specific, keyword-rich, no question words, no punctuation, under 12 words. Reply with ONLY the query text, nothing else — no quotes, no JSON, no explanation.`;
+
+// A near-miss reply (the model adds quotes, a leading "Query:", or wraps in
+// a code fence despite the instruction) is still one line worth keeping —
+// strip the wrapping rather than discarding the whole reply and falling
+// back to the unrewritten question.
+function extractQueryText(raw: string): string {
+  let q = String(raw || "").trim();
+  q = q.split("\n")[0].trim();
+  q = q
+    .replace(/^```[a-z]*\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+  q = q.replace(/^(query|search)\s*:\s*/i, "").trim();
+  q = q.replace(/^["'“”]+|["'“”]+$/g, "").trim();
+  return q;
+}
+
+/**
+ * Ask the model (the same background seam planTools uses) to rewrite the
+ * reader's message into a search-engine query. Falls back to `fallback`
+ * (the caller's regex-based distillQuery result) on empty/unparseable reply
+ * or a failed/timed-out call — same fail-open reasoning as planTools: a
+ * missing rewrite never blocks the search, it just runs the plainer query.
+ */
+export async function planSearchQuery({
+  question,
+  fallback,
+  generate,
+}: {
+  question: string;
+  fallback: string;
+  generate: (systemPrompt: string, userPrompt: string) => Promise<string>;
+}): Promise<{ query: string; rewritten: boolean }> {
+  try {
+    const raw = await generate(
+      QUERY_SYSTEM_PROMPT,
+      `Reader's message: ${question}`,
+    );
+    const q = extractQueryText(raw).slice(0, 200);
+    if (q) return { query: q, rewritten: true };
+  } catch {
+    // fall through to fallback
+  }
+  return { query: fallback, rewritten: false };
+}
