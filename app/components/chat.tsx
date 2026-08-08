@@ -44,6 +44,7 @@ import {
   Model,
   ModelClient,
   type PlanTrace,
+  type WarrantTrace,
 } from "../store";
 
 import {
@@ -716,6 +717,154 @@ function PlanPanel(props: { trace: PlanTrace }) {
             No violations on the first pass — no rewrite needed.
           </div>
         )}
+      </div>
+    </details>
+  );
+}
+
+// The warrant decision (see WarrantTrace in store/chat.ts, eo-warrant.ts):
+// what could have carried a claim this turn, what was folded away unread, and
+// why the turn routed to System 1 or System 2. This is the panel a reader
+// opens when an answer looks ungrounded — it says, in the turn's own numbers,
+// whether anything outside the model bore on the question at all.
+function WarrantPanel(props: { trace: WarrantTrace }) {
+  const t = props.trace;
+  const headline =
+    t.system === "system2"
+      ? t.groundingRequired
+        ? "checked against what this turn actually read"
+        : "deliberated"
+      : "answered from general knowledge";
+  return (
+    <details
+      style={{
+        margin: "0 0 10px",
+        padding: "8px 12px",
+        borderRadius: 8,
+        border: "1px solid var(--border-in-light)",
+        background: "var(--gray)",
+        fontSize: "13px",
+      }}
+    >
+      <summary
+        style={{
+          cursor: "pointer",
+          color: "var(--black)",
+          opacity: 0.6,
+          userSelect: "none",
+        }}
+      >
+        {`\u{2696} Warrant — ${t.system === "system2" ? "System 2" : "System 1"} · ${headline}`}
+      </summary>
+      <div
+        style={{
+          marginTop: 8,
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          opacity: 0.85,
+        }}
+      >
+        <div>
+          Routed at {t.stage},{" "}
+          {t.mechanical
+            ? "with no model call — from the turn's own counts"
+            : "on a model's reading of the turn"}
+          .
+        </div>
+        {t.channels.length > 0 && (
+          <div>
+            <div style={{ opacity: 0.7 }}>What bore on this turn:</div>
+            {t.channels.map((c, i) => (
+              <div key={i}>
+                – {c.channel}: {c.note}
+              </div>
+            ))}
+          </div>
+        )}
+        {t.checkedChannels.length > 0 && (
+          <div>
+            Claims were checked against: {t.checkedChannels.join(", ")}.
+          </div>
+        )}
+        {t.unfoldChannels.length > 0 && (
+          <div>
+            Folded and not read this turn: {t.unfoldChannels.join(", ")} — the
+            answer must not rest on it.
+          </div>
+        )}
+        {t.forbiddenChannels.length > 0 && (
+          <div>
+            Cannot carry a claim: {t.forbiddenChannels.join(", ")} (a paraphrase
+            has no source to check).
+          </div>
+        )}
+        <div style={{ opacity: 0.7 }}>
+          Fold pressure {Math.round(t.foldPressure * 100)}% of bearing material
+          held back
+          {t.lostPressure > 0 &&
+            `, ${Math.round(t.lostPressure * 100)}% of it unrecoverable`}
+          .
+        </div>
+        {t.reasons.map((r, i) => (
+          <div key={i} style={{ opacity: 0.7 }}>
+            · {r}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+// The same "follow it home" affordance the web panel gives, for the reader's
+// own sources: each byte range the answer was checked against, and the one
+// clause of it the answer actually drew on.
+function SourceCitationsPanel(props: {
+  citations: { ref: string; clause: string | null }[];
+}) {
+  const used = props.citations.filter((c) => c.clause);
+  return (
+    <details
+      style={{
+        margin: "0 0 10px",
+        padding: "8px 12px",
+        borderRadius: 8,
+        border: "1px solid var(--border-in-light)",
+        background: "var(--gray)",
+        fontSize: "13px",
+      }}
+    >
+      <summary
+        style={{
+          cursor: "pointer",
+          color: "var(--black)",
+          opacity: 0.7,
+          userSelect: "none",
+        }}
+      >
+        {`\u{1F4C4} Your sources — ${props.citations.length} passage${props.citations.length === 1 ? "" : "s"} read, ${used.length} drawn on`}
+      </summary>
+      <div
+        style={{
+          marginTop: 8,
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
+          opacity: 0.85,
+        }}
+      >
+        {props.citations.map((c, i) => (
+          <div key={i}>
+            <div style={{ opacity: 0.7, fontFamily: "monospace" }}>{c.ref}</div>
+            {c.clause ? (
+              <div style={{ marginTop: 2 }}>“{c.clause}”</div>
+            ) : (
+              <div style={{ marginTop: 2, opacity: 0.6 }}>
+                read, but nothing in the answer drew on it specifically
+              </div>
+            )}
+          </div>
+        ))}
       </div>
     </details>
   );
@@ -1798,9 +1947,30 @@ function ChatInner() {
                               open={open && !!message.streaming}
                             />
                           )}
+                          {!isUser && message.responseKind && (
+                            <div
+                              style={{
+                                marginBottom: 8,
+                                fontSize: "12px",
+                                opacity: 0.65,
+                                textTransform: "uppercase",
+                                letterSpacing: "0.06em",
+                              }}
+                            >
+                              {`\u{2696} System 2 · ${message.responseKind.replace(/-/g, " ")}`}
+                            </div>
+                          )}
+                          {!isUser && message.warrantTrace && (
+                            <WarrantPanel trace={message.warrantTrace} />
+                          )}
                           {!isUser && message.planTrace && (
                             <PlanPanel trace={message.planTrace} />
                           )}
+                          {!isUser && message.sourceCitations?.length ? (
+                            <SourceCitationsPanel
+                              citations={message.sourceCitations}
+                            />
+                          ) : null}
                           {!isUser && message.webResults !== undefined && (
                             <WebSearchPanel
                               results={message.webResults}

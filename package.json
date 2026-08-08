@@ -8,6 +8,7 @@
     "build": "cross-env BUILD_MODE=standalone next build",
     "start": "next start",
     "lint": "next lint",
+    "test": "node --test scripts/test-*.mjs",
     "export": "cross-env BUILD_MODE=export next build",
     "export:dev": "cross-env BUILD_MODE=export next dev",
     "prompts": "node ./scripts/fetch-prompts.mjs",

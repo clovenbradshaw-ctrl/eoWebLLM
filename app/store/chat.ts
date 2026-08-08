@@ -21,8 +21,11 @@ import {
   emptySummary,
   EoSummary,
   buildSummarySystemMessage,
+  buildRecordSystemMessage,
   buildSummaryUpdatePrompt,
   buildFoldPrompt,
+  buildWarrantRecord,
+  addWarrantRecord,
   parseFold,
   updateSummaryWithFold,
   advanceSummaryFold,
@@ -54,6 +57,9 @@ import {
   checkGrounding,
   annotateVoids,
   snipCitations,
+  splitSentences,
+  countClaimAtoms,
+  type CitationEntry,
   type GroundingReport,
   type Snippet,
 } from "../client/eo-citation-check";
@@ -66,7 +72,10 @@ import {
 } from "../client/eo-memory";
 import {
   retrieveCorpus,
+  retrieveCorpusDeliberate,
   formatCorpusContext,
+  formatDeliberateContext,
+  corpusCitations,
   type CorpusPassage,
   type EoSource,
 } from "../client/eo-corpus";
@@ -75,7 +84,23 @@ import {
   probeReading,
   routeReading,
   runTaskPlan,
+  type ThinkingSystem,
 } from "../client/eo-task-plan";
+import {
+  buildFoldLedger,
+  buildWarrantBlock,
+  classifyResponseSet,
+  escalate,
+  foldPressure,
+  lostPressure,
+  groundingDemand,
+  reviewDraft,
+  routeTurn,
+  warrantLogLine,
+  type FoldLedger,
+  type GroundingDemand,
+  type TurnRoute,
+} from "../client/eo-warrant";
 
 export type ChatMessage = RequestMessage & {
   date: string;
@@ -104,6 +129,11 @@ export type ChatMessage = RequestMessage & {
   // panel can show the exact sentence that grounded the answer instead of
   // the whole fetched snippet.
   webSnippets?: Snippet[];
+  // The same disclosure for the reader's own sources: the byte-addressed ref
+  // each passage came from, and the one clause of it the answer actually drew
+  // on. A claim about the reader's document should be as followable as a claim
+  // about a web result (LAWS.md L2 — audit is local).
+  sourceCitations?: { ref: string; clause: string | null }[];
   // The holonic DEFINE → EVALUATE → RECONCILE trace (see eo-holonic-plan.ts),
   // structured so the UI can show it inline — a "how this answer was
   // judged" panel next to Reasoning/Web search, not buried in the EOT log
@@ -111,6 +141,21 @@ export type ChatMessage = RequestMessage & {
   // artifact). System 2 runs every turn (see onFinish) — this is always
   // set on an assistant turn.
   planTrace?: PlanTrace;
+  // Which system produced this message. A turn's first assistant message is
+  // the System-1 draft; any further message in the same turn is System 2 by
+  // construction (see classifyResponseSet in eo-warrant.ts).
+  system?: ThinkingSystem;
+  // Groups every message one turn produced, so a turn that answered in three
+  // utterances still reads as one turn.
+  turnId?: string;
+  // Why this particular message exists — "grounding", "counter-reading",
+  // "correction". Set on System 2 messages only: a reader should never have to
+  // guess why a second message appeared.
+  responseKind?: string;
+  // The turn's warrant decision (see eo-warrant.ts): what could have carried a
+  // claim this turn, what was folded away, and why the turn routed the way it
+  // did. Attached to the message it governed, one step from the artifact.
+  warrantTrace?: WarrantTrace;
 };
 
 export interface PlanTrace {
@@ -124,6 +169,21 @@ export interface PlanTrace {
   reconciled: boolean;
   finalCompliant: boolean;
   finalViolations: { type: string; severity: string; detail: string }[];
+}
+
+export interface WarrantTrace {
+  system: ThinkingSystem;
+  /** True when the route was reached without asking the model anything. */
+  mechanical: boolean;
+  stage: string;
+  reasons: string[];
+  groundingRequired: boolean;
+  checkedChannels: string[];
+  unfoldChannels: string[];
+  forbiddenChannels: string[];
+  channels: { channel: string; note: string }[];
+  foldPressure: number;
+  lostPressure: number;
 }
 
 export function createMessage(override: Partial<ChatMessage>): ChatMessage {
@@ -148,7 +208,17 @@ export interface ChatStat {
 // background task (topic naming, discourse fold) this session has run,
 // named so nothing the system did is silent.
 export type EoLogKind =
-  "surf" | "fold" | "send" | "task" | "error" | "web" | "file";
+  | "surf"
+  | "fold"
+  | "send"
+  | "task"
+  | "error"
+  | "web"
+  | "file"
+  // The warrant decision: what could carry a claim this turn, what was folded
+  // away, and which system the turn routed to. Its own kind because it is the
+  // line a reader checks when an answer looks ungrounded.
+  | "warrant";
 
 export interface EoLogEntry {
   id: string;
@@ -269,26 +339,64 @@ function eoRunBackground(
 // instruction set, keyword-surfaced against the question + recent history.
 // Returns the log line alongside the block so the EOT panel can show exactly
 // which folds surfaced and which stayed folded, per turn.
+interface EoGateOutcome {
+  systemMessage: string | null;
+  logText: string | null;
+  /** Counts the warrant ledger reads (see eo-warrant.ts). */
+  stats: { active: number; folded: number; crowdedOut: number; gap: boolean };
+}
+
+const NO_GATE: EoGateOutcome["stats"] = {
+  active: 0,
+  folded: 0,
+  crowdedOut: 0,
+  gap: false,
+};
+
 function eoBuildInstructionBlock(
   question: string,
   session: ChatSession,
   clearContextIndex: number,
-): { systemMessage: string | null; logText: string | null } {
+  opts: { mode?: ThinkingSystem; claims?: string[] } = {},
+): EoGateOutcome {
   try {
     const folds = getInstructionFolds();
-    if (!folds.length) return { systemMessage: null, logText: null };
+    if (!folds.length)
+      return { systemMessage: null, logText: null, stats: NO_GATE };
     const history = getRecentUserQuestions(session, clearContextIndex, 3);
-    const report = createInstructionGate(folds).gate({ question, history });
+    const report = createInstructionGate(folds).gate({
+      question,
+      history,
+      mode: opts.mode,
+      claims: opts.claims,
+    });
+    const s = report.stats;
     const logText =
-      `surf: ${report.stats.active} active fold(s) [${report.activeIds.join(", ")}], ` +
-      `${report.stats.folded} folded, gap=${report.stats.gap}, ` +
-      `${report.stats.usedTokens}/${report.stats.budget} tokens`;
-    return { systemMessage: report.systemMessage || null, logText };
+      `surf(${s.mode}): ${s.active} active fold(s) [${report.activeIds.join(", ")}], ` +
+      `${s.folded} folded, gap=${s.gap}, ` +
+      `${s.usedTokens}/${s.budget} tokens` +
+      (s.unfoldedIds.length
+        ? `, unfolded [${s.unfoldedIds.join(", ")}] against a ${s.ceiling} ceiling`
+        : "") +
+      (s.rejectedByBudget
+        ? `, ${s.rejectedByBudget} matched but did not fit [${s.crowdedOutIds.join(", ")}]`
+        : "");
+    return {
+      systemMessage: report.systemMessage || null,
+      logText,
+      stats: {
+        active: s.active,
+        folded: s.folded,
+        crowdedOut: s.rejectedByBudget,
+        gap: s.gap,
+      },
+    };
   } catch (err) {
     log.warn("[eo] instruction gate failed:", err);
     return {
       systemMessage: null,
       logText: `surf: instruction gate failed — ${(err as Error).message}`,
+      stats: NO_GATE,
     };
   }
 }
@@ -313,9 +421,21 @@ function eoEnforceContextBudget(
   messages: RequestMessage[],
   contextWindowSize: number,
   label: string,
-): { messages: RequestMessage[]; logText: string } {
+): {
+  messages: RequestMessage[];
+  logText: string;
+  // What the clamp had to lose. The warrant ledger reads these: material the
+  // clamp dropped is material whose provenance this turn cannot account for.
+  dropped: number;
+  truncated: boolean;
+} {
   if (messages.length === 0) {
-    return { messages, logText: `fold: ${label} — nothing to send` };
+    return {
+      messages,
+      logText: `fold: ${label} — nothing to send`,
+      dropped: 0,
+      truncated: false,
+    };
   }
   const budget = Math.max(
     contextWindowSize - EO_OUTPUT_TOKEN_RESERVE,
@@ -365,7 +485,329 @@ function eoEnforceContextBudget(
     `dropped ${droppedCount}, truncated=${truncated}, ` +
     `${finalTokens}/${budget} tokens (window ${contextWindowSize})`;
 
-  return { messages: kept, logText };
+  return { messages: kept, logText, dropped: droppedCount, truncated };
+}
+
+function eoWarrantTrace(
+  ledger: FoldLedger,
+  demand: GroundingDemand,
+  route: TurnRoute,
+): WarrantTrace {
+  return {
+    system: route.system,
+    mechanical: route.mechanical,
+    stage: route.stage,
+    reasons: route.reasons.slice(0, 6),
+    groundingRequired: demand.required,
+    checkedChannels: demand.check,
+    unfoldChannels: demand.mustUnfold,
+    forbiddenChannels: demand.forbidden,
+    channels: ledger.channels.map((c) => ({
+      channel: c.channel,
+      note: c.note,
+    })),
+    foldPressure: Math.round(foldPressure(ledger) * 100) / 100,
+    lostPressure: Math.round(lostPressure(ledger) * 100) / 100,
+  };
+}
+
+// At most this many extra utterances per turn. Ungating multiple responses is
+// not the same as uncapping them: an unbounded set on a local engine is a
+// reader watching messages accumulate with no idea when it stops. Whatever the
+// cap drops is logged rather than silently discarded (LAWS.md L3).
+const EO_MAX_SYSTEM2_RESPONSES = 3;
+
+// The sentences of a draft that actually asserted something checkable. These
+// are what the System 2 surf searches against — support has to be looked for
+// where the answer committed itself, and the answer's vocabulary is not the
+// question's.
+function eoClaimSentences(draft: string, max = 8): string[] {
+  return splitSentences(draft)
+    .map((s) => s.text.trim())
+    .filter((t) => t && countClaimAtoms(t) > 0)
+    .slice(0, max);
+}
+
+/**
+ * The System 2 pass: what a turn does after its fast answer already exists.
+ *
+ * Three things happen here, and they are three different operations rather
+ * than one operation with more patience:
+ *
+ *   the surf runs again, differently — against the claims the draft made
+ *   instead of the words the question used, looking for counterexamples as
+ *   well as support, and reading each hit in wider context than the first pass
+ *   took it in;
+ *
+ *   the rules are re-gated in checking mode — the same verbatim instruction
+ *   bodies handed over as obligations to test the answer against, with folds
+ *   the fast pass crowded out pulled back in;
+ *
+ *   and the turn may speak again. Some findings are not edits. "That figure
+ *   isn't in the source you think it came from" is a different speech act
+ *   about the answer, not a revision of it, and rewriting the answer to
+ *   contain its own disclaimer either buries the finding or distorts the
+ *   answer to make room.
+ *
+ * Every extra response is EARNED by a mechanical condition — an actual failed
+ * check, an actual retrieved counterexample. None of them is the model
+ * deciding it has more to say.
+ */
+async function eoRunSystem2(input: {
+  llm: LLMApi;
+  get: () => any;
+  modelConfig: ModelConfig;
+  turnId: string;
+  question: string;
+  draft: string;
+  sources: EoSource[];
+  alreadySurfaced: CorpusPassage[];
+  ledger: FoldLedger;
+  demand: GroundingDemand;
+  route: TurnRoute;
+  grounding: GroundingReport | null;
+  session: ChatSession;
+  clearContextIndex: number;
+}): Promise<{ emitted: ChatMessage[]; probeRoute: TurnRoute | null }> {
+  const {
+    llm,
+    get,
+    modelConfig,
+    turnId,
+    question,
+    draft,
+    sources,
+    demand,
+    grounding,
+  } = input;
+
+  const claims = eoClaimSentences(draft);
+  const background = (systemPrompt: string, userPrompt: string) =>
+    eoRunBackground(
+      llm,
+      [
+        createMessage({ role: "system", content: systemPrompt }),
+        createMessage({ role: "user", content: userPrompt }),
+      ],
+      {
+        model: modelConfig.model,
+        cache: useAppConfig.getState().cacheType,
+        stream: false,
+      },
+      EO_ROUTER_TIMEOUT_MS,
+    );
+
+  // 1. The deliberate re-surf.
+  let deliberate: Awaited<ReturnType<typeof retrieveCorpusDeliberate>> = {
+    passages: [],
+    contrastive: [],
+  };
+  if (sources.some((s) => s.enabled && s.textReadable)) {
+    try {
+      deliberate = await retrieveCorpusDeliberate({
+        question,
+        claims,
+        sources,
+        alreadySurfaced: input.alreadySurfaced,
+      });
+      get().pushEoLog(
+        "surf",
+        `surf(system2): ${deliberate.passages.length} passage(s) against the draft's own claims, ` +
+          `${deliberate.contrastive.length} searched as possible counterevidence`,
+      );
+    } catch (err) {
+      get().pushEoLog(
+        "error",
+        `surf(system2): deliberate re-surf failed — ${(err as Error).message}`,
+      );
+    }
+  }
+
+  // 2. The rules, re-gated in checking mode.
+  const checkGate = eoBuildInstructionBlock(
+    question,
+    input.session,
+    input.clearContextIndex,
+    { mode: "system2", claims },
+  );
+  if (checkGate.logText) get().pushEoLog("surf", checkGate.logText);
+
+  // 3. The reading probe. It used to run before the first token, where it was
+  //    a model call standing between the reader and any answer at all. Here it
+  //    costs the reader nothing: they are already reading. Its verdict can
+  //    only raise the route (escalate() is monotone), so a probe that times
+  //    out on a slow local engine subtracts a second opinion and never
+  //    subtracts a check.
+  let probeRoute: TurnRoute | null = null;
+  let probeTrace: Awaited<ReturnType<typeof probeReading>>["trace"] | null =
+    null;
+  try {
+    const probe = await probeReading({
+      question,
+      sources,
+      passages: [...input.alreadySurfaced, ...deliberate.passages],
+      generate: background,
+    });
+    probeTrace = probe.trace;
+    probeRoute = {
+      system: routeReading(probe.trace),
+      stage: "probe",
+      mechanical: false,
+      reasons: [
+        `probe: candidates=${probe.trace.candidateReadings}, coverage=${probe.trace.supportCoverage}, evidence=${probe.trace.evidenceRelation}, claim=${probe.trace.claimType}`,
+      ],
+    };
+    get().pushEoLog("task", `system 2 probe: ${probeRoute.reasons[0]}`);
+  } catch (err) {
+    get().pushEoLog(
+      "error",
+      `system 2 probe: ${(err as Error).message} — route stands on the mechanical reasons alone`,
+    );
+  }
+
+  const emitted: ChatMessage[] = [];
+  const earned: { kind: string; run: () => Promise<string | null> }[] = [];
+
+  // 3a. A grounding note is earned by a failed check, or by claims made over
+  //     material this turn never actually read.
+  const unsupported = grounding?.findings ?? [];
+  const externalUnread = demand.mustUnfold.filter((c) =>
+    ["corpus", "web", "file"].includes(c),
+  );
+  if (unsupported.length || (claims.length && externalUnread.length)) {
+    earned.push({
+      kind: "grounding",
+      run: async () => {
+        const findings = unsupported
+          .slice(0, 8)
+          .map(
+            (f) =>
+              `- "${f.text}" (${f.atomKind}) is not in ${grounding?.channels.join(" or ") || "the material checked"}`,
+          )
+          .join("\n");
+        const unread = externalUnread.length
+          ? `\nMaterial that exists but was not read this turn: ${externalUnread.join(", ")}.`
+          : "";
+        const raw = await background(
+          "You are checking an answer that has already been given. Write a short, plain note to the reader about what in it is NOT supported by the material actually consulted. Name the specific claims. Do not restate the answer, do not apologise, do not hedge with generalities about AI limitations. If something merely was not checked, say it was not checked rather than saying it is wrong. Three sentences at most.",
+          `The answer given:\n${draft.slice(0, 2000)}\n\nUnsupported claims found by a mechanical check:\n${findings || "(none)"}${unread}`,
+        );
+        const text = String(raw || "").trim();
+        // L1d — the note must exist even if the model call for it does not.
+        // A mechanically composed fallback is worse prose and the same fact.
+        if (text) return text;
+        if (!unsupported.length) return null;
+        return (
+          `Checked against ${grounding?.channels.join(" and ") || "this turn's material"}: ` +
+          `${unsupported.length} thing(s) in that answer are not in it — ` +
+          unsupported
+            .slice(0, 5)
+            .map((f) => `"${f.text}"`)
+            .join(", ") +
+          `. Treat those as unverified.`
+        );
+      },
+    });
+  }
+
+  // 3b. A counter-reading is earned by the contrastive surf actually
+  //     retrieving something, or by the probe reporting a second live reading
+  //     — not by the model feeling uncertain.
+  const contested =
+    probeTrace?.candidateReadings === "2+" ||
+    probeTrace?.evidenceRelation === "conflicting";
+  if (deliberate.contrastive.length || contested) {
+    earned.push({
+      kind: "counter-reading",
+      run: async () => {
+        const material = formatDeliberateContext(
+          claims.join(" "),
+          deliberate.passages,
+          deliberate.contrastive,
+        );
+        if (!material && !contested) return null;
+        const raw = await background(
+          "An answer has already been given. You are checking it against material retrieved specifically because it might cut against it. Say plainly whether anything actually does. If something does, name it and say what it changes. If nothing does, say the check was made and the answer held — in one sentence. Never invent a tension the material does not contain.",
+          [
+            material ??
+              "No competing passage was retrieved from the reader's sources.",
+            probeTrace ? `A first reading noted: ${probeTrace.rationale}` : "",
+            `The answer given:\n${draft.slice(0, 1500)}`,
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
+        );
+        return String(raw || "").trim() || null;
+      },
+    });
+  }
+
+  // 3c. A worked-through result is earned when the request genuinely has
+  //     separable dependent parts. The task controller (eo-task-controller.ts)
+  //     owns legality; the model only proposes wording. This ran before the
+  //     first token until now, which meant a multi-part question paid for a
+  //     whole dependency graph before showing the reader anything.
+  if (probeRoute?.system === "system2" && sources.length) {
+    earned.push({
+      kind: "worked-through",
+      run: async () => {
+        const plan = await defineTaskPlan(question, background);
+        if (plan.tasks.length < 2) return null;
+        const run = await runTaskPlan({
+          question,
+          plan,
+          sources,
+          generate: background,
+        });
+        get().pushEoLog(
+          "task",
+          `system 2 task controller: ${run.controller.tasks.length} task(s), ` +
+            `${run.controller.tasks.filter((t) => t.status === "completed").length} completed, ` +
+            `${run.controller.tasks.filter((t) => t.status === "dropped").length} dropped, ` +
+            `closure=${run.controller.closed}`,
+        );
+        if (!run.context) return null;
+        const raw = await background(
+          "Synthesize the bounded task results below into one warranted addition to an answer the reader already has. Do not repeat what the answer already said. Distinguish direct support from inference, name any live alternative, and preserve an unresolved gap rather than filling it. Never mention tasks, planning, or that you were given results.",
+          `${run.context}\n\nThe answer already given:\n${draft.slice(0, 1500)}`,
+        );
+        return String(raw || "").trim() || null;
+      },
+    });
+  }
+
+  if (earned.length > EO_MAX_SYSTEM2_RESPONSES) {
+    get().pushEoLog(
+      "warrant",
+      `system 2: ${earned.length} responses earned, capped at ${EO_MAX_SYSTEM2_RESPONSES} — dropped ${earned
+        .slice(EO_MAX_SYSTEM2_RESPONSES)
+        .map((e) => e.kind)
+        .join(", ")}`,
+    );
+  }
+
+  for (const item of earned.slice(0, EO_MAX_SYSTEM2_RESPONSES)) {
+    try {
+      const text = await item.run();
+      if (!text) continue;
+      emitted.push(
+        get().appendTurnResponse({
+          turnId,
+          content: text,
+          responseKind: item.kind,
+          model: modelConfig.model,
+        }),
+      );
+      get().pushEoLog("warrant", `system 2: emitted a ${item.kind} response`);
+    } catch (err) {
+      get().pushEoLog(
+        "error",
+        `system 2: ${item.kind} response failed — ${(err as Error).message}`,
+      );
+    }
+  }
+
+  return { emitted, probeRoute };
 }
 
 function getRecentUserQuestions(
@@ -621,6 +1063,44 @@ export const useChatStore = createPersistStore(
         get().summarizeSession(llm);
       },
 
+      // A turn's second and later utterances.
+      //
+      // Until now a turn was one message, structurally: onFinish could rewrite
+      // the draft in place but had no way to say a second thing. That is a real
+      // limit on what System 2 can do — some findings are not edits. "The
+      // figure you just read is not in the source you think it came from" is
+      // not a revision of the answer, it is a different speech act about it,
+      // and folding it into the prose either buries it or distorts the answer
+      // to make room. So System 2 can now speak again instead.
+      //
+      // Every such message is System 2 by construction (classifyResponseSet in
+      // eo-warrant.ts), carries the same turnId as the draft, and names why it
+      // exists — a reader must never wonder where a second message came from.
+      appendTurnResponse(input: {
+        turnId: string;
+        content: string;
+        responseKind: string;
+        model?: Model;
+        warrantTrace?: WarrantTrace;
+        groundingReport?: GroundingReport;
+      }) {
+        const message = createMessage({
+          role: "assistant",
+          content: input.content,
+          model: input.model,
+          system: "system2",
+          turnId: input.turnId,
+          responseKind: input.responseKind,
+          warrantTrace: input.warrantTrace,
+          groundingReport: input.groundingReport,
+        });
+        get().updateCurrentSession((session) => {
+          session.messages = session.messages.concat([message]);
+          session.lastUpdate = Date.now();
+        });
+        return message;
+      },
+
       toggleWebSearch() {
         get().updateCurrentSession((session) => {
           session.webSearchEnabled = !session.webSearchEnabled;
@@ -777,6 +1257,7 @@ export const useChatStore = createPersistStore(
         // file structure (see eo-binary-structure.ts): consume whatever an
         // upload queued for this turn, then clear it so it isn't resent.
         const pendingFile = get().currentSession().pendingFileContext;
+        const fileAttached = !!pendingFile;
         if (pendingFile) {
           extraSystemBlocks.push(pendingFile);
           get().updateCurrentSession((session) => {
@@ -825,78 +1306,19 @@ export const useChatStore = createPersistStore(
           }
         }
 
-        // Every reader turn begins with a cheap System-1 probe. The resulting
-        // route is a declared policy over encountered coverage, alternatives,
-        // contradictions, and gaps—not a classifier over the request wording.
-        if (userContent.trim()) {
-          try {
-            const background = (systemPrompt: string, userPrompt: string) =>
-              eoRunBackground(
-                llm,
-                [
-                  createMessage({ role: "system", content: systemPrompt }),
-                  createMessage({ role: "user", content: userPrompt }),
-                ],
-                {
-                  model: modelConfig.model,
-                  cache: useAppConfig.getState().cacheType,
-                  stream: false,
-                },
-                EO_ROUTER_TIMEOUT_MS,
-              );
-            const probe = await probeReading({
-              question: userContent.trim(),
-              sources,
-              passages: corpusPassages,
-              generate: background,
-            });
-            const thinkingSystem = routeReading(probe.trace);
-            extraSystemBlocks.push(
-              [
-                "INITIAL READING (provisional; revise if better grounds emerge):",
-                probe.trace.tentativeReading,
-                `Reading trace: candidates=${probe.trace.candidateReadings}; coverage=${probe.trace.supportCoverage}; evidence=${probe.trace.evidenceRelation}; claim=${probe.trace.claimType}; consequence=${probe.trace.consequence}.`,
-                `Reading rationale: ${probe.trace.rationale}`,
-              ].join("\n"),
-            );
-            get().pushEoLog(
-              "task",
-              `System 1 probe: candidates=${probe.trace.candidateReadings}, coverage=${probe.trace.supportCoverage}, evidence=${probe.trace.evidenceRelation}, claim=${probe.trace.claimType}; route=${thinkingSystem}`,
-            );
-
-            // Slow work starts only after the first reading encountered a
-            // live alternative, distributed/conflicting/missing evidence, or
-            // a claim that exceeds retrieval.
-            if (thinkingSystem === "system2") {
-              const taskPlan = await defineTaskPlan(
-                userContent.trim(),
-                background,
-              );
-              if (taskPlan.tasks.length >= 2) {
-                const taskRun = await runTaskPlan({
-                  question: userContent.trim(),
-                  plan: taskPlan,
-                  sources,
-                  generate: background,
-                });
-                if (taskRun.context) extraSystemBlocks.push(taskRun.context);
-                get().pushEoLog(
-                  "task",
-                  `System 2 task controller: ${taskRun.controller.tasks.length} task(s), ` +
-                    `${taskRun.controller.tasks.filter((t) => t.status === "completed").length} completed, ` +
-                    `${taskRun.controller.tasks.filter((t) => t.status === "dropped").length} dropped, ` +
-                    `closure=${taskRun.controller.closed}`,
-                );
-              }
-            }
-          } catch (err) {
-            // A failed probe or slow path must fail open to the direct answer.
-            get().pushEoLog(
-              "error",
-              `reading probe/task controller: ${(err as Error).message}`,
-            );
-          }
-        }
+        // The reading probe and the task controller used to run HERE, before a
+        // single token could stream — three sequential background model calls
+        // on a local engine, in front of an answer the reader is watching an
+        // empty box for. That contradicted the thing they were named after:
+        // System 1 is the fast pass, and a fast pass that waits on two model
+        // calls is not one (LAWS.md L1 — no dead air). They now run in the
+        // System 2 phase in onFinish, where their cost is paid after the
+        // reader already has an answer to read.
+        //
+        // What replaces them here is the part that has to run first and can:
+        // the warrant ledger. It is arithmetic over counts this turn already
+        // produced, so it costs nothing, cannot time out, and cannot be talked
+        // out of firing by a model having a bad day (LAWS.md L11c).
 
         // holonic DEFINE — moved to a System-1/System-2 split (Kahneman's
         // terms, chosen deliberately over a mechanical pre-gate): System 1
@@ -1001,10 +1423,16 @@ export const useChatStore = createPersistStore(
           content: mContent,
         });
 
+        // Every message this turn emits shares a turn id. The first one is the
+        // System-1 draft by definition: it is what the model said before
+        // anything checked it.
+        const turnId = nanoid();
         const botMessage: ChatMessage = createMessage({
           role: "assistant",
           streaming: true,
           model: modelConfig.model,
+          system: "system1",
+          turnId,
         });
 
         // get recent messages, then fold them down to fit the model's
@@ -1013,7 +1441,8 @@ export const useChatStore = createPersistStore(
         // role (SystemMessageOrderError) — recentMessages already leads
         // with its own system block, so web/file context must be spliced
         // in there too, not merely appended before the user turn.
-        const recentMessages = get().getMessagesWithMemory(userContent);
+        const assembled = get().getMessagesWithMemory(userContent);
+        const recentMessages = assembled.messages;
         const systemPrefixLen = recentMessages.findIndex(
           (m) => m.role !== "system",
         );
@@ -1021,12 +1450,62 @@ export const useChatStore = createPersistStore(
           systemPrefixLen === -1 ? recentMessages.length : systemPrefixLen;
         const systemPrefix = recentMessages.slice(0, splitAt);
         const rest = recentMessages.slice(splitAt);
-        const extraMessages = extraSystemBlocks.map((block) =>
-          createMessage({ role: "system", content: block }),
+        const contextWindow = modelConfig.context_window_size ?? 4096;
+        const buildMessages = (blocks: string[]) =>
+          systemPrefix.concat(
+            blocks.map((block) =>
+              createMessage({ role: "system", content: block }),
+            ),
+            rest,
+            [userMessage],
+          );
+
+        // What the clamp has to lose is itself a warrant fact — material it
+        // dropped is material this turn cannot account for — so the clamp runs
+        // once to find out, the ledger reads the result, and the clamp runs
+        // again over the turn with the warrant block added. Both passes are
+        // pure arithmetic over token counts; the second is the one that ships.
+        const dryRun = eoEnforceContextBudget(
+          buildMessages(extraSystemBlocks),
+          contextWindow,
+          "chat turn (pre-warrant)",
         );
+
+        const sourcesReadable = sources.filter(
+          (s) => s.enabled && s.textReadable,
+        );
+        const ledger = buildFoldLedger({
+          gate: assembled.gate,
+          corpus: {
+            enabledSources: sourcesReadable.length,
+            sourcesSurfaced: new Set(corpusPassages.map((p) => p.source.id))
+              .size,
+            passages: corpusPassages.length,
+          },
+          web: {
+            attempted: !!turnWebQuery,
+            results: turnWebResults.length,
+          },
+          file: { attached: fileAttached },
+          desk: { facts: session0.eoMemory?.facts?.length ?? 0 },
+          discourse: assembled.discourse,
+          budget: {
+            droppedMessages: dryRun.dropped,
+            truncated: dryRun.truncated,
+          },
+        });
+        const demand = groundingDemand(ledger);
+        const preRoute = routeTurn(ledger, demand);
+        const warrantBlock = buildWarrantBlock(ledger, demand);
+        get().pushEoLog("warrant", warrantLogLine(ledger, demand, preRoute));
+
         const budgetResult = eoEnforceContextBudget(
-          systemPrefix.concat(extraMessages, rest, [userMessage]),
-          modelConfig.context_window_size ?? 4096,
+          buildMessages(
+            warrantBlock
+              ? [warrantBlock, ...extraSystemBlocks]
+              : extraSystemBlocks,
+          ),
+          contextWindow,
           "chat turn",
         );
         // The engine (see @mlc-ai/web-llm ChatModule request validation)
@@ -1285,33 +1764,176 @@ export const useChatStore = createPersistStore(
               // there" from "never checked". Gated on turnWebQuery (set the
               // moment a search is attempted), not turnWebResults.length, so
               // a zero-result search still surfaces as a disclosed gap.
+              const webCitations: CitationEntry[] = [];
               if (turnWebQuery) {
                 message = stripCitationBrackets(message);
                 botMessage.webResults = turnWebResults;
                 botMessage.webQuery = turnWebQuery;
-                if (turnWebResults.length) {
-                  const citations = turnWebResults.map((r, i) => ({
+                webCitations.push(
+                  ...turnWebResults.map((r, i) => ({
                     index: i + 1,
                     source_id: r.url,
                     text: r.snippet,
+                  })),
+                );
+              }
+
+              // The check now covers every external channel this turn
+              // surfaced, not only the web. It used to fire when a search had
+              // run and stay silent when the answer was about a document the
+              // reader had handed over — which is exactly backwards: the
+              // reader can sanity-check a claim about a news snippet far more
+              // easily than a claim about page 400 of their own PDF. Same
+              // mechanical check, same union index, more channels in it.
+              const sourceCits = corpusCitations(corpusPassages);
+              const allCitations: CitationEntry[] = [
+                ...webCitations,
+                ...sourceCits.map((c, i) => ({
+                  ...c,
+                  index: webCitations.length + i + 1,
+                })),
+              ];
+              const checkedChannels: string[] = [];
+              if (webCitations.length) checkedChannels.push("web");
+              if (sourceCits.length) checkedChannels.push("your sources");
+
+              let groundingReport: GroundingReport | null = null;
+              if (allCitations.length) {
+                groundingReport = checkGrounding(message, allCitations, {
+                  question: userContent.trim(),
+                  channels: checkedChannels,
+                });
+                message = annotateVoids(message, groundingReport);
+                botMessage.groundingReport = groundingReport;
+                // Snipping (see eo-citation-check.ts, ported from
+                // eochat's citation-check.js bestClause): show the one
+                // clause of each result that actually overlaps the
+                // reply's vocabulary, not the whole fetched snippet.
+                if (webCitations.length)
+                  botMessage.webSnippets = snipCitations(message, webCitations);
+                if (sourceCits.length) {
+                  const snips = snipCitations(message, sourceCits);
+                  botMessage.sourceCitations = sourceCits.map((c, i) => ({
+                    ref: c.source_id,
+                    clause: snips[i]?.clause ?? null,
                   }));
-                  const report = checkGrounding(message, citations, {
+                }
+                get().pushEoLog(
+                  "warrant",
+                  groundingReport.clean
+                    ? `grounding: clean against ${checkedChannels.join(" + ")} (${groundingReport.atomsChecked} claim(s) checked)`
+                    : `grounding: ${groundingReport.findings.length} unsupported claim(s) of ${groundingReport.atomsChecked} checked against ${checkedChannels.join(" + ")}${groundingReport.truncated ? ` (${groundingReport.truncated.dropped} more truncated)` : ""}`,
+                );
+              }
+
+              // ── System 2 ──────────────────────────────────────────────
+              //
+              // The monitor pass. Everything above was mechanical; this is
+              // where the turn decides whether the fast answer can stand.
+              // reviewDraft reads the finished draft against the ledger — how
+              // many checkable claims it made, how many failed — so a turn
+              // that looked ordinary going in can still escalate on what it
+              // actually said.
+              const claimAtoms = countClaimAtoms(message);
+              const draftRoute = reviewDraft({
+                ledger,
+                demand,
+                claimAtoms,
+                unsupported: groundingReport?.findings.length ?? 0,
+              });
+              let turnRoute = escalate(preRoute, draftRoute);
+              botMessage.warrantTrace = eoWarrantTrace(
+                ledger,
+                demand,
+                turnRoute,
+              );
+
+              if (turnRoute.system === "system2" && userContent.trim()) {
+                try {
+                  const extra = await eoRunSystem2({
+                    llm,
+                    get,
+                    modelConfig,
+                    turnId,
                     question: userContent.trim(),
+                    draft: message,
+                    sources,
+                    alreadySurfaced: corpusPassages,
+                    ledger,
+                    demand,
+                    route: turnRoute,
+                    grounding: groundingReport,
+                    session: session0,
+                    clearContextIndex: session0.clearContextIndex ?? 0,
                   });
-                  message = annotateVoids(message, report);
-                  botMessage.groundingReport = report;
-                  // Snipping (see eo-citation-check.ts, ported from
-                  // eochat's citation-check.js bestClause): show the one
-                  // clause of each result that actually overlaps the
-                  // reply's vocabulary, not the whole fetched snippet.
-                  botMessage.webSnippets = snipCitations(message, citations);
+                  // Emitting more than one response IS the System 2 verdict
+                  // (see classifyResponseSet) — recorded, not inferred.
+                  turnRoute = escalate(
+                    turnRoute,
+                    extra.probeRoute,
+                    classifyResponseSet(1 + extra.emitted.length),
+                  );
+                  botMessage.warrantTrace = eoWarrantTrace(
+                    ledger,
+                    demand,
+                    turnRoute,
+                  );
+                } catch (err) {
+                  // LAWS.md L1d — a path that can fail emits on failure. The
+                  // draft still stands; what is lost is the second opinion,
+                  // and the reader is told that is what was lost.
                   get().pushEoLog(
-                    "web",
-                    report.clean
-                      ? `grounding: clean (${report.atomsChecked} claim(s) checked)`
-                      : `grounding: ${report.findings.length} unsupported claim(s) of ${report.atomsChecked} checked${report.truncated ? ` (${report.truncated.dropped} more truncated)` : ""}`,
+                    "error",
+                    `system 2: check pass failed — ${(err as Error).message}`,
                   );
                 }
+              }
+
+              get().pushEoLog(
+                "warrant",
+                `route: ${turnRoute.system} (${turnRoute.stage}, ${turnRoute.mechanical ? "mechanical" : "model-raised"}) — ${turnRoute.reasons[0] ?? ""}`,
+              );
+
+              // The System 2 fold: what this turn established and the
+              // addresses it was checked against (see eo-discourse.ts). Built
+              // from work already done, so it costs no model call and cannot
+              // disagree with the check it reports.
+              if (turnRoute.system === "system2" && allCitations.length) {
+                const open: string[] = [];
+                if (demand.mustUnfold.length)
+                  open.push(
+                    `not read this turn: ${demand.mustUnfold.join(", ")}`,
+                  );
+                for (const c of ledger.channels)
+                  if (c.checkedEmpty)
+                    open.push(`${c.channel} was consulted and came back empty`);
+                const record = buildWarrantRecord({
+                  turn: turnIndex,
+                  // The gist is a handle for the turn, not its warrant, so it
+                  // is taken mechanically off the front of the answer rather
+                  // than paid for with a model call. The refs below are what
+                  // actually carry it.
+                  gist: message.replace(/\s+/g, " ").trim(),
+                  channels: [...demand.check],
+                  refs: allCitations.map((c) => c.source_id),
+                  unsupported: (groundingReport?.findings ?? []).map(
+                    (f) => f.text,
+                  ),
+                  open,
+                });
+                get().updateCurrentSession((session) => {
+                  session.eoSummary = addWarrantRecord(
+                    session.eoSummary,
+                    record,
+                  );
+                });
+                get().pushEoLog(
+                  "fold",
+                  `record: turn ${turnIndex} filed with ${record.refs.length} address(es)` +
+                    (record.unsupported.length
+                      ? `, ${record.unsupported.length} unsupported claim(s) noted`
+                      : ""),
+                );
               }
 
               // Conversation memory (the "desk", see eo-memory.ts): advance
@@ -1367,17 +1989,25 @@ export const useChatStore = createPersistStore(
         });
       },
 
+      // Returns the assembled turn AND the surf's own accounting, because the
+      // warrant ledger (eo-warrant.ts) is built out of exactly the numbers the
+      // gate produced here — how many rules are in force, how many stayed
+      // folded, how many matched and did not fit. Recomputing them at the call
+      // site would be a second gate run that could disagree with this one.
       getMessagesWithMemory(nextQuestion?: string) {
         const session = get().currentSession();
         const clearContextIndex = session.clearContextIndex ?? 0;
 
         const out: ChatMessage[] = [];
 
-        // 0. instruction gate (surf): rules in force for THIS turn
+        // 0. instruction gate (surf): rules in force for THIS turn. Always the
+        //    System 1 pass here — no draft exists yet for a claim channel to
+        //    score against; the System 2 re-surf runs in onFinish.
         const gate = eoBuildInstructionBlock(
           nextQuestion?.trim() ?? "",
           session,
           clearContextIndex,
+          { mode: "system1" },
         );
         if (gate.systemMessage) {
           out.push(
@@ -1401,15 +2031,25 @@ export const useChatStore = createPersistStore(
         const userTurnCount = session.messages.filter(
           (m) => m.role === "user" && !m.isError,
         ).length;
-        if (
+        const summaryInPrompt =
           clearContextIndex === 0 &&
           userTurnCount > EO_HISTORY_TURNS &&
-          session.eoSummary
-        ) {
+          !!session.eoSummary;
+        if (summaryInPrompt) {
           const summaryText = buildSummarySystemMessage(session.eoSummary);
           if (summaryText) {
             out.push(createMessage({ role: "system", content: summaryText }));
           }
+        }
+
+        // 2b. ON RECORD: the System 2 folds — earlier turns that were checked,
+        //     carrying the addresses they were checked against. Unlike the
+        //     paraphrase above these survive the recency window without
+        //     becoming unciteable, so they go in whether or not the summary
+        //     does (see eo-discourse.ts).
+        const recordText = buildRecordSystemMessage(session.eoSummary);
+        if (clearContextIndex === 0 && recordText) {
+          out.push(createMessage({ role: "system", content: recordText }));
         }
 
         // 3. verbatim recent turns (bounded recency window)
@@ -1417,14 +2057,25 @@ export const useChatStore = createPersistStore(
           clearContextIndex,
           session.messages.length - EO_HISTORY_TURNS * 2,
         );
+        let verbatimTurns = 0;
         for (let i = windowStart; i < session.messages.length; i += 1) {
           const m = session.messages[i];
           if (!m || m.isError || m.streaming) continue;
           if (m.role === "system") continue;
+          if (m.role === "user") verbatimTurns += 1;
           out.push(m);
         }
 
-        return out;
+        return {
+          messages: out,
+          gate: gate.stats,
+          discourse: {
+            turnCount: userTurnCount,
+            folds: session.eoSummary?.folds?.length ?? 0,
+            verbatimTurns,
+            summaryInPrompt,
+          },
+        };
       },
 
       updateMessage(

@@ -227,6 +227,121 @@ export async function retrieveCorpus(
   return kept;
 }
 
+/**
+ * Passages as citation entries, so the same mechanical grounding check that
+ * runs against web snippets runs against the reader's own sources.
+ *
+ * `source_id` carries the byte range, not just the file name: a finding about
+ * an unsupported claim should be followable to the exact bytes it was checked
+ * against (LAWS.md L2 — audit is local), and readRawSourceRange above is the
+ * path that reads them back.
+ */
+export function corpusCitations(
+  passages: CorpusPassage[],
+  startIndex = 1,
+): { index: number; source_id: string; text: string }[] {
+  return passages.map((p, i) => ({
+    index: startIndex + i,
+    source_id: `${p.source.name}#${p.byteStart}-${p.byteEnd}`,
+    text: p.text,
+  }));
+}
+
+// ── The System 2 surf ──────────────────────────────────────────────────────
+//
+// retrieveCorpus above is the System 1 surf: one lexical pass over the
+// question's own terms, best-scoring chunks until a token budget fills. It is
+// fast, deterministic, and biased exactly the way availability is biased — it
+// finds what is worded like the question. That is the right first pass and the
+// wrong last word.
+//
+// The System 2 surf is not the same pass with a bigger budget. It performs
+// different operations, because "slower" is not a kind of thinking:
+//
+//   1. it searches the CLAIMS the draft actually made, not the question —
+//      support has to be looked for where the answer committed itself, and the
+//      answer's vocabulary is not the question's;
+//   2. it searches CONTRASTIVELY, for the exception and the counterexample, so
+//      a passage that undercuts the draft can surface at all — a support-only
+//      query structurally cannot find its own defeater;
+//   3. it UNFOLDS: each keeper is re-read from the original OPFS bytes with a
+//      wider window, so a claim is checked against the passage in its context
+//      rather than against the chunk boundary that happened to match.
+
+const CONTRAST_TERMS =
+  "however but except unless limitation exception counterexample contradiction alternative instead although despite";
+const DELIBERATE_MAX_PASSAGES = 8;
+const UNFOLD_WIDEN_BYTES = 1200;
+
+/** Widen one passage back out to its surrounding bytes in the original source. */
+async function unfoldPassage(
+  passage: CorpusPassage,
+  widenBytes = UNFOLD_WIDEN_BYTES,
+): Promise<CorpusPassage> {
+  try {
+    const start = Math.max(0, passage.byteStart - widenBytes);
+    const end = Math.min(
+      passage.source.byteLength,
+      passage.byteEnd + widenBytes,
+    );
+    const bytes = await readRawSourceRange(passage.source.id, start, end);
+    // A widened window can begin or end mid-character; decode non-fatally and
+    // let the replacement character stand rather than dropping the passage.
+    const text = new TextDecoder("utf-8").decode(bytes);
+    return { ...passage, byteStart: start, byteEnd: end, text };
+  } catch {
+    // An unfold that fails leaves the narrower passage in place. Losing
+    // context is a worse check, not a broken one.
+    return passage;
+  }
+}
+
+/**
+ * The deliberate re-surf. `claims` is the draft's own text (or the sentences
+ * of it that made checkable claims); passing none degrades this to a
+ * contrastive pass over the question, which is still a different operation
+ * from the System 1 surf.
+ */
+export async function retrieveCorpusDeliberate({
+  question,
+  claims = [],
+  sources,
+  alreadySurfaced = [],
+}: {
+  question: string;
+  claims?: string[];
+  sources: EoSource[];
+  alreadySurfaced?: CorpusPassage[];
+}): Promise<{ passages: CorpusPassage[]; contrastive: CorpusPassage[] }> {
+  const claimText = claims.join(" ").slice(0, 2000);
+  const [support, contrast] = await Promise.all([
+    retrieveCorpus(`${claimText} ${question}`.trim(), sources),
+    retrieveCorpus(`${CONTRAST_TERMS} ${claimText || question}`, sources),
+  ]);
+
+  const key = (p: CorpusPassage) =>
+    `${p.source.id}:${p.byteStart}:${p.byteEnd}`;
+  const seen = new Set(alreadySurfaced.map(key));
+  const fresh: CorpusPassage[] = [];
+  const contrastive: CorpusPassage[] = [];
+  for (const p of [...support, ...contrast]) {
+    if (seen.has(key(p))) continue;
+    seen.add(key(p));
+    const isContrast = !support.includes(p);
+    if (fresh.length + contrastive.length >= DELIBERATE_MAX_PASSAGES) break;
+    if (isContrast) contrastive.push(p);
+    else fresh.push(p);
+  }
+
+  const widened = await Promise.all(
+    [...fresh, ...contrastive].map((p) => unfoldPassage(p)),
+  );
+  return {
+    passages: widened.slice(0, fresh.length),
+    contrastive: widened.slice(fresh.length),
+  };
+}
+
 export function formatCorpusContext(
   question: string,
   sources: EoSource[],
@@ -245,4 +360,43 @@ export function formatCorpusContext(
         `[${i + 1}] ${p.source.name} · bytes ${p.byteStart}–${p.byteEnd}\n${p.text.trim()}`,
     ),
   ].join("\n\n");
+}
+
+/**
+ * The System 2 re-surf, formatted for the checking pass. Support and
+ * counterevidence are kept in separate labelled sections on purpose: merged
+ * into one undifferentiated pile, a passage that contradicts the draft reads
+ * as more material supporting it, which is the failure the contrastive query
+ * was run to prevent.
+ */
+export function formatDeliberateContext(
+  claims: string,
+  support: CorpusPassage[],
+  contrastive: CorpusPassage[],
+): string | null {
+  if (!support.length && !contrastive.length) return null;
+  const render = (p: CorpusPassage, i: number) =>
+    `[${i + 1}] ${p.source.name} · bytes ${p.byteStart}–${p.byteEnd}\n${p.text.trim()}`;
+  const parts = [
+    "RE-READ FOR CHECKING — a second pass over the reader's sources, searched against the claims just made rather than against the question, and read in wider context than the first pass.",
+  ];
+  if (support.length) {
+    parts.push(
+      `--- PASSAGES BEARING ON THE CLAIMS (${support.length}) ---`,
+      ...support.map(render),
+    );
+  }
+  if (contrastive.length) {
+    parts.push(
+      `--- PASSAGES THAT MAY CUT AGAINST THE CLAIMS (${contrastive.length}) ---`,
+      "These were retrieved by searching for exceptions, limitations, and counterexamples. Read them as possible defeaters. If one genuinely undercuts a claim, say so plainly; if none does, say the check was made and it held.",
+      ...contrastive.map((p, i) => render(p, support.length + i)),
+    );
+  }
+  if (claims.trim()) {
+    parts.push(
+      `--- THE CLAIMS BEING CHECKED ---\n${claims.trim().slice(0, 2000)}`,
+    );
+  }
+  return parts.join("\n\n");
 }

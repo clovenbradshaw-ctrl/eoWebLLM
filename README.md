@@ -22,6 +22,58 @@
 - **fold** — every completed turn is folded to its discourse contribution and rolled into a running **PAST DISCOURSE** summary (`app/client/eo-discourse.ts`).
 - **prompt** — the model is prompted with the gate block + summary + a bounded recency window; raw history is never resent past a fixed ceiling.
 
+## Warrant: when grounding fires
+
+Bounding the context window means most of what bears on a turn is *folded* —
+held back — at any moment. That makes one question decidable that "is this a
+hard question?" never was: **where would the warrant for this answer have to
+come from?** `app/client/eo-warrant.ts` answers it from the fold ledger, with
+no model call, before a token is generated.
+
+Each channel carries a different kind of warrant:
+
+| channel | can carry a claim | why |
+| --- | --- | --- |
+| `corpus` · `web` · `file` | yes, and it is checked | bytes that exist outside the model and can be re-read |
+| `desk` | yes, for what was said | the verbatim record of stated facts |
+| `discourse` | **no** | a paraphrase whose source is no longer in the prompt |
+| `rules` | no | they govern form, they never supply a fact |
+| `internal` | yes, when nothing external bore on the turn | must be said to be general knowledge |
+
+Grounding fires whenever external material bears on the turn, whenever material
+was folded away or crowded out, and whenever provenance cannot be established —
+unknown warrant is treated as missing warrant. A search that ran and came back
+empty fires it too: that is the one check that could have confirmed the answer,
+and it didn't.
+
+**System 1 / System 2** (Kahneman) is not a speed setting; the two do different
+work.
+
+- *Surf.* System 1 scores the instruction gate and the corpus lexically against
+  the question — availability-biased, one pass, budget-capped. System 2 scores
+  against the **claims the draft actually made**, searches contrastively for
+  defeaters, re-reads each hit in a wider byte window, and un-folds the rules
+  that matched this turn and lost the budget race.
+- *Fold.* System 1 keeps a ~100-character gist. System 2 keeps an **address** —
+  the byte ranges and URLs the answer was checked against, what failed, what
+  stayed open — so a System 2 fold can be re-opened where a System 1 fold can
+  only be recalled.
+- *Responses.* A turn is a response set, not a message. The first streamed
+  message is the System 1 draft and is never blocked. System 2 may then speak
+  again — a grounding note, a counter-reading, a worked-through result — each
+  earned by a mechanical condition, capped and disclosed. **More than one
+  response is System 2 by construction**: a turn only needs a second utterance
+  because it found something the first could not hold.
+
+Escalation is monotone. A model probe can raise a turn to System 2 and can
+never lower it, so a slow or failed probe subtracts a second opinion and never
+subtracts a check.
+
+Run `yarn test` for the assay: it checks that grounding fires on every channel,
+that fold pressure escalates, that unknown provenance fails toward grounding,
+and that the System 2 surf can surface a rule the System 1 surf structurally
+could not.
+
 Sourced from:
 - [clovenbradshaw-ctrl/eochat](https://github.com/clovenbradshaw-ctrl/eochat) — conversational engine (`server/instruction-gate.js`, `server/conversation-summary.js`, `instruction-set/`)
 - [clovenbradshaw-ctrl/eo-constitution](https://github.com/clovenbradshaw-ctrl/eo-constitution) — constitutional rules backing the instruction set
