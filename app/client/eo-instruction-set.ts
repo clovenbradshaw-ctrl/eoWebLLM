@@ -1,11 +1,11 @@
 // eo-instruction-set.ts — GENERATED, DO NOT EDIT BY HAND.
 //
-// A snapshot of eochat's instruction-set/*.md (30 folds), bundled so
-// the eoWebLLM instruction gate always has a corpus. Regenerate with:
+// Compiled from this repository's instruction-set/*.md (30 folds).
+// Edit the .md files, then regenerate with:
 //   node scripts/gen-instruction-bundle.mjs
 //
-// Source: https://github.com/clovenbradshaw-ctrl/eochat/tree/main/instruction-set
-// The canonical, live copy is refreshed at runtime from that repository.
+// The folds were originally written for eochat
+// (github.com/clovenbradshaw-ctrl/eochat) and are maintained here now.
 
 export const BUNDLED_INSTRUCTION_SET: string[] = [
   `---
@@ -1080,5 +1080,4 @@ retrieval, or alter what a later audit will find.
 `,
 ];
 
-export const BUNDLED_INSTRUCTION_SOURCE =
-  "https://github.com/clovenbradshaw-ctrl/eochat/tree/main/instruction-set";
+export const BUNDLED_INSTRUCTION_SOURCE = "instruction-set/";

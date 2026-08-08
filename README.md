@@ -18,7 +18,7 @@
 
 **eoWebLLM** is a fork of [mlc-ai/web-llm-chat](https://github.com/mlc-ai/web-llm-chat) that ports the conversational engine of [clovenbradshaw-ctrl/eochat](https://github.com/clovenbradshaw-ctrl/eochat) so the context window **never grows**:
 
-- **surf** — an instruction gate surfaces the rules in force for each turn from eochat's `instruction-set` (see `app/client/eo-gate.ts` and `app/client/eo-instructions.ts`); folded folds stay named in an audit index instead of being dropped.
+- **surf** — an instruction gate surfaces the rules in force for each turn from this repository's own [`instruction-set/`](instruction-set) (see `app/client/eo-gate.ts` and `app/client/eo-instructions.ts`); folded folds stay named in an audit index instead of being dropped.
 - **fold** — every completed turn is folded to its discourse contribution and rolled into a running **PAST DISCOURSE** summary (`app/client/eo-discourse.ts`).
 - **prompt** — the model is prompted with the gate block + summary + a bounded recency window; raw history is never resent past a fixed ceiling.
 
@@ -74,7 +74,14 @@ that fold pressure escalates, that unknown provenance fails toward grounding,
 and that the System 2 surf can surface a rule the System 1 surf structurally
 could not.
 
-Sourced from:
+**This app has no runtime dependency on eochat.** The algorithms were ported
+from it and the instruction folds were written for it, but both live here now:
+the corpus is [`instruction-set/`](instruction-set), compiled to
+`app/client/eo-instruction-set.ts` by `node scripts/gen-instruction-bundle.mjs`.
+Edit the `.md` files and regenerate. Nothing is fetched from another repository
+at runtime, so eochat can be retired without this app noticing.
+
+Originally ported from:
 - [clovenbradshaw-ctrl/eochat](https://github.com/clovenbradshaw-ctrl/eochat) — conversational engine (`server/instruction-gate.js`, `server/conversation-summary.js`, `instruction-set/`)
 - [clovenbradshaw-ctrl/eo-constitution](https://github.com/clovenbradshaw-ctrl/eo-constitution) — constitutional rules backing the instruction set
 - [clovenbradshaw-ctrl/eoreader6](https://github.com/clovenbradshaw-ctrl/eoreader6) — reading-engine role (kept separate; not ported here)
