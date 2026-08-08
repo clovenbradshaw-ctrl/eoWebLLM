@@ -497,6 +497,78 @@ export function annotateVoids(
   return out;
 }
 
+/**
+ * The positive half checkGrounding doesn't do: WHICH source backs a
+ * sentence, not just whether some source in the union does. Never asks the
+ * model — a [n] here is placed because this sentence's atoms were found,
+ * by string containment, in citation n's own text, full stop. A sentence
+ * with any unsupported atom (per findings) is left unmarked rather than
+ * guessed at; annotateVoids already carries that signal.
+ */
+export function attributeCitations(
+  content: string,
+  citations: CitationEntry[],
+  report: GroundingReport,
+): { start: number; end: number; sourceIndexes: number[] }[] {
+  if (!content || !citations.length) return [];
+  const unsupportedSentences = new Set<number>();
+  for (const f of report.findings) {
+    if (f.echoesQuestion) continue;
+    unsupportedSentences.add(f.start);
+  }
+  const perSource = citations.map((c) => ({
+    index: c.index,
+    words: wordSet(c.text),
+    numbers: numberSet(c.text),
+  }));
+
+  const out: { start: number; end: number; sourceIndexes: number[] }[] = [];
+  for (const s of splitSentences(content)) {
+    const atoms = extractAtoms(s.text, s.start);
+    if (!atoms.length) continue;
+    // A sentence carrying even one atom this run already flagged as
+    // unsupported gets no citation — attributing it to a source it wasn't
+    // actually drawn from would be worse than leaving it unmarked.
+    const hasUnsupported = atoms.some((a) => unsupportedSentences.has(s.start));
+    if (hasUnsupported) continue;
+
+    const covering: number[] = [];
+    for (const src of perSource) {
+      const coversAll = atoms.every((atom) =>
+        atom.tokens.every((token) =>
+          atom.kind === "number"
+            ? hasNumber(src.numbers, token)
+            : hasWord(src.words, token),
+        ),
+      );
+      if (coversAll) covering.push(src.index);
+    }
+    if (covering.length)
+      out.push({ start: s.start, end: s.end, sourceIndexes: covering });
+  }
+  return out;
+}
+
+/**
+ * Insert the [n] markers attributeCitations computed, right-to-left. Trims
+ * trailing whitespace/newlines off the sentence span first so the marker
+ * lands next to the punctuation, not on the next line.
+ */
+export function annotateCitations(
+  content: string,
+  attributions: { start: number; end: number; sourceIndexes: number[] }[],
+): string {
+  if (!content || !attributions.length) return content;
+  let out = content;
+  for (const a of [...attributions].sort((x, y) => y.end - x.end)) {
+    let end = a.end;
+    while (end > a.start && /\s/.test(out[end - 1])) end--;
+    const marker = ` [${a.sourceIndexes.join(",")}]`;
+    out = out.slice(0, end) + marker + out.slice(end);
+  }
+  return out;
+}
+
 // ── Snipping: show the exact words that grounded the reply, not the whole
 // source ──────────────────────────────────────────────────────────────────
 //

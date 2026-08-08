@@ -328,9 +328,24 @@ export function createInstructionGate(
 
     const gap = folds.length > 0 && !scored.some((s) => s.score > 0);
 
-    const surfaced = [...alwaysOn];
-    let used = countTokens(surfaced.map(activeLine).join(""));
-    let blockTokens = framingTokens(surfaced.length, gap, label) + used;
+    // Every fold — "always" ones included — competes for the same budget,
+    // highest priority first (always-on folds by weight, then conditional
+    // folds by relevance score). Nothing is forced in unconditionally: at
+    // budget 0 the block is empty; raising the budget adds folds back in
+    // priority order. "always" only means "goes first in that order", not
+    // "exempt from the ceiling" — a caller who wants core folds guaranteed
+    // present sets a budget that's actually large enough to hold them.
+    const surfaced: InstructionFold[] = [];
+    let used = 0;
+    let blockTokens = framingTokens(0, gap, label);
+
+    for (const fold of alwaysOn) {
+      const delta = countTokens(activeLine(fold));
+      if (blockTokens + delta > budget) continue;
+      surfaced.push(fold);
+      used += delta;
+      blockTokens += delta;
+    }
 
     for (const { fold, score } of scored) {
       if (score <= 0) break;

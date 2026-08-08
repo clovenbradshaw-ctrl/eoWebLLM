@@ -27,8 +27,7 @@ import {
   updateSummaryWithFold,
   advanceSummaryFold,
 } from "../client/eo-discourse";
-import { createInstructionGate, countTokens } from "../client/eo-gate";
-import { getInstructionFolds } from "../client/eo-instructions";
+import { countTokens } from "../client/eo-gate";
 import {
   webSearch,
   formatWebSearchBlock,
@@ -53,6 +52,8 @@ import {
 import {
   checkGrounding,
   annotateVoids,
+  attributeCitations,
+  annotateCitations,
   snipCitations,
   type GroundingReport,
   type Snippet,
@@ -75,6 +76,7 @@ import {
   probeReading,
   routeReading,
   runTaskPlan,
+  type ThinkingSystem,
 } from "../client/eo-task-plan";
 
 export type ChatMessage = RequestMessage & {
@@ -111,7 +113,21 @@ export type ChatMessage = RequestMessage & {
   // artifact). System 2 runs every turn (see onFinish) — this is always
   // set on an assistant turn.
   planTrace?: PlanTrace;
+  // Everything the model actually saw and every background decision that
+  // shaped it, in one place — the reader-facing counterpart to the EOT log
+  // (which is session-wide and easy to lose track of which turn a line
+  // belongs to). Nothing here is a claim the model made about itself; it's
+  // the literal system prompt/messages sent and the router/query verdicts
+  // computed before the turn ran.
+  promptTrace?: PromptTrace;
 };
+
+export interface PromptTrace {
+  systemPrompt: string;
+  sentMessages: { role: string; content: string }[];
+  router?: { searched: boolean; reason: string; fellBack: boolean };
+  query?: { text: string; rewritten: boolean };
+}
 
 export interface PlanTrace {
   kind: string;
@@ -265,34 +281,6 @@ function eoRunBackground(
   });
 }
 
-// surf: build the RULES IN FORCE block for the current turn from the eochat
-// instruction set, keyword-surfaced against the question + recent history.
-// Returns the log line alongside the block so the EOT panel can show exactly
-// which folds surfaced and which stayed folded, per turn.
-function eoBuildInstructionBlock(
-  question: string,
-  session: ChatSession,
-  clearContextIndex: number,
-): { systemMessage: string | null; logText: string | null } {
-  try {
-    const folds = getInstructionFolds();
-    if (!folds.length) return { systemMessage: null, logText: null };
-    const history = getRecentUserQuestions(session, clearContextIndex, 3);
-    const report = createInstructionGate(folds).gate({ question, history });
-    const logText =
-      `surf: ${report.stats.active} active fold(s) [${report.activeIds.join(", ")}], ` +
-      `${report.stats.folded} folded, gap=${report.stats.gap}, ` +
-      `${report.stats.usedTokens}/${report.stats.budget} tokens`;
-    return { systemMessage: report.systemMessage || null, logText };
-  } catch (err) {
-    log.warn("[eo] instruction gate failed:", err);
-    return {
-      systemMessage: null,
-      logText: `surf: instruction gate failed — ${(err as Error).message}`,
-    };
-  }
-}
-
 // fold's hard guarantee: the assembled prompt must never exceed the model's
 // context window. getMessagesWithMemory bounds normal history by turn count,
 // but a single oversized turn (e.g. a small model echoing a long system
@@ -304,6 +292,12 @@ function eoBuildInstructionBlock(
 // turn, the background topic-naming call, and the background fold/summary
 // calls — routes through this before reaching llm.chat().
 const EO_OUTPUT_TOKEN_RESERVE = 512;
+const EO_FEEDBACK_GUARD =
+  "Evaluate only supplied material. Do not invent facts. List risks, missing decisions, and three actions. Be concise: under 120 words.";
+
+function isFeedbackRequest(text: string): boolean {
+  return /\b(feedback|review|critique|assess|evaluate)\b/i.test(text);
+}
 
 function eoMessageTokens(m: RequestMessage): number {
   return countTokens(getMessageTextContent(m)) + 4;
@@ -366,26 +360,6 @@ function eoEnforceContextBudget(
     `${finalTokens}/${budget} tokens (window ${contextWindowSize})`;
 
   return { messages: kept, logText };
-}
-
-function getRecentUserQuestions(
-  session: ChatSession,
-  clearContextIndex: number,
-  n: number,
-): string[] {
-  const out: string[] = [];
-  const msgs = session.messages;
-  for (
-    let i = msgs.length - 1;
-    i >= Math.max(clearContextIndex, 0) && out.length < n;
-    i -= 1
-  ) {
-    const m = msgs[i];
-    if (!m || m.role !== "user" || m.isError) continue;
-    const t = getMessageTextContent(m).trim();
-    if (t) out.push(t);
-  }
-  return out;
 }
 
 function createEmptySession(): ChatSession {
@@ -648,15 +622,37 @@ export const useChatStore = createPersistStore(
         });
       },
 
+      // Returns whether the turn was actually accepted — false means the
+      // caller's composer text was never sent (still mid-preparation on a
+      // prior turn) and the caller must NOT clear its input, or the reader's
+      // just-typed message silently vanishes with nothing sent and no bubble
+      // to show for it (the composer was cleared on the promise that a
+      // fire-and-forget call would definitely take it).
       async onUserInput(
         content: string,
         llm: LLMApi,
         attachImages?: ChatImage[],
-      ) {
+      ): Promise<boolean> {
         const modelConfig = useAppConfig.getState().modelConfig;
 
         const userContent = fillTemplateWith(content, useAppConfig.getState());
         log.debug("[User Input] after template: ", userContent);
+
+        // Reserve this conversation before any asynchronous surf, web route,
+        // or System-1 probe. Previously `isGenerating` was set only just
+        // before llm.chat(), leaving a window where rapid Enter/click sends
+        // could start duplicate, competing turns against one local engine.
+        if (get().currentSession().isGenerating) {
+          get().pushEoLog(
+            "task",
+            "turn: ignored while a prior turn is preparing",
+          );
+          return false;
+        }
+        get().updateCurrentSession((session) => {
+          session.isGenerating = true;
+          session.modelLoadProgress = null;
+        });
 
         // web calling (surf-time, before the turn is assembled): the Web
         // Search toggle only enables the CAPABILITY for this session — a
@@ -673,12 +669,33 @@ export const useChatStore = createPersistStore(
           (m) => m.role === "user" && !m.isError,
         ).length;
         const extraSystemBlocks: string[] = [];
+        // Starts fast by default. A bounded first reading may promote this
+        // turn; later completion work uses the same recorded route.
+        let readingSystem: ThinkingSystem = "system1";
         // Populated only if web_search actually ran this turn; onFinish below
         // uses it to mechanically strip any self-authored [n] brackets and
         // attach the real source list — the talker itself is never told
         // citations exist (see formatWebSearchBlock in eo-websearch.ts).
         let turnWebResults: Awaited<ReturnType<typeof webSearch>> = [];
         let turnWebQuery = "";
+        // Router/query verdicts, captured for promptTrace below regardless
+        // of whether a search actually ran — "the router looked and said no"
+        // is itself part of the reader-facing trace, not just a search hit.
+        let turnRouterTrace: PromptTrace["router"];
+        let turnQueryTrace: PromptTrace["query"];
+        // Last real exchange before this turn, verbatim — grounds the
+        // router/query-writer below when userContent itself is a topic-less
+        // follow-up ("do a web search to check that"). Without it the
+        // background model sees only that fragment and hallucinates an
+        // unrelated topic instead of continuing the actual conversation.
+        const routerContext = session0.messages
+          .filter((m) => !m.isError && getMessageTextContent(m).trim())
+          .slice(-2)
+          .map(
+            (m) =>
+              `${m.role}: ${getMessageTextContent(m).trim().slice(0, 500)}`,
+          )
+          .join("\n");
         if (session0.webSearchEnabled && userContent.trim()) {
           // Router failure (parse failure OR the background call itself
           // timing out/erroring on a slow local model) must fail OPEN, same
@@ -690,6 +707,7 @@ export const useChatStore = createPersistStore(
           try {
             decision = await planTools({
               question: userContent.trim(),
+              context: routerContext || undefined,
               tools: [
                 {
                   name: "web_search",
@@ -725,12 +743,18 @@ export const useChatStore = createPersistStore(
             "web",
             `route: ${decision.tools.length ? decision.tools.join(", ") : "no tools"} — ${decision.reason}${decision.fellBack ? " (fell back)" : ""}`,
           );
+          turnRouterTrace = {
+            searched: decision.tools.includes("web_search"),
+            reason: decision.reason,
+            fellBack: decision.fellBack,
+          };
           if (decision.tools.includes("web_search")) {
             try {
               const rawQuestion = userContent.trim();
               const { query: rewrittenQuery, rewritten } =
                 await planSearchQuery({
                   question: rawQuestion,
+                  context: routerContext || undefined,
                   fallback: distillQuery(rawQuestion) || rawQuestion,
                   generate: (systemPrompt, userPrompt) =>
                     eoRunBackground(
@@ -751,6 +775,7 @@ export const useChatStore = createPersistStore(
                     ),
                 });
               turnWebQuery = rewrittenQuery;
+              turnQueryTrace = { text: turnWebQuery, rewritten };
               get().pushEoLog(
                 "web",
                 rewritten
@@ -800,6 +825,7 @@ export const useChatStore = createPersistStore(
         // surface a different part of the same raw source.
         const sources = session0.eoSources ?? [];
         let corpusPassages: CorpusPassage[] = [];
+        let corpusBlock: string | null = null;
         if (
           sources.some((s) => s.enabled && s.textReadable) &&
           userContent.trim()
@@ -807,12 +833,11 @@ export const useChatStore = createPersistStore(
           try {
             const passages = await retrieveCorpus(userContent.trim(), sources);
             corpusPassages = passages;
-            const corpusBlock = formatCorpusContext(
+            corpusBlock = formatCorpusContext(
               userContent.trim(),
               sources,
               passages,
             );
-            if (corpusBlock) extraSystemBlocks.push(corpusBlock);
             get().pushEoLog(
               "file",
               `surf: ${passages.length} passage(s) from ${sources.filter((s) => s.enabled && s.textReadable).length} enabled source(s)`,
@@ -850,24 +875,20 @@ export const useChatStore = createPersistStore(
               passages: corpusPassages,
               generate: background,
             });
-            const thinkingSystem = routeReading(probe.trace);
-            extraSystemBlocks.push(
-              [
-                "INITIAL READING (provisional; revise if better grounds emerge):",
-                probe.trace.tentativeReading,
-                `Reading trace: candidates=${probe.trace.candidateReadings}; coverage=${probe.trace.supportCoverage}; evidence=${probe.trace.evidenceRelation}; claim=${probe.trace.claimType}; consequence=${probe.trace.consequence}.`,
-                `Reading rationale: ${probe.trace.rationale}`,
-              ].join("\n"),
+            readingSystem = routeReading(
+              probe.trace,
+              sources.some((source) => source.enabled && source.textReadable),
+              corpusPassages.length > 0,
             );
             get().pushEoLog(
               "task",
-              `System 1 probe: candidates=${probe.trace.candidateReadings}, coverage=${probe.trace.supportCoverage}, evidence=${probe.trace.evidenceRelation}, claim=${probe.trace.claimType}; route=${thinkingSystem}`,
+              `System 1 probe: candidates=${probe.trace.candidateReadings}, coverage=${probe.trace.supportCoverage}, evidence=${probe.trace.evidenceRelation}, claim=${probe.trace.claimType}; route=${readingSystem}`,
             );
 
             // Slow work starts only after the first reading encountered a
             // live alternative, distributed/conflicting/missing evidence, or
             // a claim that exceeds retrieval.
-            if (thinkingSystem === "system2") {
+            if (readingSystem === "system2") {
               const taskPlan = await defineTaskPlan(
                 userContent.trim(),
                 background,
@@ -880,6 +901,7 @@ export const useChatStore = createPersistStore(
                   generate: background,
                 });
                 if (taskRun.context) extraSystemBlocks.push(taskRun.context);
+                else if (corpusBlock) extraSystemBlocks.push(corpusBlock);
                 get().pushEoLog(
                   "task",
                   `System 2 task controller: ${taskRun.controller.tasks.length} task(s), ` +
@@ -888,9 +910,16 @@ export const useChatStore = createPersistStore(
                     `closure=${taskRun.controller.closed}`,
                 );
               }
+              // A legal graph is optional. If the planner finds no genuine
+              // dependent work, retain the ordinary surfaced passages.
+              else if (corpusBlock) extraSystemBlocks.push(corpusBlock);
             }
+            // The final System-1 answer needs the full surf once; the compact
+            // probe result stays in the trace/log instead of duplicating it.
+            else if (corpusBlock) extraSystemBlocks.push(corpusBlock);
           } catch (err) {
             // A failed probe or slow path must fail open to the direct answer.
+            if (corpusBlock) extraSystemBlocks.push(corpusBlock);
             get().pushEoLog(
               "error",
               `reading probe/task controller: ${(err as Error).message}`,
@@ -1063,6 +1092,19 @@ export const useChatStore = createPersistStore(
 
         log.debug("Messages: ", sendMessages);
 
+        // Reader-facing counterpart to the pushEoLog lines above — same
+        // facts, attached to this turn's message instead of the session-wide
+        // EOT log, so a reader watching one reply doesn't have to open a
+        // separate panel and match timestamps back to it.
+        botMessage.promptTrace = {
+          systemPrompt: getMessageTextContent(sendMessages[0]),
+          sentMessages: sendMessages
+            .slice(1)
+            .map((m) => ({ role: m.role, content: getMessageTextContent(m) })),
+          router: turnRouterTrace,
+          query: turnQueryTrace,
+        };
+
         // save user's and bot's message
         get().updateCurrentSession((session) => {
           const savedUserMessage = {
@@ -1122,7 +1164,7 @@ export const useChatStore = createPersistStore(
               // its only visible cost is a reconcile rewrite, and only when
               // its own judgment of the draft actually finds something
               // wrong with it.
-              if (userContent.trim()) {
+              if (readingSystem === "system2" && userContent.trim()) {
                 try {
                   answerSpec = await defineAnswerSpec({
                     question: userContent.trim(),
@@ -1298,8 +1340,24 @@ export const useChatStore = createPersistStore(
                   const report = checkGrounding(message, citations, {
                     question: userContent.trim(),
                   });
-                  message = annotateVoids(message, report);
-                  botMessage.groundingReport = report;
+                  // Citations are inserted first, which shifts every offset
+                  // after them — checkGrounding is re-run on the
+                  // now-cited text so annotateVoids' atom offsets (used for
+                  // the reader-facing report below) are never applied
+                  // against stale positions.
+                  const attributions = attributeCitations(
+                    message,
+                    citations,
+                    report,
+                  );
+                  message = annotateCitations(message, attributions);
+                  const finalReport = attributions.length
+                    ? checkGrounding(message, citations, {
+                        question: userContent.trim(),
+                      })
+                    : report;
+                  message = annotateVoids(message, finalReport);
+                  botMessage.groundingReport = finalReport;
                   // Snipping (see eo-citation-check.ts, ported from
                   // eochat's citation-check.js bestClause): show the one
                   // clause of each result that actually overlaps the
@@ -1307,9 +1365,9 @@ export const useChatStore = createPersistStore(
                   botMessage.webSnippets = snipCitations(message, citations);
                   get().pushEoLog(
                     "web",
-                    report.clean
-                      ? `grounding: clean (${report.atomsChecked} claim(s) checked)`
-                      : `grounding: ${report.findings.length} unsupported claim(s) of ${report.atomsChecked} checked${report.truncated ? ` (${report.truncated.dropped} more truncated)` : ""}`,
+                    finalReport.clean
+                      ? `grounding: clean (${finalReport.atomsChecked} claim(s) checked, ${attributions.length} cited)`
+                      : `grounding: ${finalReport.findings.length} unsupported claim(s) of ${finalReport.atomsChecked} checked, ${attributions.length} cited${finalReport.truncated ? ` (${finalReport.truncated.dropped} more truncated)` : ""}`,
                   );
                 }
               }
@@ -1365,6 +1423,7 @@ export const useChatStore = createPersistStore(
             console.error("[Chat] failed ", error);
           },
         });
+        return true;
       },
 
       getMessagesWithMemory(nextQuestion?: string) {
@@ -1373,21 +1432,18 @@ export const useChatStore = createPersistStore(
 
         const out: ChatMessage[] = [];
 
-        // 0. instruction gate (surf): rules in force for THIS turn
-        const gate = eoBuildInstructionBlock(
-          nextQuestion?.trim() ?? "",
-          session,
-          clearContextIndex,
-        );
-        if (gate.systemMessage) {
+        // 0. No mandatory system prompt. Context belongs to the reader: only
+        // explicitly chosen template content, folded discourse, and surfaced
+        // source material may use the model's limited context window. The one
+        // exception is a 19-word guard for an explicit feedback request: the
+        // zero-prompt ablation found that it is the smallest addition that
+        // stops small local models from inventing review criteria or rambling.
+        if (nextQuestion && isFeedbackRequest(nextQuestion)) {
           out.push(
-            createMessage({ role: "system", content: gate.systemMessage }),
+            createMessage({ role: "system", content: EO_FEEDBACK_GUARD }),
           );
         }
-        if (gate.logText) {
-          get().pushEoLog("surf", gate.logText);
-        }
-
+        //
         // 1. pre-defined in-context prompts (reader-defined template context)
         for (const c of session.template.context) {
           const text = getMessageTextContent(c);

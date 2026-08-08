@@ -109,20 +109,30 @@ function extractToolsObject(raw: string): any | null {
 // streaming answer for engine time.
 export async function planTools({
   question,
+  context,
   tools,
   generate,
 }: {
   question: string;
+  /**
+   * A short excerpt of the immediately preceding turn(s), given verbatim
+   * with no summarization. A topic-less follow-up ("do a web search to
+   * check that", "verify that") carries no noun phrase of its own — without
+   * this, the router (and planSearchQuery below) sees only that fragment
+   * and has nothing to route or search on, so a small model fills the gap
+   * by hallucinating an unrelated topic instead of failing closed.
+   */
+  context?: string;
   tools: ToolSpec[];
   generate: (systemPrompt: string, userPrompt: string) => Promise<string>;
 }): Promise<ToolDecision> {
   if (!tools.length)
     return { tools: [], reason: "no tools registered", fellBack: false };
 
-  const raw = await generate(
-    buildRouterPrompt(tools),
-    `Reader's message: ${question}`,
-  );
+  const userPrompt = context
+    ? `Recent conversation:\n${context}\n\nReader's message: ${question}`
+    : `Reader's message: ${question}`;
+  const raw = await generate(buildRouterPrompt(tools), userPrompt);
   const parsed = extractToolsObject(raw);
   const validNames = new Set(tools.map((t) => t.name));
 
@@ -186,18 +196,22 @@ function extractQueryText(raw: string): string {
  */
 export async function planSearchQuery({
   question,
+  context,
   fallback,
   generate,
 }: {
   question: string;
+  /** Same rationale as planTools' `context` above — ties a topic-less
+   * follow-up back to what it's actually a follow-up to. */
+  context?: string;
   fallback: string;
   generate: (systemPrompt: string, userPrompt: string) => Promise<string>;
 }): Promise<{ query: string; rewritten: boolean }> {
   try {
-    const raw = await generate(
-      QUERY_SYSTEM_PROMPT,
-      `Reader's message: ${question}`,
-    );
+    const userPrompt = context
+      ? `Recent conversation:\n${context}\n\nReader's message: ${question}`
+      : `Reader's message: ${question}`;
+    const raw = await generate(QUERY_SYSTEM_PROMPT, userPrompt);
     const q = extractQueryText(raw).slice(0, 200);
     if (q) return { query: q, rewritten: true };
   } catch {

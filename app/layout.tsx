@@ -4,6 +4,7 @@ import "./styles/markdown.scss";
 import "./styles/highlight.scss";
 import { getClientConfig } from "./config/client";
 import { type Metadata } from "next";
+import RegisterPWA from "./register-pwa";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://clovenbradshaw-ctrl.github.io/eoWebLLM/"),
@@ -148,7 +149,10 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body>{children}</body>
+      <body>
+        <RegisterPWA />
+        {children}
+      </body>
     </html>
   );
 }

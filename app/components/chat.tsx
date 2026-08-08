@@ -44,6 +44,7 @@ import {
   Model,
   ModelClient,
   type PlanTrace,
+  type PromptTrace,
 } from "../store";
 
 import {
@@ -595,6 +596,80 @@ export function ChatActions(props: {
   );
 }
 
+// The engine can decode faster than a human reads, and onUpdate delivers
+// whatever it has whenever it has it — in bursts, not a steady drip. Paced
+// reveal decouples "how much text exists" from "how much is shown": it only
+// ever holds back text that's already arrived (never waits on generation,
+// so a slow model is never made to look slower), advancing toward the full
+// string at a fixed reading pace and snapping to complete the moment
+// streaming ends rather than dragging out the tail after the model is done.
+const READING_CHARS_PER_SEC = 45;
+
+function usePacedReveal(fullText: string, streaming: boolean): string {
+  const [shownLen, setShownLen] = useState(fullText.length);
+  const shownLenRef = useRef(shownLen);
+  shownLenRef.current = shownLen;
+
+  useEffect(() => {
+    if (!streaming) {
+      setShownLen(fullText.length);
+      return;
+    }
+    if (shownLenRef.current > fullText.length) {
+      // A fresh turn started (content reset) — don't hold a stale, larger
+      // reveal position against shorter new text.
+      setShownLen(fullText.length);
+    }
+    let raf: number;
+    let last = performance.now();
+    const tick = (now: number) => {
+      const dt = (now - last) / 1000;
+      last = now;
+      setShownLen((len) => {
+        const target = fullText.length;
+        if (len >= target) return len;
+        const next = len + READING_CHARS_PER_SEC * dt;
+        return next >= target ? target : next;
+      });
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fullText, streaming]);
+
+  return fullText.slice(0, Math.floor(shownLen));
+}
+
+// Wraps Markdown with usePacedReveal — its own component instance (not
+// called inline inside the messages.map below) so each message gets a
+// stable hook slot regardless of how the list's length changes render to
+// render; calling the hook directly inside the map would violate the Rules
+// of Hooks the moment a new message is appended mid-stream.
+function PacedAnswer(props: {
+  text: string;
+  streaming: boolean;
+  loading: boolean;
+  onContextMenu: (e: React.MouseEvent) => void;
+  onDoubleClickCapture: () => void;
+  fontSize: number;
+  parentRef: RefObject<HTMLDivElement>;
+  defaultShow: boolean;
+}) {
+  const paced = usePacedReveal(props.text, props.streaming);
+  return (
+    <Markdown
+      content={paced}
+      loading={props.loading}
+      onContextMenu={props.onContextMenu}
+      onDoubleClickCapture={props.onDoubleClickCapture}
+      fontSize={props.fontSize}
+      parentRef={props.parentRef}
+      defaultShow={props.defaultShow}
+    />
+  );
+}
+
 // A collapsible reasoning panel, like Claude's extended-thinking display:
 // collapsed by default once the answer has started, auto-expanded while the
 // model is still inside the <think> block so a reader can watch it reason
@@ -721,6 +796,100 @@ function PlanPanel(props: { trace: PlanTrace }) {
   );
 }
 
+// Everything that happened before a single word of the visible answer was
+// written: fold/surf bookkeeping, the router's search-or-not verdict, the
+// query rewrite, and the literal system+message payload sent to the model.
+// Deliberately styled apart from the spoken answer (dashed border, mono
+// font, no message-bubble background) — this is process, not the reply;
+// conflating the two visually is exactly what made the "reasoning" work
+// invisible before (buried in a session-wide EOT log instead of sitting
+// next to the turn it explains).
+// One flat scrollable feed instead of nested <details> — nesting each add
+// their own summary line and padding, which is what made the old version
+// tall. Auto-open (and auto-scrolled to the bottom) while the turn is still
+// preparing, so a reader watching it live sees the same "thinking" motion
+// Claude's reasoning block has instead of dead air; closes itself once the
+// spoken answer starts, collapsing to a single low-contrast line that's
+// trivial to skip over rather than a block competing with the answer.
+function SurfPanel(props: { trace: PromptTrace; open: boolean }) {
+  const t = props.trace;
+  const [manuallyOpen, setManuallyOpen] = useState<boolean | null>(null);
+  const open = manuallyOpen ?? props.open;
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (open && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [open, t.systemPrompt.length]);
+
+  const lines: string[] = [];
+  if (t.router) {
+    lines.push(
+      `router: ${t.router.searched ? "web_search" : "no tools"} — ${t.router.reason}${t.router.fellBack ? " (fell back)" : ""}`,
+    );
+  } else {
+    lines.push("router: not called this turn");
+  }
+  if (t.query) {
+    lines.push(
+      `query: "${t.query.text}"${t.query.rewritten ? " (rewritten)" : " (fallback)"}`,
+    );
+  }
+  // System prompt itself is no longer shown here — it's fixed/near-empty
+  // now that the instruction gate is gone (see getMessagesWithMemory's "no
+  // mandatory system prompt" comment in store/chat.ts), so per-turn it adds
+  // nothing a reader doesn't already know. What varies turn to turn — and
+  // what's actually worth surfacing — is the folded/retrieved content below.
+  lines.push(`context: ${t.sentMessages.length} prior message(s)`);
+  for (const m of t.sentMessages) lines.push(`${m.role}: ${m.content}`);
+
+  return (
+    <div
+      style={{
+        margin: "0 0 8px",
+        fontSize: "11px",
+        fontFamily: "var(--font-mono, monospace)",
+        opacity: 0.55,
+      }}
+    >
+      <div
+        role="button"
+        onClick={() => setManuallyOpen(!open)}
+        style={{
+          cursor: "pointer",
+          userSelect: "none",
+          fontStyle: "italic",
+          display: "flex",
+          alignItems: "center",
+          gap: 4,
+        }}
+      >
+        <span style={{ display: "inline-block", width: 10 }}>
+          {open ? "▾" : "▸"}
+        </span>
+        {props.open ? "surfing & folding…" : "surf & fold"}
+      </div>
+      {open && (
+        <div
+          ref={scrollRef}
+          style={{
+            marginTop: 4,
+            marginLeft: 14,
+            maxHeight: 120,
+            overflowY: "auto",
+            whiteSpace: "pre-wrap",
+            borderLeft: "2px solid var(--border-in-light)",
+            paddingLeft: 8,
+          }}
+        >
+          {lines.join("\n")}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // The "what did it search" affordance: a collapsible list of the actual
 // web_search results that grounded this reply, each title a real clickable
 // link to the source — not a claim the model made, structured data the
@@ -773,6 +942,7 @@ function WebSearchPanel(props: {
           const snip = snipFor(i);
           return (
             <div key={i}>
+              <span style={{ opacity: 0.6 }}>[{i + 1}]</span>{" "}
               <a
                 href={r.url}
                 target="_blank"
@@ -978,13 +1148,19 @@ function ChatInner() {
 
     if (isStreaming) return;
 
-    chatStore.onUserInput(userInput, llm, attachImages);
-    setAttachImages([]);
     localStorage.setItem(LAST_INPUT_KEY, userInput);
-    setUserInput("");
-    setPromptHints([]);
-    if (!isMobileScreen) inputRef.current?.focus();
-    setAutoScroll(true);
+    chatStore.onUserInput(userInput, llm, attachImages).then((accepted) => {
+      // A prior turn still mid-preparation makes this a no-op (see
+      // onUserInput's isGenerating guard) — leave the typed text in place
+      // rather than clearing it out from under the reader with nothing
+      // sent to show for it.
+      if (!accepted) return;
+      setAttachImages([]);
+      setUserInput("");
+      setPromptHints([]);
+      if (!isMobileScreen) inputRef.current?.focus();
+      setAutoScroll(true);
+    });
   };
 
   const onPromptSelect = (prompt: RenderPompt) => {
@@ -1798,6 +1974,15 @@ function ChatInner() {
                               open={open && !!message.streaming}
                             />
                           )}
+                          {!isUser && message.promptTrace && (
+                            <SurfPanel
+                              trace={message.promptTrace}
+                              open={
+                                !!message.streaming &&
+                                message.content.length === 0
+                              }
+                            />
+                          )}
                           {!isUser && message.planTrace && (
                             <PlanPanel trace={message.planTrace} />
                           )}
@@ -1809,10 +1994,11 @@ function ChatInner() {
                               snippets={message.webSnippets}
                             />
                           )}
-                          <Markdown
-                            content={rest}
+                          <PacedAnswer
+                            text={rest}
+                            streaming={!isUser && !!message.streaming}
                             loading={
-                              (message.preview || message.streaming) &&
+                              !!(message.preview || message.streaming) &&
                               message.content.length === 0 &&
                               !isUser
                             }
@@ -1864,20 +2050,6 @@ function ChatInner() {
                     )}
                   </div>
                   <div className={styles["chat-message-action-date"]}>
-                    {message.role === "assistant" && message.usage && (
-                      <>
-                        <div>
-                          {`Prefill: ${message.usage.extra.prefill_tokens_per_s.toFixed(
-                            1,
-                          )} tok/s,`}
-                        </div>
-                        <div>
-                          {`Decode: ${message.usage.extra.decode_tokens_per_s.toFixed(
-                            1,
-                          )} tok/s,`}
-                        </div>
-                      </>
-                    )}
                     <div>
                       {isContext
                         ? Locale.Chat.IsContext

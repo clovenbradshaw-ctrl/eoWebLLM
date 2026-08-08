@@ -117,4 +117,9 @@ if (mode !== "export") {
 export default withSerwistInit({
   swSrc: "app/worker/service-worker.ts",
   swDest: "public/sw.js",
+  // Auto-register throws unhandled (e.g. storage-restricted contexts: private
+  // browsing, sandboxed iframes) and Next's dev overlay then blocks the whole
+  // UI on a feature (offline caching) nothing else here depends on. Registered
+  // manually below with a caught, logged-only failure instead.
+  register: false,
 })(nextConfig);
