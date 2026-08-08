@@ -21,6 +21,24 @@ import { DEFAULT_MODELS } from "../constant";
 
 const KEEP_ALIVE_INTERVAL = 5_000;
 
+// A ServiceWorkerMLCEngine is shared by every eoWebLLM tab on this origin.
+// Without a cross-tab critical section, two tabs that open together can both
+// call reload() and contend for the same WebGPU model while it is compiling.
+// Web Locks is origin-scoped, survives independent page JS contexts, and
+// deliberately does nothing on older browsers where no coordination primitive
+// exists. This lock covers only model initialization—not generation—so tabs
+// remain independently usable once the engine is ready.
+async function withModelInitLock<T>(model: string, work: () => Promise<T>) {
+  if (typeof navigator === "undefined" || !navigator.locks?.request) {
+    return work();
+  }
+  return navigator.locks.request(
+    `eowebllm:model-init:${model}`,
+    { mode: "exclusive" },
+    work,
+  );
+}
+
 type ServiceWorkerWebLLMHandler = {
   type: "serviceWorker";
   engine: ServiceWorkerMLCEngine;
@@ -84,7 +102,9 @@ export class WebLLMApi implements LLMApi {
             onProgress?.(report.progress, report.text);
           },
         );
-        await this.webllm.engine.reload(this.llmConfig!.model, this.llmConfig!);
+        await withModelInitLock(this.llmConfig!.model, () =>
+          this.webllm.engine.reload(this.llmConfig!.model, this.llmConfig!),
+        );
         this.initialized = true;
       })().finally(() => {
         this.initializing = undefined;

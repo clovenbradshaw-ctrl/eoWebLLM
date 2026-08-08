@@ -126,14 +126,58 @@ function parseReadingTrace(
 }
 
 /** Policy over observed reading conditions; it never inspects question wording. */
-export function routeReading(trace: ReadingTrace): ThinkingSystem {
+export function routeReading(
+  trace: ReadingTrace,
+  hasReaderCorpus = false,
+  hasMatchedEvidence = false,
+): ThinkingSystem {
+  // A direct, local retrieval with an actual surfaced passage is allowed to
+  // finish tentatively in System 1. A small model occasionally labels this
+  // situation "missing" simply because it cannot prove global coverage; that
+  // is not a reason to spend a slow planning pass on a bounded lookup.
+  if (
+    hasMatchedEvidence &&
+    trace.candidateReadings === "1" &&
+    trace.supportCoverage === "local" &&
+    trace.claimType === "retrieval" &&
+    trace.evidenceRelation !== "conflicting" &&
+    trace.consequence !== "high"
+  ) {
+    return "system1";
+  }
   return trace.candidateReadings === "2+" ||
     trace.supportCoverage === "distributed" ||
-    trace.evidenceRelation !== "consistent" ||
+    trace.evidenceRelation === "conflicting" ||
+    (hasReaderCorpus && trace.evidenceRelation === "missing") ||
     trace.claimType !== "retrieval" ||
     trace.consequence === "high"
     ? "system2"
     : "system1";
+}
+
+// The fast probe reads the evidence shape, not a second full copy of the
+// surf. This is a mechanical context saving: source/range provenance and
+// representative text remain, while the answer and System 2 tasks retain the
+// full bounded surf when they genuinely need it.
+function formatProbeMaterial(
+  sources: EoSource[],
+  passages: CorpusPassage[],
+): string {
+  const readable = sources.filter(
+    (source) => source.enabled && source.textReadable,
+  );
+  if (!readable.length)
+    return "No reader source passages are available for this turn.";
+  if (!passages.length) {
+    return `Reader corpus: ${readable.length} enabled source(s), but no matching passage was surfaced.`;
+  }
+  const excerpts = passages
+    .slice(0, 3)
+    .map(
+      (passage, index) =>
+        `[${index + 1}] ${passage.source.name} · bytes ${passage.byteStart}–${passage.byteEnd}\n${passage.text.trim().slice(0, 700)}`,
+    );
+  return `COMPACT READING SURF — ${passages.length} matching passage(s) were found. These excerpts are only for the first reading pass; do not assume they are the full sources.\n\n${excerpts.join("\n\n")}`;
 }
 
 /** Always surface, read tentatively, and record the encountered conditions first. */
@@ -150,9 +194,7 @@ export async function probeReading({
   consequence?: ReadingTrace["consequence"];
   generate: (system: string, user: string) => Promise<string>;
 }): Promise<ReadingProbe> {
-  const material =
-    formatCorpusContext(question, sources, passages) ??
-    "No reader source passages are available for this turn.";
+  const material = formatProbeMaterial(sources, passages);
   const raw = await generate(
     READING_PROBE_PROMPT,
     `Reader question:\n${question}\n\n${material}`,

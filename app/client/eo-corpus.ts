@@ -137,13 +137,17 @@ export function isReadableUtf8(bytes: Uint8Array): boolean {
 }
 
 function queryTerms(question: string): string[] {
+  const raw = String(question || "").toLowerCase();
+  // Keep dotted identifiers intact: `10.4.0`, semver-like release labels,
+  // IP-ish values, and similar exact tokens are otherwise split into tiny
+  // numerals (`10`, `4`, `0`) that score unrelated chunks highly.
+  const dottedNumbers = raw.match(/\b\d+(?:\.\d+){1,3}\b/g) ?? [];
   return [
-    ...new Set(
-      String(question || "")
-        .toLowerCase()
-        .match(/[\p{L}\p{N}_-]{2,}/gu)
-        ?.filter((t) => !STOPWORDS.has(t)) ?? [],
-    ),
+    ...new Set([
+      ...dottedNumbers,
+      ...(raw.match(/[\p{L}\p{N}_-]{2,}/gu)?.filter((t) => !STOPWORDS.has(t)) ??
+        []),
+    ]),
   ];
 }
 
@@ -189,6 +193,62 @@ function scoreChunk(text: string, terms: string[]): number {
   return score;
 }
 
+// Browser implementation of the cube's `host/corpus/snip` / SEG operation.
+//
+// A surf result names an anchor.  Snipping turns that anchor into a small,
+// byte-addressed reach-unit for the model; it never alters the OPFS source.
+// Prefer the local blank-line structure when it provides a bounded unit.  If
+// it does not, return a line-aligned context window rather than inventing a
+// section or silently feeding an oversized chunk into the model.
+export function snipSegment(chunk: TextChunk, terms: string[]): TextChunk {
+  const lower = chunk.text.toLowerCase();
+  const anchor = [...terms]
+    .sort((a, b) => b.length - a.length)
+    .find((term) => lower.includes(term));
+  if (!anchor) return chunk;
+
+  const hit = lower.indexOf(anchor);
+  const maxChars = 1400;
+  if (chunk.text.length <= maxChars) return chunk;
+
+  // A blank-line run is a form-discovered boundary and works for prose,
+  // markdown, logs, source files, and formats whose decoded representation
+  // offers paragraph-like separation.  It is deliberately not a list of
+  // named heading patterns.
+  const before = chunk.text.lastIndexOf("\n\n", hit);
+  const after = chunk.text.indexOf("\n\n", hit + anchor.length);
+  const segmentedStart = before < 0 ? 0 : before + 2;
+  const segmentedEnd = after < 0 ? chunk.text.length : after;
+  if (
+    segmentedEnd - segmentedStart <= maxChars &&
+    hit >= segmentedStart &&
+    hit < segmentedEnd
+  ) {
+    const prefix = chunk.text.slice(0, segmentedStart);
+    const text = chunk.text.slice(segmentedStart, segmentedEnd);
+    return {
+      text,
+      byteStart: chunk.byteStart + byteLength(prefix),
+      byteEnd: chunk.byteStart + byteLength(prefix) + byteLength(text),
+    };
+  }
+
+  let start = Math.max(0, hit - Math.floor(maxChars / 2));
+  let end = Math.min(chunk.text.length, start + maxChars);
+  start = Math.max(0, chunk.text.lastIndexOf("\n", start) + 1);
+  if (end < chunk.text.length) {
+    const lineEnd = chunk.text.indexOf("\n", end);
+    if (lineEnd > end && lineEnd - start <= maxChars + 500) end = lineEnd + 1;
+  }
+  const prefix = chunk.text.slice(0, start);
+  const text = chunk.text.slice(start, end);
+  return {
+    text,
+    byteStart: chunk.byteStart + byteLength(prefix),
+    byteEnd: chunk.byteStart + byteLength(prefix) + byteLength(text),
+  };
+}
+
 /**
  * Search every enabled, readable source. Original bytes remain in OPFS; this
  * only returns the passages selected for the current turn.
@@ -211,7 +271,8 @@ export async function retrieveCorpus(
     }
     for (const chunk of chunkText(text)) {
       const score = scoreChunk(chunk.text, terms);
-      if (score > 0) candidates.push({ source, ...chunk, score });
+      if (score > 0)
+        candidates.push({ source, ...snipSegment(chunk, terms), score });
     }
   }
   candidates.sort((a, b) => b.score - a.score || a.byteStart - b.byteStart);
