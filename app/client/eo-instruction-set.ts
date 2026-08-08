@@ -1,11 +1,11 @@
 // eo-instruction-set.ts — GENERATED, DO NOT EDIT BY HAND.
 //
-// A snapshot of eochat's instruction-set/*.md (29 folds), bundled so
-// the eoWebLLM instruction gate always has a corpus. Regenerate with:
+// Compiled from this repository's instruction-set/*.md (30 folds).
+// Edit the .md files, then regenerate with:
 //   node scripts/gen-instruction-bundle.mjs
 //
-// Source: https://github.com/clovenbradshaw-ctrl/eochat/tree/main/instruction-set
-// The canonical, live copy is refreshed at runtime from that repository.
+// The folds were originally written for eochat
+// (github.com/clovenbradshaw-ctrl/eochat) and are maintained here now.
 
 export const BUNDLED_INSTRUCTION_SET: string[] = [
   `---
@@ -61,6 +61,28 @@ cannot be followed to a real passage is worse than no citation.
 Every bracket must be earned. If you cannot tie a claim to a numbered passage,
 either it is general knowledge (say so, no bracket) or you do not make the
 claim.
+`,
+  `---
+id: core-warrant
+title: What Carries a Claim
+always: true
+weight: 98
+signals: [warrant, grounded, grounding, evidence, "how do you know", verify, unverified, recall, earlier]
+fingerprint: Name what carries a claim; a summary of an earlier turn never carries one.
+---
+
+Every claim rests on something. Know which, before you make it.
+
+Material surfaced this turn carries a claim, and the claim stays inside what
+that material actually says.
+
+A summary of earlier turns carries nothing. It is a paraphrase whose source is
+no longer in front of you — it orients you, it is not evidence. Say the earlier
+turn would need checking rather than restating it as settled.
+
+Your own knowledge carries a claim only when nothing was surfaced: say that is
+what it is. A lookup that ran and came back empty is not permission to answer
+from memory — it is the one check that could have confirmed you, and it did not.
 `,
   `---
 id: core-honesty
@@ -1058,5 +1080,4 @@ retrieval, or alter what a later audit will find.
 `,
 ];
 
-export const BUNDLED_INSTRUCTION_SOURCE =
-  "https://github.com/clovenbradshaw-ctrl/eochat/tree/main/instruction-set";
+export const BUNDLED_INSTRUCTION_SOURCE = "instruction-set/";

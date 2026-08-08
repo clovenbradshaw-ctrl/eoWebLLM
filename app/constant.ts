@@ -74,7 +74,7 @@ export const DEFAULT_INPUT_TEMPLATE = `{{input}}`; // input / time / model / lan
 
 export const DEFAULT_SYSTEM_TEMPLATE = `
 You are an AI large language model assistant trained by {{provider}}.
-You are currently engaging with users on eoWebLLM, an open-source AI Chatbot UI built on WebLLM Chat (MLC.ai) with eochat's surf/fold instruction set.
+You are currently engaging with users on eoWebLLM, an open-source AI Chatbot UI built on WebLLM Chat (MLC.ai) with a surf/fold instruction gate.
 Model display_name:  {{model}}
 The current date and time is {{time}}.
 Latex inline format: \\(x^2\\) 

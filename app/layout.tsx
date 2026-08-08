@@ -9,7 +9,7 @@ export const metadata: Metadata = {
   metadataBase: new URL("https://clovenbradshaw-ctrl.github.io/eoWebLLM/"),
   title: "eoWebLLM",
   description:
-    "Chat with AI large language models running natively in your browser, gated by eochat's surf/fold instruction set. Private, server-free, bounded-context AI conversations.",
+    "Chat with AI large language models running natively in your browser, gated by a surf/fold instruction set. Private, server-free, bounded-context AI conversations.",
   keywords: [
     "eoWebLLM",
     "WebLLM",
@@ -41,7 +41,7 @@ export const metadata: Metadata = {
     url: "https://clovenbradshaw-ctrl.github.io/eoWebLLM/",
     title: "eoWebLLM",
     description:
-      "Chat with AI large language models running natively in your browser, gated by eochat's surf/fold instruction set",
+      "Chat with AI large language models running natively in your browser, gated by a surf/fold instruction set",
     siteName: "eoWebLLM",
     images: [
       {
@@ -56,7 +56,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: "eoWebLLM",
     description:
-      "Chat with AI large language models running natively in your browser, gated by eochat's surf/fold instruction set",
+      "Chat with AI large language models running natively in your browser, gated by a surf/fold instruction set",
     images: ["https://clovenbradshaw-ctrl.github.io/eoWebLLM/mlc-logo.png"],
   },
   alternates: {
@@ -132,7 +132,7 @@ export default function RootLayout({
               name: "eoWebLLM",
               url: "https://clovenbradshaw-ctrl.github.io/eoWebLLM/",
               description:
-                "Chat with AI large language models running natively in your browser, gated by eochat's surf/fold instruction set. Private, server-free, bounded-context AI conversations.",
+                "Chat with AI large language models running natively in your browser, gated by a surf/fold instruction set. Private, server-free, bounded-context AI conversations.",
               applicationCategory: "Artificial Intelligence",
               offers: {
                 "@type": "Offer",

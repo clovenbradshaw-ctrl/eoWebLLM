@@ -1,18 +1,24 @@
 // eo-instructions.ts — loads the instruction folds the eoWebLLM gate surfaces
 // per turn ("surf").
 //
-// Strategy (stable first):
-//   1. Bundled snapshot (app/client/eo-instruction-set.ts) is the synchronous
-//      baseline — the gate always has a corpus, even offline.
-//   2. The live, canonical copy is the "gh version" — eochat's
-//      instruction-set on GitHub. On load we refresh from it in the
-//      background and cache the freshest copy in localStorage, so the app
-//      tracks the canonical instruction set instead of freezing at build time.
+// The corpus lives in this repository, at `instruction-set/`, and is compiled
+// into `app/client/eo-instruction-set.ts` by `scripts/gen-instruction-bundle.mjs`.
+// One source, checked in, versioned with the code that reads it.
 //
-// Caching: raw markdown texts + fetch timestamp under one key. A cached copy
-// newer than REFRESH_TTL_MS is used without re-fetching; stale caches refresh
-// lazily. Any fetch failure falls back to whatever we have (cache, then
-// bundle) — a loading failure must never break the gate.
+// It did not start here. The folds were written for eochat
+// (github.com/clovenbradshaw-ctrl/eochat) and this app loaded them from that
+// repository at runtime, over the GitHub contents API, treating the checked-in
+// bundle as an offline fallback to a "canonical" copy that lived somewhere
+// else. That arrangement cannot survive eochat being retired, and it was
+// already worse than it looked: nothing ever called the refresh, so every turn
+// this app has served was already answered from the bundle. What is removed
+// here is a network path to a disappearing repository that no code took, plus
+// the localStorage cache that existed only to make that path cheap.
+//
+// The instruction set is now eoWebLLM's own. Editing a fold means editing
+// `instruction-set/*.md` here and regenerating the bundle — a change that
+// arrives with a diff and a build, rather than silently, on someone else's
+// main branch.
 
 import {
   BUNDLED_INSTRUCTION_SET,
@@ -22,23 +28,15 @@ import { InstructionFold, parseInstructionFolds } from "./eo-gate";
 
 export const EOCHAT_INSTRUCTION_SOURCE = BUNDLED_INSTRUCTION_SOURCE;
 
-// The eochat repository the instruction set is cited from.
-export const EOCHAT_REPO = "clovenbradshaw-ctrl/eochat";
-export const EOCHAT_INSTRUCTION_DIR_PATH = "instruction-set";
+/** Where the folds are edited, for the audit line and the settings panel. */
+export const INSTRUCTION_DIR_PATH = "instruction-set";
 
-const CACHE_KEY = "eoWebLLM.instructionSet";
-const REFRESH_TTL_MS = 24 * 60 * 60 * 1000; // re-fetch at most once a day
-
-interface CachedSet {
-  raws: string[];
-  source: string;
-  fetchedAt: number;
-}
-
-let currentRaws: string[] = BUNDLED_INSTRUCTION_SET;
-let currentSource = BUNDLED_INSTRUCTION_SOURCE;
-let currentFolds: InstructionFold[] = parseInstructionFolds(currentRaws);
-let refreshInFlight: Promise<boolean> | null = null;
+// Parsed once at module load. A malformed fold throws here rather than
+// half-loading a corpus (see parseInstructionFolds: a conditional fold with no
+// signals can never surface, so it fails loudly instead of becoming a wall).
+const currentRaws: string[] = BUNDLED_INSTRUCTION_SET;
+const currentSource = BUNDLED_INSTRUCTION_SOURCE;
+const currentFolds: InstructionFold[] = parseInstructionFolds(currentRaws);
 
 export function getInstructionFolds(): InstructionFold[] {
   return currentFolds;
@@ -55,102 +53,4 @@ export function getInstructionStats() {
     conditional: currentFolds.filter((f) => !f.always).length,
     source: currentSource,
   };
-}
-
-function readCache(): CachedSet | null {
-  try {
-    const raw = localStorage.getItem(CACHE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as CachedSet;
-    if (!Array.isArray(parsed.raws) || parsed.raws.length === 0) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function writeCache(cache: CachedSet) {
-  try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
-  } catch {
-    /* storage unavailable — live copy just won't survive reload */
-  }
-}
-
-function adopt(raws: string[], source: string) {
-  // A parse failure here means the upstream set changed shape in a way this
-  // parser can't read — keep the current folds rather than handing the gate a
-  // broken corpus.
-  try {
-    const folds = parseInstructionFolds(raws);
-    currentRaws = raws;
-    currentSource = source;
-    currentFolds = folds;
-    writeCache({ raws, source, fetchedAt: Date.now() });
-    return true;
-  } catch (err) {
-    console.warn("[eo-instructions] rejected upstream instruction set:", err);
-    return false;
-  }
-}
-
-// List instruction-set files from the eochat GitHub repo via the contents API,
-// then fetch each raw markdown file. Returns [] on any failure.
-async function fetchLiveInstructionSet(): Promise<string[]> {
-  const apiUrl = `https://api.github.com/repos/${EOCHAT_REPO}/contents/${EOCHAT_INSTRUCTION_DIR_PATH}`;
-  const res = await fetch(apiUrl, {
-    headers: { Accept: "application/vnd.github+json" },
-  });
-  if (!res.ok) throw new Error(`GitHub ${res.status}`);
-  const listing = (await res.json()) as {
-    name?: string;
-    download_url?: string;
-  }[];
-  const entries = (Array.isArray(listing) ? listing : []).filter(
-    (e) => e.name && e.name.endsWith(".md") && e.download_url,
-  );
-  if (!entries.length) throw new Error("no .md files listed");
-  const raws: string[] = [];
-  for (const entry of entries) {
-    const rawRes = await fetch(entry.download_url!);
-    if (!rawRes.ok) throw new Error(`fetch ${entry.name}: ${rawRes.status}`);
-    raws.push(await rawRes.text());
-  }
-  return raws;
-}
-
-// Refresh from the canonical (gh) source. Called on app mount; resolves true
-// if a newer live set was adopted, false if we kept the existing one.
-export function refreshInstructionsFromGitHub(): Promise<boolean> {
-  if (refreshInFlight) return refreshInFlight;
-  refreshInFlight = (async () => {
-    // A fresh cache beats a network round-trip on every page load.
-    const cached = readCache();
-    if (
-      cached &&
-      cached.raws.length &&
-      Date.now() - cached.fetchedAt < REFRESH_TTL_MS
-    ) {
-      return adopt(cached.raws, cached.source);
-    }
-    try {
-      const raws = await fetchLiveInstructionSet();
-      return adopt(
-        raws,
-        `https://github.com/${EOCHAT_REPO}/tree/main/${EOCHAT_INSTRUCTION_DIR_PATH}`,
-      );
-    } catch (err) {
-      console.warn(
-        "[eo-instructions] could not reach the canonical instruction set — using the bundled snapshot:",
-        err,
-      );
-      if (cached && cached.raws.length) {
-        return adopt(cached.raws, cached.source);
-      }
-      return false;
-    }
-  })().finally(() => {
-    refreshInFlight = null;
-  });
-  return refreshInFlight;
 }

@@ -15,6 +15,33 @@
 //
 // This port is pure: no fs, no path, no model calls. Folds are supplied as an
 // array of parsed { id, title, always, weight, signals, fingerprint, body }.
+//
+// ── Two surfs, not one surf at two speeds ─────────────────────────────────
+//
+// The gate runs in a `mode` (see GateOptions below), and the two modes do
+// different work rather than the same work with different patience — which is
+// the whole content of the System 1 / System 2 distinction. A System 2 pass
+// that merely re-ran the same lexical scan with a bigger budget would be
+// System 1 with more tokens.
+//
+//   System 1 — heuristic and associative. One lexical pass over the question
+//   and recent history; highest-scoring folds until the budget fills; whatever
+//   didn't fit is folded. It is biased the way availability is biased: it finds
+//   the rules WORDED like the question. That is the right first pass, and it
+//   systematically misses the rule that governs this turn without sharing its
+//   vocabulary.
+//
+//   System 2 — dialogical and rule-based. It scores against the CLAIMS the
+//   draft actually made, not only the question, because a rule about citation
+//   discipline is triggered by an answer full of figures, not by a question
+//   that never mentions figures. It then UNFOLDS: folds that matched and lost
+//   the budget race are pulled back in against a raised ceiling, because
+//   "matched but did not fit" is the one class of omission we know was
+//   relevant (INSTRUCTION-LAW R8). And it hands the rules over framed as
+//   obligations to CHECK the draft against, one at a time, rather than as
+//   ambient style guidance to write under.
+
+import type { ThinkingSystem } from "./eo-task-plan";
 
 export interface InstructionFold {
   id: string;
@@ -146,9 +173,19 @@ function splitTerms(text: string): string[] {
 // the audit (`hist:`/`ev:` prefixes).
 const HISTORY_CAP_PER_FOLD = 3;
 const EVIDENCE_CAP_PER_FOLD = 2;
+// The claim channel is System 2's own, and it is uncapped and full-weight on
+// purpose: a rule the ANSWER triggers is as much in force as one the question
+// triggered. Capping it would reproduce the exact bias the second pass exists
+// to correct.
 const SUB_WORD = 1;
 const SUB_PHRASE = 1.5;
 const SUB_TITLE_WORD = 0.5;
+
+// How far System 2 may raise the instruction budget to pull back folds that
+// matched this turn and lost the budget race. Bounded, and the amount actually
+// used is reported in stats.unfoldedIds — an unfold nobody can see is just a
+// bigger budget with a nicer name.
+const SYSTEM2_UNFOLD_MULTIPLIER = 2;
 
 function scoreChannel(
   fold: InstructionFold,
@@ -156,6 +193,11 @@ function scoreChannel(
   lower: string | null,
   tag: string | null,
   cap: number,
+  // Subordinate channels (history, evidence) score at reduced weight because a
+  // stale mention is weaker evidence of relevance than the live question. The
+  // claim channel is tagged for the audit trail but weighs full: a rule the
+  // answer triggered is in force now, not incidentally recalled.
+  full = !tag,
 ): { score: number; matched: string[] } {
   if (!words || !lower) return { score: 0, matched: [] };
   let score = 0;
@@ -167,56 +209,91 @@ function scoreChannel(
     const phrase = s.includes(" ");
     const hit = phrase ? lower.includes(s) : words.has(s);
     if (hit) {
-      score += phrase ? (tag ? SUB_PHRASE : 3) : tag ? SUB_WORD : 2;
+      score += phrase ? (full ? 3 : SUB_PHRASE) : full ? 2 : SUB_WORD;
       matched.push(pre + s);
     }
   }
   for (const w of String(fold.title).toLowerCase().split(/\s+/)) {
     if (w.length > 3 && words.has(w)) {
-      score += tag ? SUB_TITLE_WORD : 1;
+      score += full ? 1 : SUB_TITLE_WORD;
       matched.push(pre + `title:${w}`);
     }
   }
   return { score: Math.min(score, cap), matched };
 }
 
+interface Cue {
+  words: Set<string> | null;
+  lower: string | null;
+}
+
+function cueOf(text: string | null | undefined): Cue {
+  const s = String(text ?? "");
+  return s
+    ? { words: new Set(splitTerms(s)), lower: s.toLowerCase() }
+    : { words: null, lower: null };
+}
+
 function scoreFold(
   fold: InstructionFold,
-  cueWords: Set<string>,
-  cueLower: string,
-  historyWords: Set<string> | null,
-  historyLower: string | null,
-  evidenceWords: Set<string> | null,
-  evidenceLower: string | null,
+  question: Cue,
+  history: Cue,
+  evidence: Cue,
+  claims: Cue,
 ): { score: number; matched: string[] } {
-  const cue = scoreChannel(fold, cueWords, cueLower, null, Infinity);
+  const cue = scoreChannel(
+    fold,
+    question.words,
+    question.lower,
+    null,
+    Infinity,
+  );
   const hist = scoreChannel(
     fold,
-    historyWords,
-    historyLower,
+    history.words,
+    history.lower,
     "hist",
     HISTORY_CAP_PER_FOLD,
   );
   const ev = scoreChannel(
     fold,
-    evidenceWords,
-    evidenceLower,
+    evidence.words,
+    evidence.lower,
     "ev",
     EVIDENCE_CAP_PER_FOLD,
   );
+  // System 2 only: what the answer committed to. Full weight, no cap — see the
+  // note on SUB_WORD above.
+  const cl = scoreChannel(
+    fold,
+    claims.words,
+    claims.lower,
+    "claim",
+    Infinity,
+    true,
+  );
   return {
-    score: cue.score + hist.score + ev.score,
-    matched: [...cue.matched, ...hist.matched, ...ev.matched],
+    score: cue.score + hist.score + ev.score + cl.score,
+    matched: [...cue.matched, ...hist.matched, ...ev.matched, ...cl.matched],
   };
 }
 
 // The static framing that surrounds the fold list, plus per-fold renderers, so
 // the budget can be an honest ceiling on the WHOLE instruction block.
 const DEFAULT_LABEL = "RULES IN FORCE THIS TURN";
-const gateHeader = (label: string) =>
+const SYSTEM2_LABEL = "RULES TO CHECK THIS ANSWER AGAINST";
+
+// System 1 hands the rules over to write under. System 2 hands the same rules
+// over as a checklist to run against something already written — same verbatim
+// bodies (R1), different act.
+const gateHeader = (label: string, mode: ThinkingSystem = "system1") =>
   `${"=".repeat(label.length + 8)}
 ===== ${label} =====
-The rules below are the complete set of additional rules in force for this turn. Follow them, and no others.`;
+${
+  mode === "system2"
+    ? "An answer already exists. The rules below are the complete set of additional rules in force for it. Take them one at a time and say, for each, whether the answer actually satisfies it — and where it does not, what specifically fails. Do not restate a rule you are not checking."
+    : "The rules below are the complete set of additional rules in force for this turn. Follow them, and no others."
+}`;
 const gateFooter = (label: string) => `===== END ${label} =====`;
 const GATE_HEADER = gateHeader(DEFAULT_LABEL);
 const GATE_FOOTER = gateFooter(DEFAULT_LABEL);
@@ -233,8 +310,9 @@ function buildSystemBlock(
   surfaced: InstructionFold[],
   gap: boolean,
   label: string,
+  mode: ThinkingSystem = "system1",
 ): string {
-  const parts = [gateHeader(label)];
+  const parts = [gateHeader(label, mode)];
   parts.push(`--- RULES (${surfaced.length}) ---`);
   for (const fold of surfaced) parts.push(activeLine(fold));
   if (gap) parts.push(GAP_MARKER);
@@ -242,8 +320,13 @@ function buildSystemBlock(
   return parts.join("\n");
 }
 
-function framingTokens(nActive: number, gap: boolean, label: string): number {
-  const text = `${gateHeader(label)}\n--- RULES (${nActive}) ---\n${gap ? GAP_MARKER + "\n" : ""}${gateFooter(label)}`;
+function framingTokens(
+  nActive: number,
+  gap: boolean,
+  label: string,
+  mode: ThinkingSystem = "system1",
+): number {
+  const text = `${gateHeader(label, mode)}\n--- RULES (${nActive}) ---\n${gap ? GAP_MARKER + "\n" : ""}${gateFooter(label)}`;
   return countTokens(text);
 }
 
@@ -265,7 +348,27 @@ export interface GateReport {
     gap: boolean;
     rejectedByBudget: number;
     crowdedOutIds: string[];
+    mode: ThinkingSystem;
+    /** The token ceiling this pass was actually allowed (System 2 raises it). */
+    ceiling: number;
+    /** Folds System 2 pulled back in that System 1's budget had crowded out. */
+    unfoldedIds: string[];
   };
+}
+
+export interface GateOptions {
+  question?: string;
+  history?: string[];
+  evidence?: string[];
+  /**
+   * System 2 only: the draft answer whose claims this pass scores against.
+   * Ignored in System 1 mode, where no draft exists yet.
+   */
+  claims?: string[];
+  budgetTokens?: number;
+  debug?: boolean;
+  label?: string;
+  mode?: ThinkingSystem;
 }
 
 export function createInstructionGate(
@@ -277,47 +380,32 @@ export function createInstructionGate(
     .sort((a, b) => b.weight - a.weight);
   const conditional = folds.filter((f) => !f.always);
 
-  const gate = (opts: {
-    question?: string;
-    history?: string[];
-    evidence?: string[];
-    budgetTokens?: number;
-    debug?: boolean;
-    label?: string;
-  }): GateReport => {
-    const label = opts.label || DEFAULT_LABEL;
+  const gate = (opts: GateOptions): GateReport => {
+    const mode: ThinkingSystem =
+      opts.mode === "system2" ? "system2" : "system1";
+    const label =
+      opts.label || (mode === "system2" ? SYSTEM2_LABEL : DEFAULT_LABEL);
     const budget = Number.isFinite(opts.budgetTokens)
       ? opts.budgetTokens!
       : budgetTokens;
 
-    const questionCue = String(opts.question ?? "");
-    const cueWords = new Set(splitTerms(questionCue));
-    const cueLower = questionCue.toLowerCase();
-
-    const historyCue = (opts.history || []).join(" ");
-    const historyWords = historyCue ? new Set(splitTerms(historyCue)) : null;
-    const historyLower = historyCue ? historyCue.toLowerCase() : null;
-
-    const evidenceText = Array.isArray(opts.evidence)
-      ? opts.evidence.join(" ")
-      : String(opts.evidence ?? "");
-    const evidenceWords = evidenceText
-      ? new Set(splitTerms(evidenceText))
-      : null;
-    const evidenceLower = evidenceText ? evidenceText.toLowerCase() : null;
+    const question = cueOf(opts.question);
+    const history = cueOf((opts.history || []).join(" "));
+    const evidence = cueOf(
+      Array.isArray(opts.evidence)
+        ? opts.evidence.join(" ")
+        : String(opts.evidence ?? ""),
+    );
+    // The claim channel exists only in System 2 — in System 1 there is no
+    // draft yet, and a gate that scored against one would be scoring against
+    // the previous turn's answer.
+    const claims =
+      mode === "system2" ? cueOf((opts.claims || []).join(" ")) : cueOf("");
 
     const scored = conditional
       .map((fold) => ({
         fold,
-        ...scoreFold(
-          fold,
-          cueWords,
-          cueLower,
-          historyWords,
-          historyLower,
-          evidenceWords,
-          evidenceLower,
-        ),
+        ...scoreFold(fold, question, history, evidence, claims),
       }))
       .sort(
         (a, b) =>
@@ -330,7 +418,7 @@ export function createInstructionGate(
 
     const surfaced = [...alwaysOn];
     let used = countTokens(surfaced.map(activeLine).join(""));
-    let blockTokens = framingTokens(surfaced.length, gap, label) + used;
+    let blockTokens = framingTokens(surfaced.length, gap, label, mode) + used;
 
     for (const { fold, score } of scored) {
       if (score <= 0) break;
@@ -341,9 +429,33 @@ export function createInstructionGate(
       blockTokens += delta;
     }
 
+    // The unfold. A fold that scored above zero and lost the budget race is
+    // the one omission we positively know was relevant to this turn, so System
+    // 2 spends a bounded amount more to read it rather than leaving it in the
+    // index. System 1 never does this: staying inside its budget is what makes
+    // it the fast pass.
+    const unfoldedIds: string[] = [];
+    const ceiling =
+      mode === "system2" ? budget * SYSTEM2_UNFOLD_MULTIPLIER : budget;
+    if (mode === "system2") {
+      const seated = new Set(surfaced.map((f) => f.id));
+      for (const { fold, score } of scored) {
+        if (score <= 0) break;
+        if (seated.has(fold.id)) continue;
+        const delta = countTokens(activeLine(fold));
+        if (blockTokens + delta > ceiling) continue;
+        surfaced.push(fold);
+        seated.add(fold.id);
+        unfoldedIds.push(fold.id);
+        used += delta;
+        blockTokens += delta;
+      }
+    }
+
     const activeIds = new Set(surfaced.map((f) => f.id));
     const folded = folds.filter((f) => !activeIds.has(f.id));
-    const blockTokensFinal = framingTokens(surfaced.length, gap, label) + used;
+    const blockTokensFinal =
+      framingTokens(surfaced.length, gap, label, mode) + used;
     const crowdedOut = scored.filter(
       (s) => s.score > 0 && !activeIds.has(s.fold.id),
     );
@@ -354,7 +466,7 @@ export function createInstructionGate(
       foldedIds: folded.map((f) => f.id),
       surfaced,
       folded,
-      systemMessage: buildSystemBlock(surfaced, gap, label),
+      systemMessage: buildSystemBlock(surfaced, gap, label, mode),
       scores: opts.debug
         ? scored.map(({ fold, score, matched }) => ({
             id: fold.id,
@@ -369,10 +481,16 @@ export function createInstructionGate(
         usedTokens: used,
         blockTokens: blockTokensFinal,
         budget,
-        overflow: blockTokensFinal > budget ? blockTokensFinal - budget : 0,
+        // Measured against the ceiling this pass was actually allowed, so a
+        // deliberate System 2 unfold does not read as a budget violation —
+        // and a real violation still does.
+        overflow: blockTokensFinal > ceiling ? blockTokensFinal - ceiling : 0,
         gap,
         rejectedByBudget,
         crowdedOutIds: crowdedOut.map((s) => s.fold.id),
+        mode,
+        ceiling,
+        unfoldedIds,
       },
     };
   };

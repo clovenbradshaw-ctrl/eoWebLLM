@@ -44,6 +44,11 @@ export interface GroundingReport {
   // LAWS.md L3 — no silent truncation: a capped findings list must say it was
   // capped, or it reads as a complete report when it isn't.
   truncated: { reported: number; total: number; dropped: number } | null;
+  // Which warrant channels this check actually covered (see eo-warrant.ts).
+  // "clean" means clean AGAINST THESE — a report that doesn't say what it
+  // checked reads as a whole-answer verdict when it is a partial one
+  // (LAWS.md L6 — no implied completeness).
+  channels: string[];
 }
 
 // Same stopword table as citation-check.js — a capitalised word is only
@@ -407,17 +412,42 @@ function extractAtoms(sentence: string, absoluteStart: number): Atom[] {
 const MAX_FINDINGS = 40;
 
 /**
- * Check the model's finished answer against this turn's search snippets.
- * No citation numbers to resolve here (eoWebLLM strips [n] brackets before
- * this runs) — every checkable atom (name or figure) in a sentence must
- * occur SOMEWHERE across the snippets actually retrieved this turn, or it's
- * flagged as unsupported by the search that grounded the reply.
+ * How many checkable atoms — figures and proper names — a finished draft
+ * asserts, using the same extraction the grounding check itself uses.
+ *
+ * This is the mechanical signal System 2 monitors the System-1 draft with
+ * (see reviewDraft in eo-warrant.ts). A turn can look unremarkable going in
+ * and come back full of specific numbers; that count, not the wording of the
+ * question, is what says the answer made claims someone could check. Deriving
+ * it from the same extractAtoms the checker uses is the point — a second,
+ * looser claim detector would just be another guess (LAWS.md L11d).
+ */
+export function countClaimAtoms(content: string): number {
+  let n = 0;
+  for (const s of splitSentences(String(content || "")))
+    n += extractAtoms(s.text, s.start).length;
+  return n;
+}
+
+/**
+ * Check the model's finished answer against everything this turn actually
+ * surfaced. No citation numbers to resolve here (eoWebLLM strips [n] brackets
+ * before this runs) — every checkable atom (name or figure) in a sentence
+ * must occur SOMEWHERE across the material retrieved this turn, or it's
+ * flagged as unsupported by the evidence that was supposed to ground it.
+ *
+ * The citations passed in are no longer web-only: any external warrant
+ * channel surfaced this turn contributes them (see corpusCitations in
+ * eo-corpus.ts). A reader's uploaded document was the conspicuous gap — the
+ * answer was checked when a search ran and not when the answer was about
+ * their own file, which is precisely backwards.
  */
 export function checkGrounding(
   content: string,
   citations: CitationEntry[],
-  opts: { question?: string } = {},
+  opts: { question?: string; channels?: string[] } = {},
 ): GroundingReport {
+  const channels = opts.channels ?? [];
   if (!citations.length) {
     return {
       sentences: 0,
@@ -426,6 +456,7 @@ export function checkGrounding(
       findings: [],
       clean: true,
       truncated: null,
+      channels,
     };
   }
   const index = buildUnionIndex(citations);
@@ -476,7 +507,16 @@ export function checkGrounding(
       total > kept.length
         ? { reported: kept.length, total, dropped: total - kept.length }
         : null,
+    channels,
   };
+}
+
+// The marker names what was actually consulted rather than always saying
+// "search results" — a claim about the reader's own uploaded file that says
+// "not in search results" tells them nothing about where it was looked for.
+function voidMarker(channels: string[]): string {
+  if (!channels.length) return "[⊘ unsupported]";
+  return `[⊘ not in ${channels.join(" or ")}]`;
 }
 
 /**
@@ -489,10 +529,11 @@ export function annotateVoids(
   report: GroundingReport,
 ): string {
   if (!content || !report.findings.length) return content;
+  const marker = voidMarker(report.channels ?? []);
   let out = content;
   for (const f of [...report.findings].sort((a, b) => b.start - a.start)) {
     if (f.echoesQuestion) continue;
-    out = out.slice(0, f.end) + ` [⊘ not in search results]` + out.slice(f.end);
+    out = out.slice(0, f.end) + ` ${marker}` + out.slice(f.end);
   }
   return out;
 }
