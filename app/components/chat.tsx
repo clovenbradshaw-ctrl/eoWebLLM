@@ -484,6 +484,7 @@ function useScrollToBottom(
 
 export function ChatActions(props: {
   uploadImage: () => void;
+  uploadFile: () => void;
   setAttachImages: (images: ChatImage[]) => void;
   setUploading: (uploading: boolean) => void;
   scrollToBottom: () => void;
@@ -491,9 +492,11 @@ export function ChatActions(props: {
   showPromptHints: () => void;
   hitBottom: boolean;
   uploading: boolean;
+  uploadingFile: boolean;
 }) {
   const config = useAppConfig();
   const chatStore = useChatStore();
+  const session = chatStore.currentSession();
 
   // switch model
   const currentModel = config.modelConfig.model;
@@ -1508,11 +1511,13 @@ function ChatInner() {
 
         <ChatActions
           uploadImage={uploadImage}
+          uploadFile={uploadFile}
           setAttachImages={setAttachImages}
           setUploading={setUploading}
           scrollToBottom={scrollToBottom}
           hitBottom={hitBottom}
           uploading={uploading}
+          uploadingFile={uploadingFile}
           showPromptSetting={() => setShowEditPromptModal(true)}
           showPromptHints={() => {
             // Click again to close
