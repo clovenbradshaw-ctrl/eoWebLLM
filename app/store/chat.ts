@@ -27,8 +27,9 @@ import {
   updateSummaryWithFold,
   advanceSummaryFold,
 } from "../client/eo-discourse";
-import { createInstructionGate } from "../client/eo-gate";
+import { createInstructionGate, countTokens } from "../client/eo-gate";
 import { getInstructionFolds } from "../client/eo-instructions";
+import { webSearch, formatWebSearchBlock } from "../client/eo-websearch";
 
 export type ChatMessage = RequestMessage & {
   date: string;
@@ -57,6 +58,22 @@ export interface ChatStat {
   charCount: number;
 }
 
+// EOT — the eochat-style terminal log: every surf (instruction gate), fold
+// (context-budget clamp), send (what actually reached the engine), and
+// background task (topic naming, discourse fold) this session has run,
+// named so nothing the system did is silent.
+export type EoLogKind =
+  "surf" | "fold" | "send" | "task" | "error" | "web" | "file";
+
+export interface EoLogEntry {
+  id: string;
+  ts: number;
+  kind: EoLogKind;
+  text: string;
+}
+
+const EO_LOG_MAX = 400;
+
 export interface ChatSession {
   id: string;
   topic: string;
@@ -69,9 +86,24 @@ export interface ChatSession {
   clearContextIndex?: number;
   isGenerating: boolean;
 
+  // set only while the engine is downloading/compiling a model (once per
+  // model switch); null once the model is ready
+  modelLoadProgress: { progress: number; text: string } | null;
+
   // eoWebLLM bounded-context state (see app/client/eo-discourse.ts)
   eoSummary?: EoSummary | null;
   eoLastFoldIndex: number;
+  eoLog?: EoLogEntry[];
+
+  // web calling (see app/client/eo-websearch.ts): when on, the next question
+  // is searched before it reaches the model, same shape as eochat's
+  // per-conversation webSearch toggle.
+  webSearchEnabled?: boolean;
+
+  // set by an uploaded file (see app/client/eo-binary-structure.ts); consumed
+  // and cleared by the next onUserInput call, same one-shot handoff pattern
+  // as the instruction gate's per-turn system block.
+  pendingFileContext?: string | null;
 
   template: Template;
 }
@@ -133,21 +165,105 @@ function eoRunBackground(
 
 // surf: build the RULES IN FORCE block for the current turn from the eochat
 // instruction set, keyword-surfaced against the question + recent history.
+// Returns the log line alongside the block so the EOT panel can show exactly
+// which folds surfaced and which stayed folded, per turn.
 function eoBuildInstructionBlock(
   question: string,
   session: ChatSession,
   clearContextIndex: number,
-): string | null {
+): { systemMessage: string | null; logText: string | null } {
   try {
     const folds = getInstructionFolds();
-    if (!folds.length) return null;
+    if (!folds.length) return { systemMessage: null, logText: null };
     const history = getRecentUserQuestions(session, clearContextIndex, 3);
     const report = createInstructionGate(folds).gate({ question, history });
-    return report.systemMessage || null;
+    const logText =
+      `surf: ${report.stats.active} active fold(s) [${report.activeIds.join(", ")}], ` +
+      `${report.stats.folded} folded, gap=${report.stats.gap}, ` +
+      `${report.stats.usedTokens}/${report.stats.budget} tokens`;
+    return { systemMessage: report.systemMessage || null, logText };
   } catch (err) {
     log.warn("[eo] instruction gate failed:", err);
-    return null;
+    return {
+      systemMessage: null,
+      logText: `surf: instruction gate failed — ${(err as Error).message}`,
+    };
   }
+}
+
+// fold's hard guarantee: the assembled prompt must never exceed the model's
+// context window. getMessagesWithMemory bounds normal history by turn count,
+// but a single oversized turn (e.g. a small model echoing a long system
+// prompt back into its own reply) can still blow the budget on the next
+// turn. This is the final backstop so a ContextWindowSizeExceededError can
+// never reach the engine: drop the oldest droppable (non-system) messages
+// first, and if the required system context alone is still too big, fold it
+// down by truncating the largest one. Every engine call — the visible chat
+// turn, the background topic-naming call, and the background fold/summary
+// calls — routes through this before reaching llm.chat().
+const EO_OUTPUT_TOKEN_RESERVE = 512;
+
+function eoMessageTokens(m: RequestMessage): number {
+  return countTokens(getMessageTextContent(m)) + 4;
+}
+
+function eoEnforceContextBudget(
+  messages: RequestMessage[],
+  contextWindowSize: number,
+  label: string,
+): { messages: RequestMessage[]; logText: string } {
+  if (messages.length === 0) {
+    return { messages, logText: `fold: ${label} — nothing to send` };
+  }
+  const budget = Math.max(
+    contextWindowSize - EO_OUTPUT_TOKEN_RESERVE,
+    Math.min(contextWindowSize, 256),
+  );
+
+  // last message is the anchor — the actual question or instruction this
+  // call exists to answer — never dropped, only truncated as a last resort
+  const anchor = messages[messages.length - 1];
+  const rest = messages.slice(0, -1);
+  const required: RequestMessage[] = [];
+  const droppable: RequestMessage[] = [];
+  for (const m of rest) {
+    (m.role === "system" ? required : droppable).push(m);
+  }
+
+  const sum = (list: RequestMessage[]) =>
+    list.reduce((total, m) => total + eoMessageTokens(m), 0);
+  let total = sum(required) + sum(droppable) + eoMessageTokens(anchor);
+
+  let droppedCount = 0;
+  while (droppable.length && total > budget) {
+    total -= eoMessageTokens(droppable.shift()!);
+    droppedCount += 1;
+  }
+  while (required.length && total > budget) {
+    total -= eoMessageTokens(required.shift()!);
+    droppedCount += 1;
+  }
+
+  const kept = [...required, ...droppable, anchor];
+  let truncated = false;
+  if (total > budget) {
+    truncated = true;
+    const overflow = total - budget;
+    const text = getMessageTextContent(anchor);
+    const keepChars = Math.max(0, text.length - Math.ceil(overflow * 3.5));
+    kept[kept.length - 1] = {
+      ...anchor,
+      content: `${text.slice(0, keepChars)}\n\n[...folded to fit the model's context window]`,
+    };
+  }
+
+  const finalTokens = kept.reduce((t, m) => t + eoMessageTokens(m), 0);
+  const logText =
+    `fold: ${label} — kept ${kept.length}/${messages.length} msg(s), ` +
+    `dropped ${droppedCount}, truncated=${truncated}, ` +
+    `${finalTokens}/${budget} tokens (window ${contextWindowSize})`;
+
+  return { messages: kept, logText };
 }
 
 function getRecentUserQuestions(
@@ -184,8 +300,11 @@ function createEmptySession(): ChatSession {
     lastUpdate: Date.now(),
     lastSummarizeIndex: 0,
     isGenerating: false,
+    modelLoadProgress: null,
     eoSummary: null,
     eoLastFoldIndex: 0,
+    webSearchEnabled: false,
+    pendingFileContext: null,
 
     template: createEmptyTemplate(),
   };
@@ -373,8 +492,21 @@ export const useChatStore = createPersistStore(
           sessions: state.sessions.map((session) => ({
             ...session,
             isGenerating: false,
+            modelLoadProgress: null,
           })),
         }));
+      },
+
+      pushEoLog(kind: EoLogKind, text: string) {
+        get().updateCurrentSession((session) => {
+          const entry: EoLogEntry = {
+            id: nanoid(),
+            ts: Date.now(),
+            kind,
+            text,
+          };
+          session.eoLog = [...(session.eoLog ?? []), entry].slice(-EO_LOG_MAX);
+        });
       },
 
       onNewMessage(message: ChatMessage, llm: LLMApi) {
@@ -386,11 +518,65 @@ export const useChatStore = createPersistStore(
         get().summarizeSession(llm);
       },
 
-      onUserInput(content: string, llm: LLMApi, attachImages?: ChatImage[]) {
+      toggleWebSearch() {
+        get().updateCurrentSession((session) => {
+          session.webSearchEnabled = !session.webSearchEnabled;
+        });
+      },
+
+      // one-shot handoff from an uploaded file (see eo-binary-structure.ts)
+      // into the next turn's context; call sites append across multiple
+      // files uploaded before a send, then onUserInput consumes and clears it.
+      attachFileContext(block: string) {
+        get().updateCurrentSession((session) => {
+          session.pendingFileContext = session.pendingFileContext
+            ? `${session.pendingFileContext}\n\n${block}`
+            : block;
+        });
+      },
+
+      async onUserInput(
+        content: string,
+        llm: LLMApi,
+        attachImages?: ChatImage[],
+      ) {
         const modelConfig = useAppConfig.getState().modelConfig;
 
         const userContent = fillTemplateWith(content, useAppConfig.getState());
         log.debug("[User Input] after template: ", userContent);
+
+        // web calling (surf-time, before the turn is assembled): search the
+        // raw question when the session's toggle is on. Runs before anything
+        // else so a failed/slow search never blocks on model state.
+        const session0 = get().currentSession();
+        const extraSystemBlocks: string[] = [];
+        if (session0.webSearchEnabled && userContent.trim()) {
+          try {
+            const results = await webSearch(userContent.trim());
+            const block = formatWebSearchBlock(userContent.trim(), results);
+            extraSystemBlocks.push(block);
+            get().pushEoLog(
+              "web",
+              `web: ${results.length} result(s) for "${userContent.trim().slice(0, 80)}"`,
+            );
+          } catch (err) {
+            get().pushEoLog(
+              "error",
+              `web: search failed — ${(err as Error).message}`,
+            );
+          }
+        }
+
+        // file structure (see eo-binary-structure.ts): consume whatever an
+        // upload queued for this turn, then clear it so it isn't resent.
+        const pendingFile = get().currentSession().pendingFileContext;
+        if (pendingFile) {
+          extraSystemBlocks.push(pendingFile);
+          get().updateCurrentSession((session) => {
+            session.pendingFileContext = null;
+          });
+          get().pushEoLog("file", `file: attached context for this turn`);
+        }
 
         let mContent: string | MultimodalContent[] = userContent;
 
@@ -427,9 +613,26 @@ export const useChatStore = createPersistStore(
           model: modelConfig.model,
         });
 
-        // get recent messages
+        // get recent messages, then fold them down to fit the model's
+        // context window so the engine can never reject the request
         const recentMessages = get().getMessagesWithMemory(userContent);
-        const sendMessages = recentMessages.concat(userMessage);
+        const extraMessages = extraSystemBlocks.map((block) =>
+          createMessage({ role: "system", content: block }),
+        );
+        const budgetResult = eoEnforceContextBudget(
+          recentMessages.concat(extraMessages, userMessage),
+          modelConfig.context_window_size ?? 4096,
+          "chat turn",
+        );
+        const sendMessages = budgetResult.messages;
+        get().pushEoLog("fold", budgetResult.logText);
+        get().pushEoLog(
+          "send",
+          `send: ${sendMessages.length} msg(s) to ${modelConfig.model} — ` +
+            sendMessages
+              .map((m) => `${m.role}(${eoMessageTokens(m)}t)`)
+              .join(", "),
+        );
 
         log.debug("Messages: ", sendMessages);
 
@@ -461,12 +664,18 @@ export const useChatStore = createPersistStore(
             stream: true,
             enable_thinking: useAppConfig.getState().enableThinking,
           },
+          onProgress(progress, text) {
+            get().updateCurrentSession((session) => {
+              session.modelLoadProgress = { progress, text };
+            });
+          },
           onUpdate(message) {
             botMessage.streaming = true;
             if (message) {
               botMessage.content = message;
             }
             get().updateCurrentSession((session) => {
+              session.modelLoadProgress = null;
               session.messages = session.messages.concat();
             });
           },
@@ -483,6 +692,7 @@ export const useChatStore = createPersistStore(
             }
             get().updateCurrentSession((session) => {
               session.isGenerating = false;
+              session.modelLoadProgress = null;
             });
           },
           onError(error) {
@@ -496,6 +706,7 @@ export const useChatStore = createPersistStore(
             get().updateCurrentSession((session) => {
               session.messages = session.messages.concat();
               session.isGenerating = false;
+              session.modelLoadProgress = null;
             });
 
             console.error("[Chat] failed ", error);
@@ -510,13 +721,18 @@ export const useChatStore = createPersistStore(
         const out: ChatMessage[] = [];
 
         // 0. instruction gate (surf): rules in force for THIS turn
-        const gateBlock = eoBuildInstructionBlock(
+        const gate = eoBuildInstructionBlock(
           nextQuestion?.trim() ?? "",
           session,
           clearContextIndex,
         );
-        if (gateBlock) {
-          out.push(createMessage({ role: "system", content: gateBlock }));
+        if (gate.systemMessage) {
+          out.push(
+            createMessage({ role: "system", content: gate.systemMessage }),
+          );
+        }
+        if (gate.logText) {
+          get().pushEoLog("surf", gate.logText);
         }
 
         // 1. pre-defined in-context prompts (reader-defined template context)
@@ -594,15 +810,22 @@ export const useChatStore = createPersistStore(
           session.topic === DEFAULT_TOPIC &&
           countMessages(messages) >= SUMMARIZE_MIN_LEN
         ) {
-          const topicMessages = messages.concat(
-            createMessage({
-              role: "user",
-              content: Locale.Store.Prompt.Topic,
-            }),
+          const topicBudget = eoEnforceContextBudget(
+            messages.concat(
+              createMessage({
+                role: "user",
+                content: Locale.Store.Prompt.Topic,
+              }),
+            ),
+            modelConfig.context_window_size ?? 4096,
+            "topic naming",
           );
+          const topicMessages = topicBudget.messages;
+          get().pushEoLog("fold", topicBudget.logText);
           // one background engine call per turn: if the topic call takes the
           // slot now, the fold for this turn is deferred to a later onNewMessage
           if (!eoEngineBusy) {
+            get().pushEoLog("task", "task: topic-naming started");
             eoRunBackground(
               llm,
               topicMessages,
@@ -615,14 +838,19 @@ export const useChatStore = createPersistStore(
               EO_FOLD_TIMEOUT_MS,
             )
               .then((message) => {
+                const topic =
+                  message.length > 0 ? trimTopic(message) : DEFAULT_TOPIC;
                 get().updateCurrentSession(
-                  (session) =>
-                    (session.topic =
-                      message.length > 0 ? trimTopic(message) : DEFAULT_TOPIC),
+                  (session) => (session.topic = topic),
+                );
+                get().pushEoLog(
+                  "task",
+                  `task: topic-naming finished — "${topic}"`,
                 );
               })
               .catch((err) => {
                 log.error("[Topic] ", err);
+                get().pushEoLog("error", `task: topic-naming failed — ${err}`);
               });
           }
         } else {
@@ -679,21 +907,31 @@ export const useChatStore = createPersistStore(
             const answer = getMessageTextContent(msgs[assistantIdx]);
             const prev = session.eoSummary ?? emptySummary();
 
+            get().pushEoLog("task", `task: fold started (turn ${userIdx})`);
+
             // phase 1: fold this turn to its discourse contribution
             let turnFold: string;
             try {
+              const foldBudget = eoEnforceContextBudget(
+                [{ role: "user", content: buildFoldPrompt(question, answer) }],
+                modelConfig.context_window_size ?? 4096,
+                "fold phase 1",
+              );
+              get().pushEoLog("fold", foldBudget.logText);
               const rawFold = await eoRunBackground(
                 llm,
-                [{ role: "user", content: buildFoldPrompt(question, answer) }],
+                foldBudget.messages,
                 foldConfig,
                 EO_FOLD_TIMEOUT_MS,
               );
               turnFold = parseFold(rawFold);
-            } catch {
+            } catch (err) {
               // interrupted or failed — leave unfolded so the next turn retries
+              get().pushEoLog("error", `task: fold phase 1 failed — ${err}`);
               return;
             }
             if (!turnFold) return;
+            get().pushEoLog("task", `task: fold phase 1 done — "${turnFold}"`);
 
             // phase 2: refresh the running summary; fall back to a pure
             // advance on any failure so no fold is ever lost
@@ -703,15 +941,29 @@ export const useChatStore = createPersistStore(
                 ...(prev.folds ?? []),
                 turnFold,
               ]);
+              const summaryBudget = eoEnforceContextBudget(
+                [{ role: "user", content: updatePrompt }],
+                modelConfig.context_window_size ?? 4096,
+                "fold phase 2",
+              );
+              get().pushEoLog("fold", summaryBudget.logText);
               const raw = await eoRunBackground(
                 llm,
-                [{ role: "user", content: updatePrompt }],
+                summaryBudget.messages,
                 foldConfig,
                 EO_FOLD_TIMEOUT_MS,
               );
               next = updateSummaryWithFold(prev, turnFold, raw);
-            } catch {
+              get().pushEoLog(
+                "task",
+                "task: fold phase 2 done — summary updated",
+              );
+            } catch (err) {
               next = advanceSummaryFold(prev, turnFold);
+              get().pushEoLog(
+                "error",
+                `task: fold phase 2 failed, advanced without summary update — ${err}`,
+              );
             }
 
             get().updateCurrentSession((session) => {
@@ -774,7 +1026,7 @@ export const useChatStore = createPersistStore(
   },
   {
     name: StoreKey.Chat,
-    version: 0.2,
+    version: 0.3,
     migrate(persistedState, version): any {
       if (version < 0.1) {
         const store = persistedState as typeof DEFAULT_CHAT_STATE;
@@ -790,6 +1042,13 @@ export const useChatStore = createPersistStore(
         store.sessions.forEach((s) => {
           s.eoSummary = null;
           s.eoLastFoldIndex = 0;
+        });
+        return store;
+      }
+      if (version < 0.3) {
+        const store = persistedState as typeof DEFAULT_CHAT_STATE;
+        store.sessions.forEach((s) => {
+          s.modelLoadProgress = null;
         });
         return store;
       }

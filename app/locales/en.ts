@@ -3,7 +3,7 @@ import { SubmitKey } from "../store/config";
 // if you are adding a new translation, please use PartialLocaleType instead of LocaleType
 
 const en = {
-  Title: "WebLLM Chat",
+  Title: "eoWebLLM",
   Subtitle: "AI Models Running in Browser",
   WIP: "Coming Soon...",
   ChatItem: {
@@ -58,6 +58,10 @@ const en = {
     },
     Rename: "Rename Chat",
     Typing: "Typing…",
+    ModelLoading: {
+      Title: "Loading model…",
+      Note: "This only happens once per model switch — the model is cached for next time.",
+    },
     Input: (submitKey: string) => {
       var inputHints = `${submitKey} to send`;
       if (submitKey === String(SubmitKey.Enter)) {
@@ -384,7 +388,7 @@ const en = {
 
   ServiceWorker: {
     Error:
-      "The WebLLM worker has lost connection. Please close all tabs of WebLLM Chat and try opening WebLLM Chat again.",
+      "The WebLLM worker has lost connection. Please close all tabs of eoWebLLM and try opening eoWebLLM again.",
   },
   MlcLLMConnect: {
     Title: "Connect to MLC-LLM API Endpoint",

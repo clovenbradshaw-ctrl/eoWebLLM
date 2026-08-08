@@ -70,12 +70,14 @@ export class WebLLMApi implements LLMApi {
     }
   }
 
-  private async initModel(onUpdate?: (message: string, chunk: string) => void) {
+  private async initModel(
+    onProgress?: (progress: number, text: string) => void,
+  ) {
     if (!this.llmConfig) {
       throw Error("llmConfig is undefined");
     }
     this.webllm.engine.setInitProgressCallback((report: InitProgressReport) => {
-      onUpdate?.(report.text, report.text);
+      onProgress?.(report.progress, report.text);
     });
     await this.webllm.engine.reload(this.llmConfig.model, this.llmConfig);
     this.initialized = true;
@@ -99,7 +101,7 @@ export class WebLLMApi implements LLMApi {
         };
       }
       try {
-        await this.initModel(options.onUpdate);
+        await this.initModel(options.onProgress);
       } catch (err: any) {
         let errorMessage = err.message || err.toString() || "";
         if (errorMessage === "[object Object]") {

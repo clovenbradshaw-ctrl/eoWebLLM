@@ -92,6 +92,12 @@ import Image from "next/image";
 import { MLCLLMContext, WebLLMContext } from "../context";
 import { ChatImage } from "../typing";
 import ModelSelect from "./model-select";
+import { Terminal, Globe, Paperclip } from "lucide-react";
+import {
+  findBinaryStructure,
+  formatBinaryStructureBlock,
+  tryDecodeText,
+} from "../client/eo-binary-structure";
 
 export function ScrollDownToast(prop: { show: boolean; onclick: () => void }) {
   return (
@@ -514,6 +520,19 @@ export function ChatActions(props: {
         />
       )}
       <ChatAction
+        onClick={() => chatStore.toggleWebSearch()}
+        text="Web Search"
+        icon={<Globe size={16} />}
+        selected={!!session.webSearchEnabled}
+      />
+      <ChatAction
+        onClick={props.uploadFile}
+        text="Attach File"
+        icon={
+          props.uploadingFile ? <LoadingButtonIcon /> : <Paperclip size={16} />
+        }
+      />
+      <ChatAction
         onClick={props.showPromptSetting}
         text={Locale.Chat.Actions.EditConversation}
         icon={<EditIcon />}
@@ -590,6 +609,7 @@ function ChatInner() {
   const isStreaming = session.messages.some((m) => m.streaming);
 
   const [showExport, setShowExport] = useState(false);
+  const [showEoLog, setShowEoLog] = useState(false);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [userInput, setUserInput] = useState("");
@@ -610,6 +630,7 @@ function ChatInner() {
   const navigate = useNavigate();
   const [attachImages, setAttachImages] = useState<ChatImage[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
   const [showEditPromptModal, setShowEditPromptModal] = useState(false);
   const webllm = useContext(WebLLMContext)!;
   const mlcllm = useContext(MLCLLMContext)!;
@@ -1052,6 +1073,54 @@ function ChatInner() {
     setAttachImages(images);
   }
 
+  // Arbitrary file upload — any type, not just images. Reads the raw bytes,
+  // runs eoreader6's modality-blind structure detector (eo-binary-structure)
+  // to find boundaries the format's own parser was never consulted for, and
+  // attempts a text decode so a readable file also gets read as text. Both
+  // land as a one-shot system-context block the next turn consumes (see
+  // chatStore.attachFileContext / session.pendingFileContext).
+  async function uploadFile() {
+    const files: File[] = await new Promise((res) => {
+      const fileInput = document.createElement("input");
+      fileInput.type = "file";
+      fileInput.multiple = true;
+      fileInput.onchange = (event: any) => {
+        res(Array.from(event.target.files as FileList));
+      };
+      fileInput.click();
+    });
+    if (!files.length) return;
+
+    setUploadingFile(true);
+    try {
+      for (const file of files) {
+        const buffer = new Uint8Array(await file.arrayBuffer());
+        const structure = findBinaryStructure(buffer);
+        const text = tryDecodeText(buffer);
+
+        const parts = [formatBinaryStructureBlock(file.name, structure)];
+        if (text) {
+          parts.push(
+            `FILE TEXT for "${file.name}" (first ${text.length} chars):\n\n${text}`,
+          );
+        }
+        chatStore.attachFileContext(parts.join("\n\n"));
+        chatStore.pushEoLog(
+          "file",
+          `file: queued "${file.name}" (${buffer.length} bytes, ` +
+            `${structure.clearings.length} clearing(s)${text ? ", text decoded" : ""})`,
+        );
+      }
+      showToast(
+        files.length === 1
+          ? `${files[0].name} attached — will be sent with your next message`
+          : `${files.length} files attached — will be sent with your next message`,
+      );
+    } finally {
+      setUploadingFile(false);
+    }
+  }
+
   return (
     <div className={styles.chat} key={session.id}>
       <div className="window-header">
@@ -1123,6 +1192,14 @@ function ChatInner() {
               }}
             />
           </div>
+          <div className="window-action-button">
+            <IconButton
+              icon={<Terminal size={16} />}
+              bordered
+              title="EOT — system log"
+              onClick={() => setShowEoLog((v) => !v)}
+            />
+          </div>
           {showMaxIcon && (
             <div className="window-action-button">
               <IconButton
@@ -1138,6 +1215,35 @@ function ChatInner() {
           )}
         </div>
       </div>
+
+      {showEoLog && (
+        <div className={styles["eot-panel"]}>
+          {!session.eoLog?.length ? (
+            <div className={styles["eot-panel-empty"]}>
+              EOT — nothing has run yet this session. Send a message to see surf
+              (instruction gate), fold (context-budget clamp), send (what
+              reached the engine), and background tasks (topic naming, discourse
+              fold) logged here as they happen.
+            </div>
+          ) : (
+            session.eoLog.map((entry) => (
+              <div key={entry.id}>
+                [{new Date(entry.ts).toLocaleTimeString()}]{" "}
+                <span
+                  className={
+                    styles["eot-entry-kind"] +
+                    " " +
+                    styles[`eot-entry-${entry.kind}`]
+                  }
+                >
+                  {entry.kind.toUpperCase()}
+                </span>
+                {entry.text}
+              </div>
+            ))
+          )}
+        </div>
+      )}
 
       <div
         className={styles["chat-body"]}
@@ -1157,6 +1263,32 @@ function ChatInner() {
             fullWidth
           />
         </div>
+        {session.modelLoadProgress && (
+          <div className={styles["model-load-progress"]}>
+            <div className={styles["model-load-progress-header"]}>
+              <span>{Locale.Chat.ModelLoading.Title}</span>
+              <span>
+                {Math.round(session.modelLoadProgress.progress * 100)}%
+              </span>
+            </div>
+            <div className={styles["model-load-progress-track"]}>
+              <div
+                className={styles["model-load-progress-bar"]}
+                style={{
+                  width: `${Math.round(
+                    session.modelLoadProgress.progress * 100,
+                  )}%`,
+                }}
+              />
+            </div>
+            <div className={styles["model-load-progress-text"]}>
+              {session.modelLoadProgress.text}
+            </div>
+            <div className={styles["model-load-progress-note"]}>
+              {Locale.Chat.ModelLoading.Note}
+            </div>
+          </div>
+        )}
         {messages.map((message, i) => {
           const isUser = message.role === "user";
           const isContext = i < context.length;

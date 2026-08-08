@@ -46,6 +46,11 @@ const nextConfig = {
     return config;
   },
   output: mode,
+  basePath: mode === "export" ? "/eoWebLLM" : undefined,
+  assetPrefix: mode === "export" ? "/eoWebLLM/" : undefined,
+  env: {
+    NEXT_PUBLIC_BASE_PATH: mode === "export" ? "/eoWebLLM" : "",
+  },
   images: {
     unoptimized: mode === "export",
   },

@@ -41,6 +41,7 @@ export interface ChatOptions {
   config: LLMConfig;
 
   onUpdate?: (message: string, chunk: string) => void;
+  onProgress?: (progress: number, text: string) => void;
   onFinish: (
     message: string,
     stopReason?: ChatCompletionFinishReason,
