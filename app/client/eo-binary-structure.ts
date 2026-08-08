@@ -95,7 +95,7 @@ export function findBinaryStructure(bytes: Uint8Array): BinaryStructureReport {
     };
   }
 
-  const turn = runTurn({
+  const turn: any = runTurn({
     material: series,
     ...SPEC,
     clearOn: ["surfeit", "moved"],
@@ -106,13 +106,14 @@ export function findBinaryStructure(bytes: Uint8Array): BinaryStructureReport {
       blockSize,
       blockCount,
       clearings: [],
-      gap: (turn as any).gap,
+      gap: turn.gap,
     };
   }
 
-  const clearings: BinaryClearing[] = turn.events
-    .filter((e: any) => e.op === "REC")
-    .map((e: any) => ({ block: e.at, byteOffset: e.at * blockSize }));
+  const okTurn = turn as { events: Array<{ op: string; at: number }> };
+  const clearings: BinaryClearing[] = okTurn.events
+    .filter((e) => e.op === "REC")
+    .map((e) => ({ block: e.at, byteOffset: e.at * blockSize }));
 
   return { byteLength: bytes.length, blockSize, blockCount, clearings };
 }
