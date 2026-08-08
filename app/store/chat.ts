@@ -37,6 +37,22 @@ import {
 } from "../client/eo-websearch";
 import { planTools, planSearchQuery } from "../client/eo-tool-router";
 import {
+  defineAnswerSpec,
+  buildFormBlock,
+  evaluateCompliance,
+  reconcileDraft,
+  needsPlanning,
+  type AnswerSpec,
+} from "../client/eo-holonic-plan";
+import {
+  needsMathCheck,
+  defineMathSpec,
+  computeMath,
+  buildMathBlock,
+  checkMathCompliance,
+  type MathResult,
+} from "../client/eo-math-check";
+import {
   checkGrounding,
   annotateVoids,
   snipCitations,
@@ -732,6 +748,108 @@ export const useChatStore = createPersistStore(
           extraSystemBlocks.push(memoryBlock);
         }
 
+        // holonic DEFINE (see eo-holonic-plan.ts): one small background call
+        // decides this turn's form (prose/screenplay/code/reply) and its own
+        // compliance contract, rather than every turn being answered as
+        // undifferentiated prose. Gated by needsPlanning — a mechanical,
+        // no-model-call check — so ordinary short chat ("hi", "thanks",
+        // "what about the beater motor?") never pays for a background round
+        // trip whose answer would be the default "reply" spec anyway; a
+        // fast reply stays fast. Fails open to the "reply" default when it
+        // does run — a parse failure only ever means no extra form
+        // directive is added, never a blocked turn.
+        let answerSpec: AnswerSpec | null = null;
+        if (userContent.trim() && needsPlanning(userContent.trim())) {
+          try {
+            answerSpec = await defineAnswerSpec({
+              question: userContent.trim(),
+              webEnabled: !!session0.webSearchEnabled,
+              generate: (systemPrompt, userPrompt) =>
+                eoRunBackground(
+                  llm,
+                  [
+                    createMessage({ role: "system", content: systemPrompt }),
+                    createMessage({ role: "user", content: userPrompt }),
+                  ],
+                  {
+                    model: modelConfig.model,
+                    cache: useAppConfig.getState().cacheType,
+                    stream: false,
+                  },
+                  EO_ROUTER_TIMEOUT_MS,
+                ),
+            });
+            const formBlock = buildFormBlock(answerSpec);
+            if (formBlock) extraSystemBlocks.push(formBlock);
+            get().pushEoLog(
+              "task",
+              `plan: kind="${answerSpec.kind}" form=${answerSpec.form} minWords=${answerSpec.compliance.minWords}${answerSpec.reason ? ` — ${answerSpec.reason}` : ""}`,
+            );
+          } catch (err) {
+            get().pushEoLog(
+              "error",
+              `plan: DEFINE call failed — ${(err as Error).message}`,
+            );
+          }
+        }
+
+        // math DEFINE (see eo-math-check.ts): the model never does the
+        // arithmetic. Gated by needsMathCheck — a mechanical regex, no
+        // model call — so plain chat never pays this round trip. When it
+        // fires, a small background call extracts the literal expression
+        // (resolving references to earlier turns, e.g. "4 of them" against
+        // an earlier $125), mathjs computes the ground truth, and that
+        // value is handed to the model as a fact to state, not a
+        // computation to perform. Fails open: any extraction/compute
+        // failure just means no math directive is added.
+        let mathResult: MathResult | null = null;
+        if (userContent.trim() && needsMathCheck(userContent.trim())) {
+          try {
+            const mathSpec = await defineMathSpec({
+              question: userContent.trim(),
+              generate: (systemPrompt, userPrompt) =>
+                eoRunBackground(
+                  llm,
+                  [
+                    createMessage({ role: "system", content: systemPrompt }),
+                    createMessage({ role: "user", content: userPrompt }),
+                  ],
+                  {
+                    model: modelConfig.model,
+                    cache: useAppConfig.getState().cacheType,
+                    stream: false,
+                  },
+                  EO_ROUTER_TIMEOUT_MS,
+                ),
+            });
+            if (mathSpec.hasMath) {
+              const result = computeMath(
+                mathSpec.expression,
+                mathSpec.currency,
+              );
+              if (result.ok) {
+                mathResult = result;
+                const mathBlock = buildMathBlock(mathSpec, result);
+                if (mathBlock) extraSystemBlocks.push(mathBlock);
+                get().pushEoLog(
+                  "task",
+                  `math: ${mathSpec.expression} = ${result.formatted}`,
+                );
+              } else {
+                get().pushEoLog(
+                  "error",
+                  `math: could not evaluate "${mathSpec.expression}" — skipped`,
+                );
+              }
+            }
+          } catch (err) {
+            get().pushEoLog(
+              "error",
+              `math: DEFINE call failed — ${(err as Error).message}`,
+            );
+          }
+        }
+
         let mContent: string | MultimodalContent[] = userContent;
 
         if (attachImages && attachImages.length > 0) {
@@ -866,7 +984,7 @@ export const useChatStore = createPersistStore(
               session.messages = session.messages.concat();
             });
           },
-          onFinish(message, stopReason, usage) {
+          async onFinish(message, stopReason, usage) {
             botMessage.streaming = false;
             botMessage.usage = usage;
             botMessage.stopReason = stopReason;
@@ -874,6 +992,99 @@ export const useChatStore = createPersistStore(
               if (!this.config.enable_thinking) {
                 message = message.replace(/<think>\s*<\/think>/g, "");
               }
+
+              // holonic EVALUATE → RECONCILE (see eo-holonic-plan.ts and
+              // eo-math-check.ts): a pure mechanical check against the
+              // DEFINE-decided compliance contract (leak vocabulary,
+              // word-count floor, form shape) and, when this turn had a
+              // computed math ground truth, whether the draft states that
+              // exact value — no model grading its own answer or its own
+              // arithmetic. One bounded rewrite if either check fails;
+              // ships as-is (flagged, never silently) if the rewrite still
+              // doesn't clear it, so a stubborn violation is visible
+              // rather than looping.
+              if (answerSpec || mathResult) {
+                const form = answerSpec?.form ?? "reply";
+                let eva = answerSpec
+                  ? evaluateCompliance(message, answerSpec)
+                  : { compliant: true, violations: [] };
+                if (mathResult) {
+                  const mathViolations = checkMathCompliance(
+                    message,
+                    mathResult,
+                  );
+                  if (mathViolations.length) {
+                    eva = {
+                      compliant: false,
+                      violations: [...eva.violations, ...mathViolations],
+                    };
+                  }
+                }
+                if (!eva.compliant) {
+                  get().pushEoLog(
+                    "task",
+                    `eval: non-compliant — ${eva.violations.map((v) => v.type).join(", ")}`,
+                  );
+                  try {
+                    const revised = await reconcileDraft({
+                      question: userContent.trim(),
+                      form,
+                      draft: message,
+                      violations: eva.violations,
+                      generate: (systemPrompt, userPrompt) =>
+                        eoRunBackground(
+                          llm,
+                          [
+                            createMessage({
+                              role: "system",
+                              content: systemPrompt,
+                            }),
+                            createMessage({
+                              role: "user",
+                              content: userPrompt,
+                            }),
+                          ],
+                          {
+                            model: modelConfig.model,
+                            cache: useAppConfig.getState().cacheType,
+                            stream: false,
+                          },
+                          EO_ROUTER_TIMEOUT_MS,
+                        ),
+                    });
+                    if (revised && revised.trim()) {
+                      message = revised.trim();
+                      eva = answerSpec
+                        ? evaluateCompliance(message, answerSpec)
+                        : { compliant: true, violations: [] };
+                      if (mathResult) {
+                        const mathViolations = checkMathCompliance(
+                          message,
+                          mathResult,
+                        );
+                        if (mathViolations.length) {
+                          eva = {
+                            compliant: false,
+                            violations: [...eva.violations, ...mathViolations],
+                          };
+                        }
+                      }
+                    }
+                  } catch (err) {
+                    get().pushEoLog(
+                      "error",
+                      `reconcile: failed — ${(err as Error).message}`,
+                    );
+                  }
+                  get().pushEoLog(
+                    "task",
+                    eva.compliant
+                      ? "reconcile: now compliant"
+                      : `reconcile: still non-compliant — ${eva.violations.map((v) => v.type).join(", ")} (shipped flagged, not blocked)`,
+                  );
+                }
+              }
+
               // Mechanical citation surface: the talker was never told
               // citations exist, so strip any [n] it wrote anyway. The real
               // source list is attached as structured data (webResults),
