@@ -29,7 +29,13 @@ import {
 } from "../client/eo-discourse";
 import { createInstructionGate, countTokens } from "../client/eo-gate";
 import { getInstructionFolds } from "../client/eo-instructions";
-import { webSearch, formatWebSearchBlock } from "../client/eo-websearch";
+import {
+  webSearch,
+  formatWebSearchBlock,
+  stripCitationBrackets,
+  attachSourcesFooter,
+} from "../client/eo-websearch";
+import { planTools } from "../client/eo-tool-router";
 
 export type ChatMessage = RequestMessage & {
   date: string;
@@ -545,24 +551,66 @@ export const useChatStore = createPersistStore(
         const userContent = fillTemplateWith(content, useAppConfig.getState());
         log.debug("[User Input] after template: ", userContent);
 
-        // web calling (surf-time, before the turn is assembled): search the
-        // raw question when the session's toggle is on. Runs before anything
-        // else so a failed/slow search never blocks on model state.
+        // web calling (surf-time, before the turn is assembled): the Web
+        // Search toggle only enables the CAPABILITY for this session — a
+        // small background model call (eo-tool-router) then decides, per
+        // turn, whether THIS question actually needs it. That call is the
+        // "mechanics" doing the steering: no keyword/regex scan of the
+        // question, just the model's own read of it, same seam eochat's
+        // defineAnswerSpec planner uses for its `lookup` field.
         const session0 = get().currentSession();
         const extraSystemBlocks: string[] = [];
+        // Populated only if web_search actually ran this turn; onFinish below
+        // uses it to mechanically strip any self-authored [n] brackets and
+        // attach the real source list — the talker itself is never told
+        // citations exist (see formatWebSearchBlock in eo-websearch.ts).
+        let turnWebResults: Awaited<ReturnType<typeof webSearch>> = [];
         if (session0.webSearchEnabled && userContent.trim()) {
           try {
-            const results = await webSearch(userContent.trim());
-            const block = formatWebSearchBlock(userContent.trim(), results);
-            extraSystemBlocks.push(block);
+            const decision = await planTools({
+              question: userContent.trim(),
+              tools: [
+                {
+                  name: "web_search",
+                  description:
+                    "Looks up a specific, checkable, possibly time-sensitive fact " +
+                    "on the web (Wikipedia + DuckDuckGo). Not for greetings, " +
+                    "opinions, or follow-ups about what was already said.",
+                },
+              ],
+              generate: (systemPrompt, userPrompt) =>
+                eoRunBackground(
+                  llm,
+                  [
+                    createMessage({ role: "system", content: systemPrompt }),
+                    createMessage({ role: "user", content: userPrompt }),
+                  ],
+                  {
+                    model: modelConfig.model,
+                    cache: useAppConfig.getState().cacheType,
+                    stream: false,
+                  },
+                  EO_FOLD_TIMEOUT_MS,
+                ),
+            });
             get().pushEoLog(
               "web",
-              `web: ${results.length} result(s) for "${userContent.trim().slice(0, 80)}"`,
+              `route: ${decision.tools.length ? decision.tools.join(", ") : "no tools"} — ${decision.reason}${decision.fellBack ? " (fell back)" : ""}`,
             );
+            if (decision.tools.includes("web_search")) {
+              const results = await webSearch(userContent.trim());
+              turnWebResults = results;
+              const block = formatWebSearchBlock(userContent.trim(), results);
+              extraSystemBlocks.push(block);
+              get().pushEoLog(
+                "web",
+                `web: ${results.length} result(s) for "${userContent.trim().slice(0, 80)}"`,
+              );
+            }
           } catch (err) {
             get().pushEoLog(
               "error",
-              `web: search failed — ${(err as Error).message}`,
+              `web: routing/search failed — ${(err as Error).message}`,
             );
           }
         }
@@ -614,17 +662,50 @@ export const useChatStore = createPersistStore(
         });
 
         // get recent messages, then fold them down to fit the model's
-        // context window so the engine can never reject the request
+        // context window so the engine can never reject the request.
+        // The engine requires every system message to precede any other
+        // role (SystemMessageOrderError) — recentMessages already leads
+        // with its own system block, so web/file context must be spliced
+        // in there too, not merely appended before the user turn.
         const recentMessages = get().getMessagesWithMemory(userContent);
+        const systemPrefixLen = recentMessages.findIndex(
+          (m) => m.role !== "system",
+        );
+        const splitAt =
+          systemPrefixLen === -1 ? recentMessages.length : systemPrefixLen;
+        const systemPrefix = recentMessages.slice(0, splitAt);
+        const rest = recentMessages.slice(splitAt);
         const extraMessages = extraSystemBlocks.map((block) =>
           createMessage({ role: "system", content: block }),
         );
         const budgetResult = eoEnforceContextBudget(
-          recentMessages.concat(extraMessages, userMessage),
+          systemPrefix.concat(extraMessages, rest, [userMessage]),
           modelConfig.context_window_size ?? 4096,
           "chat turn",
         );
-        const sendMessages = budgetResult.messages;
+        // The engine (see @mlc-ai/web-llm ChatModule request validation)
+        // allows a system message ONLY at index 0 — a second one anywhere
+        // else throws SystemMessageOrderError, even if every system message
+        // is contiguous at the front. eoEnforceContextBudget already sorts
+        // all kept system messages to the front (its `required` bucket), so
+        // merging them into one here is enough to satisfy that constraint.
+        const budgeted = budgetResult.messages;
+        const leadingSystemEnd = budgeted.findIndex((m) => m.role !== "system");
+        const systemEnd =
+          leadingSystemEnd === -1 ? budgeted.length : leadingSystemEnd;
+        const sendMessages =
+          systemEnd > 1
+            ? [
+                createMessage({
+                  role: "system",
+                  content: budgeted
+                    .slice(0, systemEnd)
+                    .map((m) => getMessageTextContent(m))
+                    .join("\n\n---\n\n"),
+                }),
+                ...budgeted.slice(systemEnd),
+              ]
+            : budgeted;
         get().pushEoLog("fold", budgetResult.logText);
         get().pushEoLog(
           "send",
@@ -686,6 +767,16 @@ export const useChatStore = createPersistStore(
             if (message) {
               if (!this.config.enable_thinking) {
                 message = message.replace(/<think>\s*<\/think>/g, "");
+              }
+              // Mechanical citation surface: the talker was never told
+              // citations exist, so strip any [n] it wrote anyway, then
+              // attach the real source list ourselves — attribution the
+              // model cannot fabricate because it never authors it.
+              if (turnWebResults.length) {
+                message = attachSourcesFooter(
+                  stripCitationBrackets(message),
+                  turnWebResults,
+                );
               }
               botMessage.content = message;
               get().onNewMessage(botMessage, llm);

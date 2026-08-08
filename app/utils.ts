@@ -21,6 +21,31 @@ export function trimTopic(topic: string) {
   );
 }
 
+// Splits a `<think>...</think>`-prefixed reply into its reasoning and its
+// answer, so the UI can render the reasoning as a collapsible panel (like
+// Claude's extended-thinking display) instead of dumping it inline as plain
+// text. `open` is true while the model is still inside the think block
+// (streaming, no closing tag yet) so the panel can auto-expand while
+// reasoning is in progress and collapse once the answer starts.
+export function splitThinking(text: string): {
+  thinking: string | null;
+  rest: string;
+  open: boolean;
+} {
+  if (!text.startsWith("<think>")) {
+    return { thinking: null, rest: text, open: false };
+  }
+  const closeIdx = text.indexOf("</think>");
+  if (closeIdx === -1) {
+    return { thinking: text.slice("<think>".length), rest: "", open: true };
+  }
+  return {
+    thinking: text.slice("<think>".length, closeIdx),
+    rest: text.slice(closeIdx + "</think>".length).replace(/^\s+/, ""),
+    open: false,
+  };
+}
+
 export async function copyToClipboard(text: string) {
   try {
     await navigator.clipboard.writeText(text);

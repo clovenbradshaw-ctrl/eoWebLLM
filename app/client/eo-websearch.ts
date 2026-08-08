@@ -180,9 +180,15 @@ export async function webSearch(
   return [];
 }
 
-// Render results into the same "WEB SEARCH RESULTS" block shape eochat's
-// server prompt builder uses, so the model sees the same framing whether the
-// search ran in-process or in the browser.
+// Render results into a "WEB SEARCH RESULTS" block for the model to read.
+// Deliberately says nothing about citations, brackets, or [n] — a small
+// local model asked to self-cite invents references into passages it never
+// actually drew from (see eochat/server/citation-check.js's own framing: "a
+// model grading its own answer is not a check", and the same holds for a
+// model attributing its own answer). The talker only ever gets asked to use
+// the results; which sources actually informed the reply is decided and
+// attached mechanically afterward — see stripCitationBrackets /
+// attachSourcesFooter below, applied to the finished text in chat.ts.
 export function formatWebSearchBlock(
   query: string,
   results: WebSearchResult[],
@@ -191,12 +197,42 @@ export function formatWebSearchBlock(
     return `WEB SEARCH: no results found for "${query}". Answer from what you already know and say so.`;
   }
   const lines = results.map(
-    (r) => `[${r.rank}] ${r.title} (${r.source})\n${r.url}\n${r.snippet}`,
+    (r) => `${r.title} (${r.source})\n${r.url}\n${r.snippet}`,
   );
   return (
     `WEB SEARCH RESULTS for "${query}":\n\n${lines.join("\n\n")}\n\n` +
-    `Use these results to ground your answer. Cite sources by their [n] number ` +
-    `when you rely on one. If the results don't cover the question, say so ` +
-    `rather than guessing.`
+    `Use these results to ground your answer in fact. Do not write citation ` +
+    `markers or bracketed numbers — just answer plainly; sources are shown ` +
+    `to the reader separately. If the results don't cover the question, say ` +
+    `so rather than guessing.`
   );
+}
+
+// A model told "don't write brackets" still sometimes writes them anyway —
+// this is the mechanical backstop, not a request. Strips any [1]/[1,2]/
+// [1-3]-style bracket the model produced despite the instruction above,
+// since nothing here ever validated those numbers against real passages
+// (unlike eochat's server-side validateCitations, which keeps a bracket the
+// model got right) — the browser side offers no per-claim grounding check,
+// so any self-authored citation is unverifiable and removed outright.
+const CITATION_BRACKET_RE = /\[\s*\d+(?:\s*(?:[,;]|-|–|—|to)\s*\d+)*\s*\]/g;
+
+export function stripCitationBrackets(text: string): string {
+  if (!text) return text;
+  return text
+    .replace(CITATION_BRACKET_RE, "")
+    .replace(/[ \t]+([.,;:!?])/g, "$1")
+    .replace(/[ \t]{2,}/g, " ");
+}
+
+// The actual attribution: a plain "Sources" list built from the search
+// results this turn ran, appended after the model's text — not authored by
+// the model, not something it can get wrong or fabricate.
+export function attachSourcesFooter(
+  text: string,
+  results: WebSearchResult[],
+): string {
+  if (!results.length) return text;
+  const lines = results.map((r) => `- [${r.title}](${r.url})`);
+  return `${text}\n\n---\n**Sources**\n${lines.join("\n")}`;
 }

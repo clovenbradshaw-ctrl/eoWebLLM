@@ -54,6 +54,7 @@ import {
   getMessageImages,
   isVisionModel,
   compressImage,
+  splitThinking,
 } from "../utils";
 
 import dynamic from "next/dynamic";
@@ -590,6 +591,47 @@ export function ChatActions(props: {
         />
       )}
     </div>
+  );
+}
+
+// A collapsible reasoning panel, like Claude's extended-thinking display:
+// collapsed by default once the answer has started, auto-expanded while the
+// model is still inside the <think> block so a reader can watch it reason
+// live instead of staring at a spinner.
+function ThinkingPanel(props: { thinking: string; open: boolean }) {
+  return (
+    <details
+      open={props.open}
+      style={{
+        margin: "0 0 10px",
+        padding: "8px 12px",
+        borderRadius: 8,
+        border: "1px solid var(--border-in-light)",
+        background: "var(--gray)",
+        fontSize: "13px",
+      }}
+    >
+      <summary
+        style={{
+          cursor: "pointer",
+          color: "var(--black)",
+          opacity: 0.6,
+          userSelect: "none",
+        }}
+      >
+        {props.open ? "Reasoning…" : "Reasoning"}
+      </summary>
+      <div
+        style={{
+          marginTop: 8,
+          whiteSpace: "pre-wrap",
+          opacity: 0.75,
+          fontFamily: "var(--font-mono, monospace)",
+        }}
+      >
+        {props.thinking.trim()}
+      </div>
+    </details>
   );
 }
 
@@ -1426,22 +1468,41 @@ function ChatInner() {
                     </div>
                   )}
                   <div className={styles["chat-message-item"]}>
-                    <Markdown
-                      content={getMessageTextContent(message)}
-                      loading={
-                        (message.preview || message.streaming) &&
-                        message.content.length === 0 &&
-                        !isUser
-                      }
-                      onContextMenu={(e) => onRightClick(e, message)}
-                      onDoubleClickCapture={() => {
-                        if (!isMobileScreen) return;
-                        setUserInput(getMessageTextContent(message));
-                      }}
-                      fontSize={fontSize}
-                      parentRef={scrollRef}
-                      defaultShow={i >= messages.length - 6}
-                    />
+                    {(() => {
+                      const { thinking, rest, open } = !isUser
+                        ? splitThinking(getMessageTextContent(message))
+                        : {
+                            thinking: null as string | null,
+                            rest: getMessageTextContent(message),
+                            open: false,
+                          };
+                      return (
+                        <>
+                          {thinking && (
+                            <ThinkingPanel
+                              thinking={thinking}
+                              open={open && !!message.streaming}
+                            />
+                          )}
+                          <Markdown
+                            content={rest}
+                            loading={
+                              (message.preview || message.streaming) &&
+                              message.content.length === 0 &&
+                              !isUser
+                            }
+                            onContextMenu={(e) => onRightClick(e, message)}
+                            onDoubleClickCapture={() => {
+                              if (!isMobileScreen) return;
+                              setUserInput(getMessageTextContent(message));
+                            }}
+                            fontSize={fontSize}
+                            parentRef={scrollRef}
+                            defaultShow={i >= messages.length - 6}
+                          />
+                        </>
+                      );
+                    })()}
                     {getMessageImages(message).length == 1 && (
                       <Image
                         className={styles["chat-message-item-image"]}
