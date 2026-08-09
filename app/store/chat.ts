@@ -282,7 +282,9 @@ export const BOT_HELLO: ChatMessage = createMessage({
 // eoWebLLM bounded-context tuning: this many recent turns stay verbatim,
 // everything older lives only as the PAST DISCOURSE summary + folds, so the
 // context window never grows past a fixed ceiling.
-const EO_HISTORY_TURNS = 8;
+// Two verbatim turns are enough for local coherence; everything older is
+// folded. This prevents an eight-turn prompt ramp before the bound engages.
+const EO_HISTORY_TURNS = 2;
 const EO_FOLD_TIMEOUT_MS = 30000;
 // The router call (eo-tool-router) has no way to cap the model's output
 // length — LLMConfig carries no max_tokens knob the WebLLM engine call
@@ -543,11 +545,9 @@ function eoClaimSentences(draft: string, max = 8): string[] {
  *   bodies handed over as obligations to test the answer against, with folds
  *   the fast pass crowded out pulled back in;
  *
- *   and the turn may speak again. Some findings are not edits. "That figure
- *   isn't in the source you think it came from" is a different speech act
- *   about the answer, not a revision of it, and rewriting the answer to
- *   contain its own disclaimer either buries the finding or distorts the
- *   answer to make room.
+ *   and the turn may annotate its reply. The acceptance contract is one user
+ *   message to one completed assistant message, so later findings are folded
+ *   into the existing reply instead of creating an orphaned second bubble.
  *
  * Every extra response is EARNED by a mechanical condition — an actual failed
  * check, an actual retrieved counterexample. None of them is the model
@@ -791,14 +791,16 @@ async function eoRunSystem2(input: {
       const text = await item.run();
       if (!text) continue;
       emitted.push(
-        get().appendTurnResponse({
-          turnId,
+        createMessage({
+          role: "assistant",
           content: text,
-          responseKind: item.kind,
           model: modelConfig.model,
+          system: "system2",
+          turnId,
+          responseKind: item.kind,
         }),
       );
-      get().pushEoLog("warrant", `system 2: emitted a ${item.kind} response`);
+      get().pushEoLog("warrant", `system 2: attached a ${item.kind} note`);
     } catch (err) {
       get().pushEoLog(
         "error",
@@ -1133,6 +1135,16 @@ export const useChatStore = createPersistStore(
         llm: LLMApi,
         attachImages?: ChatImage[],
       ) {
+        // A send may arrive while another conversation's fold/System 2 call
+        // still owns the shared local engine. Interrupt that work before any
+        // routing or planning call for this turn; waiting until the final chat
+        // request lets the new turn itself disappear into the occupied engine.
+        if (eoEngineBusy) {
+          eoEngineBusy = false;
+          eoFoldInFlight = false;
+          await llm.abort();
+        }
+
         const modelConfig = useAppConfig.getState().modelConfig;
 
         const userContent = fillTemplateWith(content, useAppConfig.getState());
@@ -1427,7 +1439,7 @@ export const useChatStore = createPersistStore(
         // System-1 draft by definition: it is what the model said before
         // anything checked it.
         const turnId = nanoid();
-        const botMessage: ChatMessage = createMessage({
+        let botMessage: ChatMessage = createMessage({
           role: "assistant",
           streaming: true,
           model: modelConfig.model,
@@ -1496,7 +1508,12 @@ export const useChatStore = createPersistStore(
         });
         const demand = groundingDemand(ledger);
         const preRoute = routeTurn(ledger, demand);
-        const warrantBlock = buildWarrantBlock(ledger, demand);
+        // Zero-prompt ablation baseline: System 1 does not need the warrant
+        // explanation in its model context because the same accounting is
+        // attached mechanically to the visible reply. Add it only when a
+        // pre-answer condition has actually earned System 2.
+        const warrantBlock =
+          preRoute.system === "system2" ? buildWarrantBlock(ledger, demand) : "";
         get().pushEoLog("warrant", warrantLogLine(ledger, demand, preRoute));
 
         const budgetResult = eoEnforceContextBudget(
@@ -1550,7 +1567,11 @@ export const useChatStore = createPersistStore(
           };
           session.messages = session.messages.concat([
             savedUserMessage,
-            botMessage,
+            // Keep the callback-owned object outside Immer. If the exact same
+            // object is inserted here, Immer freezes it and later WebLLM
+            // onUpdate/onFinish mutations silently leave the stored reply
+            // empty. Store a snapshot and replace it by id in each callback.
+            { ...botMessage },
           ]);
           session.isGenerating = true;
         });
@@ -1576,32 +1597,46 @@ export const useChatStore = createPersistStore(
             });
           },
           onUpdate(message) {
-            botMessage.streaming = true;
-            if (message) {
-              botMessage.content = message;
-            }
+            botMessage = {
+              ...botMessage,
+              streaming: true,
+              ...(message ? { content: message } : {}),
+            };
             get().updateCurrentSession((session) => {
               session.modelLoadProgress = null;
-              session.messages = session.messages.concat();
+              // The store snapshots objects passed through Immer. Mutating the
+              // callback's original botMessage does not reliably mutate that
+              // snapshot (WebLLM often emits only a final update). Replace the
+              // stored message explicitly so every client path renders it.
+              session.messages = session.messages.some(
+                (stored) => stored.id === botMessage.id,
+              )
+                ? session.messages.map((stored) =>
+                    stored.id === botMessage.id ? { ...botMessage } : stored,
+                  )
+                : session.messages.concat([{ ...botMessage }]);
             });
           },
           async onFinish(message, stopReason, usage) {
-            botMessage.streaming = false;
-            botMessage.usage = usage;
-            botMessage.stopReason = stopReason;
+            // Never mutate the value previously handed to Immer. WebLLM can
+            // deliver its first content only at onFinish, after that value has
+            // been frozen by the store.
+            botMessage = {
+              ...botMessage,
+              streaming: false,
+              usage,
+              stopReason,
+            };
             if (message) {
               if (!this.config.enable_thinking) {
                 message = message.replace(/<think>\s*<\/think>/g, "");
               }
 
-              // System 2: DEFINE now, against the System-1 draft that
-              // already exists — unconditional, every turn, no mechanical
-              // pre-gate deciding in advance whether this turn "needed" it.
-              // Runs after generation so it never delays the first token;
-              // its only visible cost is a reconcile rewrite, and only when
-              // its own judgment of the draft actually finds something
-              // wrong with it.
-              if (userContent.trim()) {
+              // System 2: DEFINE against the draft only when the mechanical
+              // pre-route found real warrant pressure. System 1 must remain a
+              // single model call; unconditional planning made even ordinary
+              // local turns pay multiple slow generations after the draft.
+              if (userContent.trim() && preRoute.system === "system2") {
                 try {
                   answerSpec = await defineAnswerSpec({
                     question: userContent.trim(),
@@ -1866,13 +1901,19 @@ export const useChatStore = createPersistStore(
                     session: session0,
                     clearContextIndex: session0.clearContextIndex ?? 0,
                   });
-                  // Emitting more than one response IS the System 2 verdict
-                  // (see classifyResponseSet) — recorded, not inferred.
                   turnRoute = escalate(
                     turnRoute,
                     extra.probeRoute,
-                    classifyResponseSet(1 + extra.emitted.length),
+                    classifyResponseSet(1),
                   );
+                  if (extra.emitted.length) {
+                    message += extra.emitted
+                      .map(
+                        (note) =>
+                          `\n\n---\n\n**System 2 — ${(note.responseKind ?? "check").replace(/-/g, " ")}**\n\n${getMessageTextContent(note)}`,
+                      )
+                      .join("");
+                  }
                   botMessage.warrantTrace = eoWarrantTrace(
                     ledger,
                     demand,
@@ -1963,6 +2004,15 @@ export const useChatStore = createPersistStore(
               });
 
               botMessage.content = message;
+              get().updateCurrentSession((session) => {
+                session.messages = session.messages.some(
+                  (stored) => stored.id === botMessage.id,
+                )
+                  ? session.messages.map((stored) =>
+                      stored.id === botMessage.id ? { ...botMessage } : stored,
+                    )
+                  : session.messages.concat([{ ...botMessage }]);
+              });
               get().onNewMessage(botMessage, llm);
             }
             get().updateCurrentSession((session) => {
@@ -1974,12 +2024,21 @@ export const useChatStore = createPersistStore(
             const errorMessage =
               error.message || error.toString?.() || undefined;
             const isAborted = errorMessage?.includes("aborted");
-            botMessage.content += "\n\n" + errorMessage;
-            botMessage.streaming = false;
+            botMessage = {
+              ...botMessage,
+              content: getMessageTextContent(botMessage) + "\n\n" + errorMessage,
+              streaming: false,
+            };
             userMessage.isError = !isAborted;
             botMessage.isError = !isAborted;
             get().updateCurrentSession((session) => {
-              session.messages = session.messages.concat();
+              session.messages = session.messages.some(
+                (stored) => stored.id === botMessage.id,
+              )
+                ? session.messages.map((stored) =>
+                    stored.id === botMessage.id ? { ...botMessage } : stored,
+                  )
+                : session.messages.concat([{ ...botMessage }]);
               session.isGenerating = false;
               session.modelLoadProgress = null;
             });
@@ -2000,23 +2059,16 @@ export const useChatStore = createPersistStore(
 
         const out: ChatMessage[] = [];
 
-        // 0. instruction gate (surf): rules in force for THIS turn. Always the
-        //    System 1 pass here — no draft exists yet for a claim channel to
-        //    score against; the System 2 re-surf runs in onFinish.
-        const gate = eoBuildInstructionBlock(
-          nextQuestion?.trim() ?? "",
-          session,
-          clearContextIndex,
-          { mode: "system1" },
+        // 0. Zero-prompt ablation baseline. System 1 starts with no eo rules
+        // in model context. Retrieval bytes, explicit reader templates, and
+        // bounded memory may still be added below because they carry the
+        // requested material itself. The deliberate rule surf remains
+        // available to System 2 after a real trigger.
+        const gate = { systemMessage: null, logText: null, stats: NO_GATE };
+        get().pushEoLog(
+          "surf",
+          "surf(system1): zero-prompt ablation — 0 instruction tokens",
         );
-        if (gate.systemMessage) {
-          out.push(
-            createMessage({ role: "system", content: gate.systemMessage }),
-          );
-        }
-        if (gate.logText) {
-          get().pushEoLog("surf", gate.logText);
-        }
 
         // 1. pre-defined in-context prompts (reader-defined template context)
         for (const c of session.template.context) {

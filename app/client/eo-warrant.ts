@@ -515,11 +515,11 @@ function route(
  * The pre-answer route, decided before a single token is generated and
  * without asking the model anything.
  *
- * System 2 is not "the hard questions". It is the turns where something other
- * than the model's own knowledge has to carry the answer, or where material
- * that bore on the turn did not make it into the prompt. Everything else is
- * System 1: the ordinary streamed answer, which is never blocked or delayed by
- * anything in this file.
+ * System 2 is not "the hard questions" and external evidence alone does not
+ * make a turn slow. Fully surfaced evidence is checked mechanically while the
+ * direct retrieval remains System 1. System 2 is earned when bearing material
+ * is missing, folded, lost, crowded out, or dropped, or when draft review finds
+ * an unsupported claim.
  */
 export function routeTurn(
   ledger: FoldLedger,
@@ -530,10 +530,16 @@ export function routeTurn(
   for (const ch of EXTERNAL_CHANNELS) {
     const c = channelOf(ledger, ch);
     if (!c) continue;
-    if (c.present > 0)
-      reasons.push(`${ch} material bears on this turn (${c.note})`);
-    else if (c.checkedEmpty)
+    if (c.checkedEmpty)
       reasons.push(`${ch} was consulted this turn and came back empty`);
+    if (c.foldedNamed > 0)
+      reasons.push(
+        `${ch} has ${c.foldedNamed} named unit(s) that did not surface this turn`,
+      );
+    if (c.foldedLost > 0)
+      reasons.push(
+        `${ch} has ${c.foldedLost} bearing unit(s) with no address to reopen`,
+      );
   }
   if (ledger.foldedLost > 0)
     reasons.push(
@@ -551,8 +557,13 @@ export function routeTurn(
   // The desk alone does not escalate. Its check (checkRecallDenial) is
   // mechanical and already runs on every finished answer, so a turn whose only
   // external tie is the desk still costs nothing beyond that check.
+  const surfacedExternal = EXTERNAL_CHANNELS.filter(
+    (ch) => (channelOf(ledger, ch)?.surfaced ?? 0) > 0,
+  );
   return route("system1", "pre-answer", [
-    "nothing outside the model bears on this turn; the answer rests on general knowledge and is labelled as such",
+    surfacedExternal.length
+      ? `direct retrieval is fully surfaced and mechanically checkable (${surfacedExternal.join(", ")})`
+      : "nothing outside the model bears on this turn; the answer rests on general knowledge and is labelled as such",
   ]);
 }
 

@@ -1014,7 +1014,11 @@ function ChatInner() {
   const config = useAppConfig();
   const fontSize = config.fontSize;
 
-  const isStreaming = session.messages.some((m) => m.streaming);
+  // Keep sends blocked through the complete turn lifecycle, including
+  // post-draft System 2 checks. The draft stops streaming before those checks
+  // finish, so message.streaming alone exposes a false-ready Send button.
+  const isStreaming =
+    session.isGenerating || session.messages.some((m) => m.streaming);
 
   const [showExport, setShowExport] = useState(false);
   const [showEoLog, setShowEoLog] = useState(false);

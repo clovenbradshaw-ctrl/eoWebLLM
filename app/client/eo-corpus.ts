@@ -27,9 +27,11 @@ export interface CorpusPassage {
 }
 
 const ROOT = "eo-corpus-v1";
-const CHUNK_CHARS = 3000;
-const RETRIEVAL_TOKEN_BUDGET = 3000;
-const RETRIEVAL_MAX_PASSAGES = 6;
+// Keep corpus contribution in a narrow, repeatable band. The full bytes stay
+// in OPFS; each turn gets at most two compact byte-addressed windows.
+const CHUNK_CHARS = 700;
+const RETRIEVAL_TOKEN_BUDGET = 400;
+const RETRIEVAL_MAX_PASSAGES = 2;
 const STOPWORDS = new Set([
   "a",
   "an",
@@ -185,6 +187,17 @@ function scoreChunk(text: string, terms: string[]): number {
   for (const term of terms) {
     const hits = lower.split(term).length - 1;
     if (hits) score += 1 + Math.min(hits - 1, 2) * 0.2;
+  }
+  // A bag-of-words tie is common in long technical sources: generic request
+  // words can otherwise outweigh the actual phrase the reader asked for.
+  // Reward adjacent query terms heavily, with longer runs worth more. This is
+  // still a deterministic System 1 lexical pass; it merely preserves phrase
+  // structure instead of discarding it.
+  for (let width = 2; width <= Math.min(6, terms.length); width++) {
+    for (let i = 0; i + width <= terms.length; i++) {
+      const phrase = terms.slice(i, i + width).join(" ");
+      if (lower.includes(phrase)) score += width * width;
+    }
   }
   return score;
 }

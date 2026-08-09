@@ -166,92 +166,39 @@ const useWebLLM = () => {
   const config = useAppConfig();
   const [webllm, setWebLLM] = useState<WebLLMApi | undefined>(undefined);
   const [isWebllmActive, setWebllmAlive] = useState(false);
-
-  const isWebllmInitialized = useRef(false);
-
-  // If service worker registration timeout, fall back to web worker
-  const timeout = setTimeout(() => {
-    if (!isWebllmInitialized.current && !isWebllmActive && !webllm) {
-      log.info(
-        "Service Worker activation is timed out. Falling back to use web worker.",
-      );
-      setWebLLM(new WebLLMApi("webWorker", config.logLevel));
-      setWebllmAlive(true);
-    }
-  }, 2_000);
+  const webllmRef = useRef<WebLLMApi>();
 
   // Initialize WebLLM engine
   useEffect(() => {
-    if ("serviceWorker" in navigator) {
-      log.info("Service Worker API is available and in use.");
-      navigator.serviceWorker.ready.then(() => {
-        log.info("Service Worker is activated.");
-        // Check whether WebGPU is available in Service Worker
-        const request = {
-          kind: "checkWebGPUAvilability",
-          uuid: crypto.randomUUID(),
-          content: "",
-        };
+    let disposed = false;
+    // One tab owns one worker. A shared service-worker engine can be interrupted
+    // by another tab's abort/reload, which corrupts the exact multi-tab chat
+    // isolation this app promises. WebGPU model bytes are still shared by the
+    // browser cache; generation state is deliberately tab-local.
+    const api = new WebLLMApi("webWorker", config.logLevel);
+    webllmRef.current = api;
+    setWebLLM(api);
+    setWebllmAlive(true);
 
-        const sendEventInterval = setInterval(() => {
-          navigator.serviceWorker.controller?.postMessage(request);
-        }, 200);
-
-        const webGPUCheckCallback = (event: MessageEvent) => {
-          const message = event.data;
-          if (message.kind === "return" && message.uuid === request.uuid) {
-            const isWebGPUAvailable = message.content;
-            log.info(
-              isWebGPUAvailable
-                ? "Service Worker has WebGPU Available."
-                : "Service Worker does not have available WebGPU.",
-            );
-            if (!webllm && !isWebllmActive) {
-              setWebLLM(
-                new WebLLMApi(
-                  isWebGPUAvailable ? "serviceWorker" : "webWorker",
-                  config.logLevel,
-                ),
-              );
-              setWebllmAlive(true);
-              isWebllmInitialized.current = true;
-              clearTimeout(timeout);
-            }
-            navigator.serviceWorker.removeEventListener(
-              "message",
-              webGPUCheckCallback,
-            );
-            clearInterval(sendEventInterval);
-          }
-        };
-        navigator.serviceWorker.addEventListener(
-          "message",
-          webGPUCheckCallback,
-        );
-      });
-    } else {
-      log.info(
-        "Service Worker API is unavailable. Falling back to use web worker.",
-      );
-      setWebLLM(new WebLLMApi("webWorker", config.logLevel));
-      setWebllmAlive(true);
-      isWebllmInitialized.current = true;
-      clearTimeout(timeout);
-    }
+    return () => {
+      disposed = true;
+      if (webllmRef.current === api) webllmRef.current = undefined;
+    };
   }, []);
 
-  if (webllm?.webllm.type === "serviceWorker") {
-    setInterval(() => {
-      if (webllm) {
+  useEffect(() => {
+    if (webllm?.webllm.type !== "serviceWorker") return;
+    const heartbeat = setInterval(() => {
+      if (webllmRef.current?.webllm.type === "serviceWorker") {
         // 10s per heartbeat, dead after 30 seconds of inactivity
         setWebllmAlive(
-          !!webllm.webllm.engine &&
-            (webllm.webllm.engine as ServiceWorkerMLCEngine).missedHeartbeat <
-              3,
+          webllmRef.current.webllm.engine.missedHeartbeat < 3,
         );
       }
     }, 10_000);
-  }
+    return () => clearInterval(heartbeat);
+  }, [webllm]);
+
   return { webllm, isWebllmActive };
 };
 
