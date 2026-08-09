@@ -22,8 +22,10 @@ import {
   EoSummary,
   buildSummarySystemMessage,
   buildRecordSystemMessage,
+  buildFoldPrompt,
   buildWarrantRecord,
   addWarrantRecord,
+  parseFold,
   advanceSummaryFold,
   truncate,
 } from "../client/eo-discourse";
@@ -78,10 +80,6 @@ import {
   type EoSource,
 } from "../client/eo-corpus";
 import {
-  defineTaskPlan,
-  probeReading,
-  routeReading,
-  runTaskPlan,
   type ThinkingSystem,
 } from "../client/eo-task-plan";
 import {
@@ -289,6 +287,7 @@ export const BOT_HELLO: ChatMessage = createMessage({
 // Two verbatim turns are enough for local coherence; everything older is
 // folded. This prevents an eight-turn prompt ramp before the bound engages.
 const EO_HISTORY_TURNS = 2;
+const EO_FOLD_TIMEOUT_MS = 12_000;
 // The router call (eo-tool-router) has no way to cap the model's output
 // length — LLMConfig carries no max_tokens knob the WebLLM engine call
 // forwards — so on a slow local model a verbose reply can blow past the
@@ -298,9 +297,9 @@ const EO_HISTORY_TURNS = 2;
 const EO_ROUTER_TIMEOUT_MS = 45000;
 
 // The WebLLM engine is single-flight. Genuinely deliberate internal responses
-// must never overlap the spoken answer. Ordinary topic/fold maintenance is
-// unconscious and uses no model call; eoEngineBusy therefore tracks only an
-// explicitly conscious-but-unspoken response (or its timed-out ghost).
+// must never overlap the spoken answer. Topic naming is unconscious; the one
+// bounded fold and genuinely deliberate checks are conscious-but-unspoken.
+// eoEngineBusy tracks either short internal response (or a timed-out ghost).
 let eoFoldInFlight = false;
 let eoEngineBusy = false;
 
@@ -522,7 +521,7 @@ function eoWarrantTrace(
 // not the same as uncapping them: an unbounded set on a local engine is a
 // reader watching messages accumulate with no idea when it stops. Whatever the
 // cap drops is logged rather than silently discarded (LAWS.md L3).
-const EO_MAX_SYSTEM2_RESPONSES = 3;
+const EO_MAX_SYSTEM2_RESPONSES = 1;
 
 // The sentences of a draft that actually asserted something checkable. These
 // are what the System 2 surf searches against — support has to be looked for
@@ -637,38 +636,13 @@ async function eoRunSystem2(input: {
   );
   if (checkGate.logText) get().pushEoLog("surf", checkGate.logText);
 
-  // 3. The reading probe. It used to run before the first token, where it was
-  //    a model call standing between the reader and any answer at all. Here it
-  //    costs the reader nothing: they are already reading. Its verdict can
-  //    only raise the route (escalate() is monotone), so a probe that times
-  //    out on a slow local engine subtracts a second opinion and never
-  //    subtracts a check.
+  // 3. The mechanical route already states why System 2 exists. A second model
+  //    must not generate a hidden "probe" merely to restate that arithmetic.
   let probeRoute: TurnRoute | null = null;
-  let probeTrace: Awaited<ReturnType<typeof probeReading>>["trace"] | null =
-    null;
-  try {
-    const probe = await probeReading({
-      question,
-      sources,
-      passages: [...input.alreadySurfaced, ...deliberate.passages],
-      generate: background,
-    });
-    probeTrace = probe.trace;
-    probeRoute = {
-      system: routeReading(probe.trace),
-      stage: "probe",
-      mechanical: false,
-      reasons: [
-        `probe: candidates=${probe.trace.candidateReadings}, coverage=${probe.trace.supportCoverage}, evidence=${probe.trace.evidenceRelation}, claim=${probe.trace.claimType}`,
-      ],
-    };
-    get().pushEoLog("task", `system 2 probe: ${probeRoute.reasons[0]}`);
-  } catch (err) {
-    get().pushEoLog(
-      "error",
-      `system 2 probe: ${(err as Error).message} — route stands on the mechanical reasons alone`,
-    );
-  }
+  get().pushEoLog(
+    "task",
+    "state(unconscious): System 2 route retained its mechanical reasons; no hidden probe response",
+  );
 
   const emitted: ChatMessage[] = [];
   const earned: { kind: string; run: () => Promise<string | null> }[] = [];
@@ -683,34 +657,20 @@ async function eoRunSystem2(input: {
     earned.push({
       kind: "grounding",
       run: async () => {
-        const findings = unsupported
-          .slice(0, 8)
-          .map(
-            (f) =>
-              `- "${f.text}" (${f.atomKind}) is not in ${grounding?.channels.join(" or ") || "the material checked"}`,
-          )
-          .join("\n");
-        const unread = externalUnread.length
-          ? `\nMaterial that exists but was not read this turn: ${externalUnread.join(", ")}.`
-          : "";
-        const raw = await background(
-          "You are checking an answer that has already been given. Write a short, plain note to the reader about what in it is NOT supported by the material actually consulted. Name the specific claims. Do not restate the answer, do not apologise, do not hedge with generalities about AI limitations. If something merely was not checked, say it was not checked rather than saying it is wrong. Three sentences at most.",
-          `The answer given:\n${draft.slice(0, 2000)}\n\nUnsupported claims found by a mechanical check:\n${findings || "(none)"}${unread}`,
-        );
-        const text = String(raw || "").trim();
-        // L1d — the note must exist even if the model call for it does not.
-        // A mechanically composed fallback is worse prose and the same fact.
-        if (text) return text;
-        if (!unsupported.length) return null;
-        return (
-          `Checked against ${grounding?.channels.join(" and ") || "this turn's material"}: ` +
-          `${unsupported.length} thing(s) in that answer are not in it — ` +
-          unsupported
-            .slice(0, 5)
-            .map((f) => `"${f.text}"`)
-            .join(", ") +
-          `. Treat those as unverified.`
-        );
+        const checked =
+          grounding?.channels.join(" and ") || "the material read this turn";
+        if (unsupported.length)
+          return (
+            `Checked against ${checked}: ${unsupported.length} claim(s) were not supported — ` +
+            unsupported
+              .slice(0, 5)
+              .map((f) => `"${f.text}"`)
+              .join(", ") +
+            `. Treat them as unverified.`
+          );
+        if (externalUnread.length)
+          return `The answer depends on ${externalUnread.join(" and ")} material that was not surfaced this turn, so that part remains unverified.`;
+        return null;
       },
     });
   }
@@ -718,9 +678,7 @@ async function eoRunSystem2(input: {
   // 3b. A counter-reading is earned by the contrastive surf actually
   //     retrieving something, or by the probe reporting a second live reading
   //     — not by the model feeling uncertain.
-  const contested =
-    probeTrace?.candidateReadings === "2+" ||
-    probeTrace?.evidenceRelation === "conflicting";
+  const contested = false;
   if (deliberate.contrastive.length || contested) {
     earned.push({
       kind: "counter-reading",
@@ -736,45 +694,10 @@ async function eoRunSystem2(input: {
           [
             material ??
               "No competing passage was retrieved from the reader's sources.",
-            probeTrace ? `A first reading noted: ${probeTrace.rationale}` : "",
             `The answer given:\n${draft.slice(0, 1500)}`,
           ]
             .filter(Boolean)
             .join("\n\n"),
-        );
-        return String(raw || "").trim() || null;
-      },
-    });
-  }
-
-  // 3c. A worked-through result is earned when the request genuinely has
-  //     separable dependent parts. The task controller (eo-task-controller.ts)
-  //     owns legality; the model only proposes wording. This ran before the
-  //     first token until now, which meant a multi-part question paid for a
-  //     whole dependency graph before showing the reader anything.
-  if (probeRoute?.system === "system2" && sources.length) {
-    earned.push({
-      kind: "worked-through",
-      run: async () => {
-        const plan = await defineTaskPlan(question, background);
-        if (plan.tasks.length < 2) return null;
-        const run = await runTaskPlan({
-          question,
-          plan,
-          sources,
-          generate: background,
-        });
-        get().pushEoLog(
-          "task",
-          `system 2 task controller: ${run.controller.tasks.length} task(s), ` +
-            `${run.controller.tasks.filter((t) => t.status === "completed").length} completed, ` +
-            `${run.controller.tasks.filter((t) => t.status === "dropped").length} dropped, ` +
-            `closure=${run.controller.closed}`,
-        );
-        if (!run.context) return null;
-        const raw = await background(
-          "Synthesize the bounded task results below into one warranted addition to an answer the reader already has. Do not repeat what the answer already said. Distinguish direct support from inference, name any live alternative, and preserve an unresolved gap rather than filling it. Never mention tasks, planning, or that you were given results.",
-          `${run.context}\n\nThe answer already given:\n${draft.slice(0, 1500)}`,
         );
         return String(raw || "").trim() || null;
       },
@@ -2189,16 +2112,16 @@ export const useChatStore = createPersistStore(
         get().foldNextTurn(llm);
       },
 
-      // fold: compress completed turns into the PAST DISCOURSE summary. Runs
-      // as unconscious deterministic construction. The speaking model never
-      // drafts hidden summaries, so maintenance cannot occupy or corrupt its
-      // generation state and every model response has a declared destination.
+      // fold: one fast conscious-but-unspoken response, retained verbatim as
+      // the bounded discourse fold. There is no second summary rewrite and no
+      // hidden topic call. This is the minimal single-model baseline: one
+      // spoken answer plus at most one short unspoken fold.
       foldNextTurn(llm: LLMApi) {
-        void llm;
-        if (eoFoldInFlight) return;
+        if (eoFoldInFlight || eoEngineBusy) return;
         eoFoldInFlight = true;
-        const run = () => {
+        const run = async () => {
           try {
+            const modelConfig = useAppConfig.getState().modelConfig;
             const session = get().currentSession();
             const clearContextIndex = session.clearContextIndex ?? 0;
             if (clearContextIndex > 0) return;
@@ -2230,7 +2153,30 @@ export const useChatStore = createPersistStore(
             const question = getMessageTextContent(msgs[userIdx]);
             const answer = getMessageTextContent(msgs[assistantIdx]);
             const prev = session.eoSummary ?? emptySummary();
-            const turnFold = truncate(`${question} → ${answer}`, 100);
+            let turnFold = "";
+            try {
+              const raw = await eoRunConsciousUnspoken(
+                llm,
+                [{ role: "user", content: buildFoldPrompt(question, answer) }],
+                {
+                  model: modelConfig.model,
+                  cache: useAppConfig.getState().cacheType,
+                  stream: false,
+                  enable_thinking: false,
+                  temperature: 0,
+                },
+                EO_FOLD_TIMEOUT_MS,
+              );
+              turnFold = parseFold(raw);
+            } catch (err) {
+              // A fold that misses its strict latency budget degrades to an
+              // unconscious truncation; it never delays or deletes a reply.
+              turnFold = truncate(`${question} → ${answer}`, 100);
+              get().pushEoLog(
+                "error",
+                `state(conscious-unspoken): fast fold failed, used mechanical fallback — ${err}`,
+              );
+            }
             if (!turnFold) return;
             const next: EoSummary = advanceSummaryFold(prev, turnFold);
 
@@ -2240,13 +2186,15 @@ export const useChatStore = createPersistStore(
             });
             get().pushEoLog(
               "fold",
-              `state(unconscious): folded turn ${userIdx} — "${turnFold}"`,
+              `state(conscious-unspoken): folded turn ${userIdx} — "${turnFold}"`,
             );
           } finally {
             eoFoldInFlight = false;
           }
         };
-        run();
+        // Let the just-finished spoken engine call release its single-flight
+        // lock before the unspoken fold starts.
+        setTimeout(run, 0);
       },
 
       stopStreaming() {
