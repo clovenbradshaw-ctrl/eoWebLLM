@@ -26,10 +26,20 @@ test("deleting the transcript resets only derived conversation state", () => {
   assert.doesNotMatch(deletion.slice(0, 1200), /eoSources\s*=/);
 });
 
-test("normal maintenance uses one retained fast fold and no summary rewrite", () => {
+test("normal maintenance folds only under pressure and has explicit ablations", () => {
   const fold = chat.slice(chat.indexOf("foldNextTurn(llm"));
   assert.match(fold, /eoRunConsciousUnspoken/);
   assert.match(fold, /parseFold\(raw\)/);
+  assert.match(fold, /completedTurns <= EO_HISTORY_TURNS/);
+  assert.match(fold, /EO_FOLD_MODE === "none"/);
+  assert.match(fold, /EO_FOLD_MODE === "mechanical"/);
   assert.doesNotMatch(fold, /buildSummaryUpdatePrompt|updateSummaryWithFold/);
   assert.match(chat, /EO_FOLD_TIMEOUT_MS = 12_000/);
+});
+
+test("a timed-out unspoken response is aborted before fallback", () => {
+  const hidden = chat.slice(chat.indexOf("function eoRunConsciousUnspoken"));
+  const timeout = hidden.slice(0, hidden.indexOf("llm.chat"));
+  assert.match(timeout, /eoEngineBusy = false/);
+  assert.match(timeout, /void llm\.abort\(\)/);
 });

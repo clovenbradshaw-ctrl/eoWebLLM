@@ -288,6 +288,14 @@ export const BOT_HELLO: ChatMessage = createMessage({
 // folded. This prevents an eight-turn prompt ramp before the bound engages.
 const EO_HISTORY_TURNS = 2;
 const EO_FOLD_TIMEOUT_MS = 12_000;
+// Build-time acceptance ablation. Normal builds keep the model fold; test
+// builds can prove whether no fold or an unconscious mechanical fold is
+// sufficient without mocking the engine or bypassing the production client.
+const EO_FOLD_MODE =
+  process.env.NEXT_PUBLIC_EO_FOLD_MODE === "none" ||
+  process.env.NEXT_PUBLIC_EO_FOLD_MODE === "mechanical"
+    ? process.env.NEXT_PUBLIC_EO_FOLD_MODE
+    : "model";
 // The router call (eo-tool-router) has no way to cap the model's output
 // length — LLMConfig carries no max_tokens knob the WebLLM engine call
 // forwards — so on a slow local model a verbose reply can blow past the
@@ -317,6 +325,10 @@ function eoRunConsciousUnspoken(
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      eoEngineBusy = false;
+      // A timed-out unspoken response must not survive as an orphaned engine
+      // generation and interfere with the next visible send.
+      void llm.abort();
       reject(new Error("eo conscious-unspoken model call timed out"));
     }, timeoutMs);
     eoEngineBusy = true;
@@ -2127,6 +2139,23 @@ export const useChatStore = createPersistStore(
             if (clearContextIndex > 0) return;
 
             const msgs = session.messages;
+            const completedTurns = msgs.filter(
+              (message) => message.role === "assistant" && !message.isError,
+            ).length;
+            if (completedTurns <= EO_HISTORY_TURNS) {
+              get().pushEoLog(
+                "fold",
+                `state(unconscious): fold deferred — ${completedTurns}/${EO_HISTORY_TURNS} verbatim turn(s), no context pressure`,
+              );
+              return;
+            }
+            if (EO_FOLD_MODE === "none") {
+              get().pushEoLog(
+                "fold",
+                "state(unconscious): fold ablation — disabled despite context pressure",
+              );
+              return;
+            }
             const startIdx = session.eoLastFoldIndex ?? 0;
             let userIdx = -1;
             let assistantIdx = -1;
@@ -2154,27 +2183,41 @@ export const useChatStore = createPersistStore(
             const answer = getMessageTextContent(msgs[assistantIdx]);
             const prev = session.eoSummary ?? emptySummary();
             let turnFold = "";
-            try {
-              const raw = await eoRunConsciousUnspoken(
-                llm,
-                [{ role: "user", content: buildFoldPrompt(question, answer) }],
-                {
-                  model: modelConfig.model,
-                  cache: useAppConfig.getState().cacheType,
-                  stream: false,
-                  enable_thinking: false,
-                  temperature: 0,
-                },
-                EO_FOLD_TIMEOUT_MS,
-              );
-              turnFold = parseFold(raw);
-            } catch (err) {
-              // A fold that misses its strict latency budget degrades to an
-              // unconscious truncation; it never delays or deletes a reply.
+            let foldState: "conscious-unspoken" | "unconscious" =
+              "conscious-unspoken";
+            if (EO_FOLD_MODE === "mechanical") {
               turnFold = truncate(`${question} → ${answer}`, 100);
+              foldState = "unconscious";
+            } else {
+              try {
+                const raw = await eoRunConsciousUnspoken(
+                  llm,
+                  [{ role: "user", content: buildFoldPrompt(question, answer) }],
+                  {
+                    model: modelConfig.model,
+                    cache: useAppConfig.getState().cacheType,
+                    stream: false,
+                    enable_thinking: false,
+                    temperature: 0,
+                  },
+                  EO_FOLD_TIMEOUT_MS,
+                );
+                turnFold = parseFold(raw);
+              } catch (err) {
+                // A fold that misses its strict latency budget degrades to an
+                // unconscious truncation; it never delays or deletes a reply.
+                turnFold = truncate(`${question} → ${answer}`, 100);
+                foldState = "unconscious";
+                get().pushEoLog(
+                  "error",
+                  `state(conscious-unspoken): fast fold aborted — ${err}`,
+                );
+              }
+            }
+            if (foldState === "unconscious") {
               get().pushEoLog(
-                "error",
-                `state(conscious-unspoken): fast fold failed, used mechanical fallback — ${err}`,
+                "fold",
+                `state(unconscious): mechanical fold retained — mode=${EO_FOLD_MODE}`,
               );
             }
             if (!turnFold) return;
@@ -2186,7 +2229,7 @@ export const useChatStore = createPersistStore(
             });
             get().pushEoLog(
               "fold",
-              `state(conscious-unspoken): folded turn ${userIdx} — "${turnFold}"`,
+              `state(${foldState}): folded turn ${userIdx} — "${turnFold}"`,
             );
           } finally {
             eoFoldInFlight = false;
