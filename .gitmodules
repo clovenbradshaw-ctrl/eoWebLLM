@@ -1,0 +1,3 @@
+[submodule "eoreader6"]
+	path = eoreader6
+	url = https://github.com/clovenbradshaw-ctrl/eoreader6.git
