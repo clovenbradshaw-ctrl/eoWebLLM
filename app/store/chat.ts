@@ -22,13 +22,10 @@ import {
   EoSummary,
   buildSummarySystemMessage,
   buildRecordSystemMessage,
-  buildSummaryUpdatePrompt,
-  buildFoldPrompt,
   buildWarrantRecord,
   addWarrantRecord,
-  parseFold,
-  updateSummaryWithFold,
   advanceSummaryFold,
+  truncate,
 } from "../client/eo-discourse";
 import { createInstructionGate, countTokens } from "../client/eo-gate";
 import { getInstructionFolds } from "../client/eo-instructions";
@@ -110,6 +107,12 @@ export type ChatMessage = RequestMessage & {
   stopReason?: ChatCompletionFinishReason;
   model?: Model;
   usage?: CompletionUsage;
+  // Model responses have one of two destinations. `spoken` is the single
+  // response rendered to the reader. Deliberate internal calls never become
+  // ChatMessages; they travel through eoRunConsciousUnspoken below. Retrieval,
+  // routing arithmetic, cube checks, and provenance construction are not model
+  // responses at all — they are unconscious mechanics.
+  responseState?: "spoken";
   // The actual web_search results (if any) that grounded this reply — kept
   // structured, not baked into the text, so the UI can render a clickable
   // "what did it search" affordance instead of a markdown footer the reader
@@ -285,7 +288,6 @@ export const BOT_HELLO: ChatMessage = createMessage({
 // Two verbatim turns are enough for local coherence; everything older is
 // folded. This prevents an eight-turn prompt ramp before the bound engages.
 const EO_HISTORY_TURNS = 2;
-const EO_FOLD_TIMEOUT_MS = 30000;
 // The router call (eo-tool-router) has no way to cap the model's output
 // length — LLMConfig carries no max_tokens knob the WebLLM engine call
 // forwards — so on a slow local model a verbose reply can blow past the
@@ -294,15 +296,17 @@ const EO_FOLD_TIMEOUT_MS = 30000;
 // still fails open (see the try/catch around planTools in onUserInput).
 const EO_ROUTER_TIMEOUT_MS = 45000;
 
-// The WebLLM engine is single-flight: background calls (fold/summary, topic)
-// must never overlap each other or the streaming answer. eoFoldInFlight guards
-// the fold chain; eoEngineBusy tracks a background call that may still occupy
-// the engine (including a timed-out ghost) and the next user turn aborts it.
+// The WebLLM engine is single-flight. Genuinely deliberate internal responses
+// must never overlap the spoken answer. Ordinary topic/fold maintenance is
+// unconscious and uses no model call; eoEngineBusy therefore tracks only an
+// explicitly conscious-but-unspoken response (or its timed-out ghost).
 let eoFoldInFlight = false;
 let eoEngineBusy = false;
 
-// Run one non-streaming background model call, tracking engine occupancy.
-function eoRunBackground(
+// Run one conscious-but-unspoken model response, tracking engine occupancy.
+// Its caller must retain the parsed result in routing/checking state. This path
+// never creates a ChatMessage; only the main streaming call is `spoken`.
+function eoRunConsciousUnspoken(
   llm: LLMApi,
   messages: RequestMessage[],
   config: LLMConfig,
@@ -313,7 +317,7 @@ function eoRunBackground(
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      reject(new Error("eo background model call timed out"));
+      reject(new Error("eo conscious-unspoken model call timed out"));
     }, timeoutMs);
     eoEngineBusy = true;
     llm.chat({
@@ -583,7 +587,7 @@ async function eoRunSystem2(input: {
 
   const claims = eoClaimSentences(draft);
   const background = (systemPrompt: string, userPrompt: string) =>
-    eoRunBackground(
+    eoRunConsciousUnspoken(
       llm,
       [
         createMessage({ role: "system", content: systemPrompt }),
@@ -1192,7 +1196,7 @@ export const useChatStore = createPersistStore(
                 },
               ],
               generate: (systemPrompt, userPrompt) =>
-                eoRunBackground(
+                eoRunConsciousUnspoken(
                   llm,
                   [
                     createMessage({ role: "system", content: systemPrompt }),
@@ -1225,7 +1229,7 @@ export const useChatStore = createPersistStore(
                   question: rawQuestion,
                   fallback: distillQuery(rawQuestion) || rawQuestion,
                   generate: (systemPrompt, userPrompt) =>
-                    eoRunBackground(
+                    eoRunConsciousUnspoken(
                       llm,
                       [
                         createMessage({
@@ -1363,7 +1367,7 @@ export const useChatStore = createPersistStore(
             const mathSpec = await defineMathSpec({
               question: userContent.trim(),
               generate: (systemPrompt, userPrompt) =>
-                eoRunBackground(
+                eoRunConsciousUnspoken(
                   llm,
                   [
                     createMessage({ role: "system", content: systemPrompt }),
@@ -1444,6 +1448,7 @@ export const useChatStore = createPersistStore(
           streaming: true,
           model: modelConfig.model,
           system: "system1",
+          responseState: "spoken",
           turnId,
         });
 
@@ -1643,7 +1648,7 @@ export const useChatStore = createPersistStore(
                     draft: message,
                     webEnabled: !!session0.webSearchEnabled,
                     generate: (systemPrompt, userPrompt) =>
-                      eoRunBackground(
+                      eoRunConsciousUnspoken(
                         llm,
                         [
                           createMessage({
@@ -1713,7 +1718,7 @@ export const useChatStore = createPersistStore(
                       draft: message,
                       violations: eva.violations,
                       generate: (systemPrompt, userPrompt) =>
-                        eoRunBackground(
+                        eoRunConsciousUnspoken(
                           llm,
                           [
                             createMessage({
@@ -2154,7 +2159,6 @@ export const useChatStore = createPersistStore(
       summarizeSession(llm: LLMApi) {
         const config = useAppConfig.getState();
         const session = get().currentSession();
-        const modelConfig = useAppConfig.getState().modelConfig;
 
         // remove error messages if any
         const messages = session.messages;
@@ -2166,71 +2170,29 @@ export const useChatStore = createPersistStore(
           session.topic === DEFAULT_TOPIC &&
           countMessages(messages) >= SUMMARIZE_MIN_LEN
         ) {
-          const topicBudget = eoEnforceContextBudget(
-            messages.concat(
-              createMessage({
-                role: "user",
-                content: Locale.Store.Prompt.Topic,
-              }),
-            ),
-            modelConfig.context_window_size ?? 4096,
-            "topic naming",
+          const firstUser = messages.find((m) => m.role === "user");
+          const topic = firstUser
+            ? trimTopic(truncate(getMessageTextContent(firstUser), 72))
+            : DEFAULT_TOPIC;
+          get().updateCurrentSession((current) => (current.topic = topic));
+          get().pushEoLog(
+            "task",
+            `state(unconscious): topic constructed — "${topic}"`,
           );
-          const topicMessages = topicBudget.messages;
-          get().pushEoLog("fold", topicBudget.logText);
-          // one background engine call per turn: if the topic call takes the
-          // slot now, the fold for this turn is deferred to a later onNewMessage
-          if (!eoEngineBusy) {
-            get().pushEoLog("task", "task: topic-naming started");
-            eoRunBackground(
-              llm,
-              topicMessages,
-              {
-                model: modelConfig.model,
-                cache: useAppConfig.getState().cacheType,
-                stream: false,
-                enable_thinking: false, // never think for topic
-              },
-              EO_FOLD_TIMEOUT_MS,
-            )
-              .then((message) => {
-                const topic =
-                  message.length > 0 ? trimTopic(message) : DEFAULT_TOPIC;
-                get().updateCurrentSession(
-                  (session) => (session.topic = topic),
-                );
-                get().pushEoLog(
-                  "task",
-                  `task: topic-naming finished — "${topic}"`,
-                );
-              })
-              .catch((err) => {
-                log.error("[Topic] ", err);
-                get().pushEoLog("error", `task: topic-naming failed — ${err}`);
-              });
-          }
-        } else {
-          get().foldNextTurn(llm);
         }
+        get().foldNextTurn(llm);
       },
 
       // fold: compress completed turns into the PAST DISCOURSE summary. Runs
-      // as one background model call (fold, then summary refresh), guarded so
-      // it never overlaps another engine call; the next user turn interrupts
-      // it. A fold that never completes is retried after the next turn.
+      // as unconscious deterministic construction. The speaking model never
+      // drafts hidden summaries, so maintenance cannot occupy or corrupt its
+      // generation state and every model response has a declared destination.
       foldNextTurn(llm: LLMApi) {
-        if (eoFoldInFlight || eoEngineBusy) return;
+        void llm;
+        if (eoFoldInFlight) return;
         eoFoldInFlight = true;
-        const run = async () => {
+        const run = () => {
           try {
-            const modelConfig = useAppConfig.getState().modelConfig;
-            const foldConfig: LLMConfig = {
-              model: modelConfig.model,
-              cache: useAppConfig.getState().cacheType,
-              stream: false,
-              enable_thinking: false,
-              temperature: modelConfig.temperature,
-            };
             const session = get().currentSession();
             const clearContextIndex = session.clearContextIndex ?? 0;
             if (clearContextIndex > 0) return;
@@ -2262,70 +2224,18 @@ export const useChatStore = createPersistStore(
             const question = getMessageTextContent(msgs[userIdx]);
             const answer = getMessageTextContent(msgs[assistantIdx]);
             const prev = session.eoSummary ?? emptySummary();
-
-            get().pushEoLog("task", `task: fold started (turn ${userIdx})`);
-
-            // phase 1: fold this turn to its discourse contribution
-            let turnFold: string;
-            try {
-              const foldBudget = eoEnforceContextBudget(
-                [{ role: "user", content: buildFoldPrompt(question, answer) }],
-                modelConfig.context_window_size ?? 4096,
-                "fold phase 1",
-              );
-              get().pushEoLog("fold", foldBudget.logText);
-              const rawFold = await eoRunBackground(
-                llm,
-                foldBudget.messages,
-                foldConfig,
-                EO_FOLD_TIMEOUT_MS,
-              );
-              turnFold = parseFold(rawFold);
-            } catch (err) {
-              // interrupted or failed — leave unfolded so the next turn retries
-              get().pushEoLog("error", `task: fold phase 1 failed — ${err}`);
-              return;
-            }
+            const turnFold = truncate(`${question} → ${answer}`, 100);
             if (!turnFold) return;
-            get().pushEoLog("task", `task: fold phase 1 done — "${turnFold}"`);
-
-            // phase 2: refresh the running summary; fall back to a pure
-            // advance on any failure so no fold is ever lost
-            let next: EoSummary;
-            try {
-              const updatePrompt = buildSummaryUpdatePrompt(prev, [
-                ...(prev.folds ?? []),
-                turnFold,
-              ]);
-              const summaryBudget = eoEnforceContextBudget(
-                [{ role: "user", content: updatePrompt }],
-                modelConfig.context_window_size ?? 4096,
-                "fold phase 2",
-              );
-              get().pushEoLog("fold", summaryBudget.logText);
-              const raw = await eoRunBackground(
-                llm,
-                summaryBudget.messages,
-                foldConfig,
-                EO_FOLD_TIMEOUT_MS,
-              );
-              next = updateSummaryWithFold(prev, turnFold, raw);
-              get().pushEoLog(
-                "task",
-                "task: fold phase 2 done — summary updated",
-              );
-            } catch (err) {
-              next = advanceSummaryFold(prev, turnFold);
-              get().pushEoLog(
-                "error",
-                `task: fold phase 2 failed, advanced without summary update — ${err}`,
-              );
-            }
+            const next: EoSummary = advanceSummaryFold(prev, turnFold);
 
             get().updateCurrentSession((session) => {
               session.eoSummary = next;
               session.eoLastFoldIndex = assistantIdx + 1;
             });
+            get().pushEoLog(
+              "fold",
+              `state(unconscious): folded turn ${userIdx} — "${turnFold}"`,
+            );
           } finally {
             eoFoldInFlight = false;
           }
