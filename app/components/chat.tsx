@@ -97,6 +97,11 @@ import { ChatImage } from "../typing";
 import ModelSelect from "./model-select";
 import { Globe, Paperclip, TerminalWindow } from "@phosphor-icons/react";
 import { findBinaryStructure } from "../client/eo-binary-structure";
+import {
+  createModifierGraph,
+  enrichModifierGraphFromText,
+  formatModifierGraphBlock,
+} from "../client/eo-modifier-graph";
 import { isReadableUtf8, persistRawSource } from "../client/eo-corpus";
 import { nanoid } from "nanoid";
 import type { WebSearchResult } from "../client/eo-websearch";
@@ -1513,6 +1518,39 @@ function ChatInner() {
         const id = nanoid();
         await persistRawSource(id, buffer);
         const textReadable = isReadableUtf8(buffer);
+
+        // Modifier-order graph enrichment: only for text that decodes
+        // cleanly, and only ever the disclosed-scope English demo tagger
+        // (see eo-modifier-graph.ts) — a decode failure or non-English text
+        // simply yields zero stacks, never a guess.
+        let modifierGraphSummary:
+          | { applied: number; refusedCount: number; entityNodes: string[] }
+          | undefined;
+        if (textReadable) {
+          try {
+            const decoded = new TextDecoder("utf-8", { fatal: true }).decode(
+              buffer,
+            );
+            const graph = createModifierGraph();
+            const report = enrichModifierGraphFromText(graph, decoded);
+            modifierGraphSummary = {
+              applied: report.applied,
+              refusedCount: report.refused.length,
+              entityNodes: report.entityNodes,
+            };
+            if (report.applied > 0) {
+              chatStore.pushEoLog(
+                "file",
+                formatModifierGraphBlock(file.name, report),
+              );
+            }
+          } catch {
+            // isReadableUtf8 is a coarser check than a strict decode; a
+            // failure here just means no modifier-graph enrichment for this
+            // file, not a broken upload.
+          }
+        }
+
         chatStore.registerEoSource({
           id,
           name: file.name || "(unnamed file)",
@@ -1525,6 +1563,7 @@ function ChatInner() {
             clearings: structure.clearings.length,
             blockCount: structure.blockCount,
           },
+          modifierGraph: modifierGraphSummary,
         });
         chatStore.pushEoLog(
           "file",

@@ -16,6 +16,11 @@ export interface EoSource {
   enabled: boolean;
   addedAt: number;
   structure?: { clearings: number; blockCount: number };
+  modifierGraph?: {
+    applied: number;
+    refusedCount: number;
+    entityNodes: string[];
+  };
 }
 
 export interface CorpusPassage {
