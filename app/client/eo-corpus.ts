@@ -32,6 +32,7 @@ const ROOT = "eo-corpus-v1";
 const CHUNK_CHARS = 700;
 const RETRIEVAL_TOKEN_BUDGET = 400;
 const RETRIEVAL_MAX_PASSAGES = 2;
+const MIN_RETRIEVAL_SCORE = 3;
 const STOPWORDS = new Set([
   "a",
   "an",
@@ -224,7 +225,8 @@ export async function retrieveCorpus(
     }
     for (const chunk of chunkText(text)) {
       const score = scoreChunk(chunk.text, terms);
-      if (score > 0) candidates.push({ source, ...chunk, score });
+      if (score >= MIN_RETRIEVAL_SCORE)
+        candidates.push({ source, ...chunk, score });
     }
   }
   candidates.sort((a, b) => b.score - a.score || a.byteStart - b.byteStart);
