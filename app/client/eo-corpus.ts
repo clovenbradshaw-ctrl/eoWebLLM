@@ -150,6 +150,31 @@ function queryTerms(question: string): string[] {
   ];
 }
 
+/**
+ * Source bytes bear on a turn only when the reader asks to read them. Merely
+ * having an enabled corpus must not contaminate ordinary conversation through
+ * incidental lexical overlap. This is unconscious routing over explicit
+ * source references, not classification of the requested prose or response.
+ */
+export function questionRequestsCorpus(
+  question: string,
+  sources: EoSource[],
+): boolean {
+  const q = String(question || "").toLowerCase();
+  if (!q.trim()) return false;
+  if (
+    /\b(?:source|sources|document|documents|file|files|corpus|uploaded|upload|attachment|reader-supplied)\b/i.test(
+      q,
+    )
+  )
+    return true;
+  return sources.some((source) => {
+    const name = source.name.toLowerCase();
+    const stem = name.replace(/\.[^.]+$/, "");
+    return q.includes(name) || (stem.length >= 4 && q.includes(stem));
+  });
+}
+
 interface TextChunk {
   text: string;
   byteStart: number;

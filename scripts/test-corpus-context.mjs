@@ -35,3 +35,22 @@ test("deliberate model context also keeps OPFS identity unconscious", () => {
     /p\.source\.(?:id|name)|p\.byte(?:Start|End)|bytes?\s*\$\{/i,
   );
 });
+
+test("an available corpus bears only on explicit source-reading turns", () => {
+  const route = bodyBetween(
+    "export function questionRequestsCorpus",
+    "interface TextChunk",
+  );
+  assert.match(route, /source\|sources\|document/);
+  assert.match(route, /source\.name\.toLowerCase/);
+
+  const store = readFileSync(
+    new URL("../app/store/chat.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(store, /corpusRequested\s*&&/);
+  assert.match(
+    store,
+    /enabledSources:\s*corpusRequested\s*\?\s*sourcesReadable\.length\s*:\s*0/,
+  );
+});

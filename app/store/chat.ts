@@ -71,6 +71,7 @@ import {
   retrieveCorpus,
   retrieveCorpusDeliberate,
   formatCorpusContext,
+  questionRequestsCorpus,
   formatDeliberateContext,
   corpusCitations,
   type CorpusPassage,
@@ -1296,8 +1297,13 @@ export const useChatStore = createPersistStore(
         // No prefix is ever promoted to "the file", and a later question can
         // surface a different part of the same raw source.
         const sources = session0.eoSources ?? [];
+        const corpusRequested = questionRequestsCorpus(
+          userContent.trim(),
+          sources,
+        );
         let corpusPassages: CorpusPassage[] = [];
         if (
+          corpusRequested &&
           sources.some((s) => s.enabled && s.textReadable) &&
           userContent.trim()
         ) {
@@ -1494,7 +1500,7 @@ export const useChatStore = createPersistStore(
         const ledger = buildFoldLedger({
           gate: assembled.gate,
           corpus: {
-            enabledSources: sourcesReadable.length,
+            enabledSources: corpusRequested ? sourcesReadable.length : 0,
             sourcesSurfaced: new Set(corpusPassages.map((p) => p.source.id))
               .size,
             passages: corpusPassages.length,
