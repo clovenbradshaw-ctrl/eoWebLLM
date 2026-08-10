@@ -47,6 +47,7 @@ export type WarrantChannel =
   | "desk" // the verbatim conversation memory of stated facts
   | "discourse" // the folded PAST DISCOURSE summary — a paraphrase
   | "rules" // instruction folds in force
+  | "hypergraph" // a background model's prose synthesis over the accumulated entity/relation graph — a paraphrase of structure, not a source
   | "internal"; // the model's own weights
 
 export type WarrantKind =
@@ -104,6 +105,12 @@ export const CHANNEL_WARRANT: Record<WarrantChannel, ChannelWarrant> = {
     canWarrant: false,
     demandsCheck: false,
     rule: "The rules in force govern how you answer. They are not evidence about the world and never supply a fact.",
+  },
+  hypergraph: {
+    kind: "paraphrase",
+    canWarrant: false,
+    demandsCheck: true,
+    rule: "A HYPERGRAPH THOUGHT is a background model's own synthesis over entities and relations gathered from this conversation and its sources — not a quotation of anything. It can orient you toward what is connected to what. It can never be the evidence for a factual claim: if a claim needs a source, point to the actual passage, not to the thought.",
   },
   internal: {
     kind: "internal",
@@ -181,6 +188,12 @@ export interface LedgerInputs {
     verbatimTurns: number;
     /** Whether the PAST DISCOURSE block is actually in this prompt. */
     summaryInPrompt: boolean;
+  } | null;
+  hypergraph?: {
+    /** Strongest graph edges the navigation considered this turn. */
+    edgesConsidered: number;
+    /** Whether a bounded background "thought" was actually drafted and put in the prompt. */
+    thoughtDrafted: boolean;
   } | null;
   budget?: { droppedMessages: number; truncated: boolean } | null;
 }
@@ -296,6 +309,29 @@ export function buildFoldLedger(inputs: LedgerInputs): FoldLedger {
         },
         `${verbatim} verbatim, ${folded} folded to one line, ${lost} past the fold list` +
           (discourse.summaryInPrompt ? ", summary in prompt" : ""),
+      ),
+    );
+  }
+
+  const hypergraph = inputs.hypergraph;
+  if (hypergraph && hypergraph.edgesConsidered > 0) {
+    // Considered but not drafted (below the movement gate, or the background
+    // call failed) is `foldedNamed`, the same standing an unsurfaced corpus
+    // source gets: the graph still knows it, a reader can still ask for it,
+    // it just did not enter this turn's prompt.
+    channels.push(
+      channel(
+        "hypergraph",
+        {
+          present: hypergraph.edgesConsidered,
+          surfaced: hypergraph.thoughtDrafted ? hypergraph.edgesConsidered : 0,
+          foldedNamed: hypergraph.thoughtDrafted
+            ? 0
+            : hypergraph.edgesConsidered,
+        },
+        hypergraph.thoughtDrafted
+          ? `${hypergraph.edgesConsidered} relation(s) synthesized into a background thought`
+          : `${hypergraph.edgesConsidered} relation(s) considered, no thought drafted`,
       ),
     );
   }
@@ -458,6 +494,18 @@ export function groundingDemand(ledger: FoldLedger): GroundingDemand {
         `discourse: ${discourse.foldedNamed} turn(s) folded to one line — orientation only, never evidence`,
       );
     }
+  }
+
+  const hypergraph = channelOf(ledger, "hypergraph");
+  if (hypergraph && hypergraph.surfaced > 0) {
+    // A drafted thought is a paraphrase of structure, same standing as
+    // discourse's own paraphrase of turns: it can orient, it cannot warrant,
+    // and it is IN the prompt this turn, so it must be named forbidden, not
+    // merely left uncounted.
+    forbidden.add("hypergraph");
+    reasons.push(
+      `hypergraph: ${hypergraph.surfaced} relation(s) synthesized into a thought — orientation only, never evidence`,
+    );
   }
 
   const rules = channelOf(ledger, "rules");
