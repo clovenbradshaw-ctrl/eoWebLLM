@@ -16,6 +16,16 @@ export interface EoSource {
   enabled: boolean;
   addedAt: number;
   structure?: { clearings: number; blockCount: number };
+  /**
+   * For a non-text-readable source: the format-agnostic boundary pass
+   * rendered as text (see eo-binary-structure.ts::formatBinaryStructureBlock),
+   * computed once at upload time. Never sent to the model on its own — it is
+   * the material eo-binary-structure.ts's turn-time surf scores against and
+   * surfaces from, the same standing chunked source text has for the text
+   * corpus surf in this file. Absent for text-readable sources (their real
+   * content is what gets surfaced, not a structural summary of it).
+   */
+  structureSummary?: string;
   modifierGraph?: {
     applied: number;
     refusedCount: number;
@@ -206,7 +216,10 @@ export function isReadableUtf8(bytes: Uint8Array): boolean {
   }
 }
 
-function queryTerms(question: string): string[] {
+/** Exported so other surf channels (e.g. eo-binary-structure.ts's non-text
+ * source surf) score against the SAME term extraction as the text corpus,
+ * rather than growing their own slightly-different tokenizer. */
+export function queryTerms(question: string): string[] {
   return [
     ...new Set(
       String(question || "")

@@ -97,6 +97,11 @@ import {
 } from "../client/eo-hypergraph";
 import { buildSelfFactsBlock } from "../client/eo-self-facts";
 import {
+  eligibleBinarySources,
+  surfBinarySources,
+  formatBinarySourceContext,
+} from "../client/eo-binary-structure";
+import {
   defineTaskPlan,
   probeReading,
   routeReading,
@@ -1489,20 +1494,38 @@ export const useChatStore = createPersistStore(
           }
         }
 
-        // file structure (see eo-binary-structure.ts): consume whatever an
-        // upload queued for this turn, then clear it so it isn't resent.
-        const pendingFile = get().currentSession().pendingFileContext;
-        const fileAttached = !!pendingFile;
-        if (pendingFile) {
-          extraSystemBlocks.push({
-            text: pendingFile,
-            priority: EO_BLOCK_PRIORITY.CONTEXT,
-          });
-          get().updateCurrentSession((session) => {
-            session.pendingFileContext = null;
-          });
-          get().pushEoLog("file", `file: attached context for this turn`);
+        // Non-text source surf (see eo-binary-structure.ts): a binary/
+        // unreadable upload's only turn-time material is its structural
+        // summary, and — same discipline as the text corpus surf just below
+        // — it only reaches the prompt when THIS turn's own words actually
+        // match that source by name or type, computed fresh every turn from
+        // the live source list. Never a stored one-shot block replayed on
+        // the next turn regardless of relevance (LAWS.md L2 — surf and fold
+        // access a source; nothing goes straight into the context window).
+        // A project-scoped session searches every source uploaded anywhere
+        // in the project, not just its own -- see projectSources.
+        const sources = session0.projectId
+          ? projectSources(get().sessions, session0.projectId)
+          : (session0.eoSources ?? []);
+        const binaryEligible = eligibleBinarySources(sources);
+        let binarySurfaced: typeof binaryEligible = [];
+        if (binaryEligible.length && userContent.trim()) {
+          binarySurfaced = surfBinarySources(userContent.trim(), sources);
+          const binaryBlock = formatBinarySourceContext(
+            binaryEligible.length,
+            binarySurfaced,
+          );
+          if (binaryBlock)
+            extraSystemBlocks.push({
+              text: binaryBlock,
+              priority: EO_BLOCK_PRIORITY.CONTEXT,
+            });
+          get().pushEoLog(
+            "file",
+            `binary surf: ${binarySurfaced.length} structural summary/ies from ${binaryEligible.length} eligible non-text source(s)`,
+          );
         }
+        const fileAttached = binarySurfaced.length > 0;
 
         // conversation memory (the "desk", see eo-memory.ts): a verbatim
         // backstop for stated facts, injected every turn regardless of
@@ -1541,12 +1564,8 @@ export const useChatStore = createPersistStore(
         // Source corpus surf: the complete original bytes remain in OPFS.
         // This turn only receives the best matching, byte-addressed passages.
         // No prefix is ever promoted to "the file", and a later question can
-        // surface a different part of the same raw source. A project-scoped
-        // session searches every source uploaded anywhere in the project,
-        // not just its own -- see projectSources.
-        const sources = session0.projectId
-          ? projectSources(get().sessions, session0.projectId)
-          : (session0.eoSources ?? []);
+        // surface a different part of the same raw source. `sources` itself
+        // was already hoisted above, for the non-text surf.
         let corpusPassages: CorpusPassage[] = [];
         if (
           sources.some((s) => s.enabled && s.textReadable) &&

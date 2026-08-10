@@ -45,6 +45,17 @@ const nextConfig = {
 
     config.resolve.fallback = {
       child_process: false,
+      // pdfjs-dist (app/client/eo-file-extract.ts) has an optional,
+      // conditionally-executed `require("canvas")` for a page-rendering
+      // path this app never takes (only getTextContent() is used, for
+      // text extraction) — but webpack still tries to statically resolve
+      // it. No such runtime exists in a browser tab, so this stays
+      // unresolved rather than pulling in a native dependency the project
+      // doesn't otherwise need. Needed for both the client and server
+      // compilation passes: chat.tsx (which imports eo-file-extract.ts) is
+      // bundled for SSR too, even though uploadFile only ever runs
+      // client-side.
+      canvas: false,
     };
 
     if (!isServer) {

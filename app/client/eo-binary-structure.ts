@@ -166,3 +166,109 @@ export function tryDecodeText(
     return null;
   }
 }
+
+// ── Turn-time surf over non-text sources ─────────────────────────────────
+//
+// A binary/non-text source (a source that failed isReadableUtf8, or that
+// extraction (eo-file-extract.ts) could not turn into text) has no body a
+// reader can lexically surf the way eo-corpus.ts's retrieveCorpus surfs a
+// text source's chunks. What it DOES have, computed once at upload time and
+// stored on the source, is: a name, a mime type, and this file's own
+// findBinaryStructure report rendered as text (structureSummary). That is
+// the material this surf scores and returns from — never the raw bytes,
+// and never unconditionally: same discipline as the text corpus surf, a
+// source's structural summary only reaches the model when THIS turn's own
+// words actually match it (by file name or media type — there is nothing
+// else honest to match against for a file with no readable content).
+//
+// This mirrors eo-corpus.ts::retrieveCorpus/formatCorpusContext on purpose
+// (same queryTerms tokenizer, same present/surfaced framing for the eo-log
+// and the warrant ledger's "file" channel) rather than inventing a second
+// shape for what is, structurally, the same kind of turn-time fold.
+
+import { queryTerms } from "./eo-corpus";
+
+export interface BinarySourceCandidate {
+  id: string;
+  name: string;
+  mimeType: string;
+  byteLength: number;
+  enabled: boolean;
+  textReadable: boolean;
+  structureSummary?: string;
+}
+
+function fileNameTerms(name: string, mimeType: string): string[] {
+  const base = name.replace(/\.[^./\\]+$/, "");
+  const mimeSubtype = mimeType.split("/")[1] ?? mimeType;
+  return queryTerms(`${base} ${name} ${mimeSubtype}`);
+}
+
+/** The candidates this surf considers: enabled sources with no readable text. */
+export function eligibleBinarySources(
+  sources: BinarySourceCandidate[],
+): BinarySourceCandidate[] {
+  return sources.filter(
+    (s) => s.enabled && !s.textReadable && s.structureSummary,
+  );
+}
+
+/**
+ * Score every eligible non-text source's file name + media type against
+ * this turn's own words, and return the ones that actually matched — sorted
+ * best first, capped so one turn cannot flood the prompt with structural
+ * summaries. An empty question or zero matches both return `[]`: no match,
+ * nothing surfaced, exactly like retrieveCorpus.
+ */
+export function surfBinarySources(
+  question: string,
+  sources: BinarySourceCandidate[],
+  { maxSources = 3 }: { maxSources?: number } = {},
+): BinarySourceCandidate[] {
+  const terms = queryTerms(question);
+  if (!terms.length) return [];
+  const scored = eligibleBinarySources(sources)
+    .map((s) => {
+      const hay = fileNameTerms(s.name, s.mimeType);
+      const score = terms.reduce(
+        (n, t) => n + (hay.some((h) => h.includes(t) || t.includes(h)) ? 1 : 0),
+        0,
+      );
+      return { source: s, score };
+    })
+    .filter((m) => m.score > 0)
+    .sort((a, b) => b.score - a.score);
+  return scored.slice(0, maxSources).map((m) => m.source);
+}
+
+/**
+ * Formats this turn's binary surf for the prompt. `totalEligible` (from
+ * eligibleBinarySources over the FULL enabled source list, not just what
+ * matched) drives the same "announce existence, gate the content" split
+ * formatCorpusContext uses: a reader should never see zero uploads happened
+ * when a binary file is sitting right there, even on a turn where nothing
+ * matched it by name.
+ */
+export function formatBinarySourceContext(
+  totalEligible: number,
+  matched: BinarySourceCandidate[],
+): string | null {
+  if (!totalEligible) return null;
+  if (!matched.length) {
+    return (
+      `NON-TEXT SOURCE FILES: ${totalEligible} uploaded file(s) could not be read as text and are held ` +
+      `as raw bytes only (see the Sources panel for names). None matched this question by name or type, ` +
+      `so no structural summary is surfaced this turn. Do not claim to know their contents; if the reader ` +
+      `means one of them, ask which one or say its name.`
+    );
+  }
+  return [
+    `NON-TEXT SOURCE FILES — structural summaries surfaced for ${matched.length}/${totalEligible} file(s) ` +
+      `whose name or type matches this question. This is a format-agnostic entropy-boundary read, not a ` +
+      `parse of the file's actual content — never claim to have read what these files contain beyond it.`,
+    ...matched.map(
+      (s) =>
+        `[${s.name} · ${s.mimeType} · ${s.byteLength} byte(s)]\n${s.structureSummary}`,
+    ),
+  ].join("\n\n");
+}
