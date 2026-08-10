@@ -108,16 +108,81 @@ import {
   persistRawSource,
   persistSourceLedger,
   readRawSource,
+  readSourceLedger,
 } from "../client/eo-corpus";
-import type { EoSource } from "../client/eo-corpus";
+import type { EoSource, EventLog } from "../client/eo-corpus";
 import {
   readAtCursors,
   diffLinkViews,
 } from "../client/eo-binary/reading-diff.js";
 import { MODIFIER_SCOPE_CURRENT_LENS } from "../client/eo-binary/modifier-order-lens.js";
+import { readDocument } from "../client/eo-binary/reading.js";
+import { isGap } from "../client/eo-binary/nul.js";
 import { nanoid } from "nanoid";
 import type { WebSearchResult } from "../client/eo-websearch";
 import type { GroundingReport, Snippet } from "../client/eo-citation-check";
+
+// A breakdown of the ledger's own contents, straight from log.events --
+// the append-only record, not the folded projection. Every event type
+// this pipeline mints (SEG.narrow/confirm/revise/refuse) is counted, so
+// the source panel can show what the ledger actually holds rather than a
+// single "revisions" number.
+function ledgerStats(log: {
+  events: any[];
+  tick: number;
+}): EoSource["readLedger"] {
+  const counts = {
+    narrowCount: 0,
+    confirmCount: 0,
+    revisionCount: 0,
+    refuseCount: 0,
+  };
+  for (const e of log.events) {
+    if (e.type === "SEG.narrow") counts.narrowCount++;
+    else if (e.type === "SEG.confirm") counts.confirmCount++;
+    else if (e.type === "SEG.revise") counts.revisionCount++;
+    else if (e.type === "SEG.refuse") counts.refuseCount++;
+  }
+  return { cursor: log.tick, ...counts };
+}
+
+// "Event mode": one line per raw ledger tick, in order -- the append-only
+// record itself, nothing folded or hidden. supersedes/confirms are shown
+// against the TICK of the event they point to (event_ids are content
+// hashes, not something a human reads), so the correction chain is
+// legible without leaving the ledger's own vocabulary.
+function formatLedgerEventLine(e: any, idToTick: Map<string, number>): string {
+  const base = `tick ${e.tick}  ${e.type}`;
+  if (e.type === "SEG.refuse") {
+    return `${base}  head="${e.head}"  gap=${e.gap}${
+      e.reason ? ` (${e.reason})` : ""
+    }  [${e.source}]`;
+  }
+  const edge = `${e.subject} -> ${e.object}  class="${e.class}"`;
+  if (e.type === "SEG.revise") {
+    return `${base}  ${edge}  -- supersedes tick ${idToTick.get(
+      e.supersedes,
+    )} (was "${e.priorClass}")`;
+  }
+  if (e.type === "SEG.confirm") {
+    return `${base}  ${edge}  -- confirms tick ${idToTick.get(e.confirms)}`;
+  }
+  return `${base}  ${edge}`;
+}
+
+// "Fold mode": the ledger's append-only trail projected through
+// MODIFIER_SCOPE_CURRENT_LENS (latest tick per node) and formatted as an
+// EOT reader surface -- the clean, current reading a projection is for,
+// as opposed to event mode's raw, unfolded history.
+function renderFoldedEOT(log: EventLog, roomName: string): string {
+  const reading = readDocument(
+    log,
+    [{ lensDef: MODIFIER_SCOPE_CURRENT_LENS, terrain: "Link" }],
+    log.tick,
+  );
+  if (isGap(reading)) return `# reading refused: ${reading.gap}`;
+  return toEOTReader({ reading, refused: [] } as any, { roomName });
+}
 
 export function ScrollDownToast(prop: { show: boolean; onclick: () => void }) {
   return (
@@ -1060,6 +1125,17 @@ function ChatInner() {
   const [rereadingSourceId, setRereadingSourceId] = useState<string | null>(
     null,
   );
+  // The source panel's ledger viewer: which source is expanded, which of
+  // its two modes is showing (the raw append-only event log, or the
+  // folded/projected current reading), and the full ledger loaded back
+  // from OPFS for whichever source is expanded (the panel row itself only
+  // carries the summary counts in readLedger, not the full event list).
+  const [expandedSourceId, setExpandedSourceId] = useState<string | null>(null);
+  const [sourceViewMode, setSourceViewMode] = useState<"event" | "fold">(
+    "fold",
+  );
+  const [expandedLedger, setExpandedLedger] = useState<EventLog | null>(null);
+  const [expandedLedgerLoading, setExpandedLedgerLoading] = useState(false);
   const [showEditPromptModal, setShowEditPromptModal] = useState(false);
   const webllm = useContext(WebLLMContext)!;
   const mlcllm = useContext(MLCLLMContext)!;
@@ -1542,6 +1618,7 @@ function ChatInner() {
           | { applied: number; refusedCount: number; entityNodes: string[] }
           | undefined;
         let readerEOT: string | undefined;
+        let readLedger: EoSource["readLedger"] | undefined;
         if (textReadable) {
           try {
             const decoded = new TextDecoder("utf-8", { fatal: true }).decode(
@@ -1579,7 +1656,7 @@ function ChatInner() {
             // every source gets a real read log from first upload, so a
             // later "Re-read" always has something to resolve against.
             await persistSourceLedger(id, readingResult.log);
-            chatStore.recordSourceLedger(id, readingResult.log.tick, 0);
+            readLedger = ledgerStats(readingResult.log);
           } catch {
             // isReadableUtf8 is a coarser check than a strict decode; a
             // failure here just means no modifier-graph enrichment for this
@@ -1601,6 +1678,7 @@ function ChatInner() {
           },
           modifierGraph: modifierGraphSummary,
           readerEOT,
+          readLedger,
         });
         chatStore.pushEoLog(
           "file",
@@ -1679,10 +1757,7 @@ function ChatInner() {
         );
       });
 
-      const totalRevisions = result.log.events.filter(
-        (e: any) => e.type === "SEG.revise",
-      ).length;
-      chatStore.recordSourceLedger(source.id, result.log.tick, totalRevisions);
+      chatStore.recordSourceLedger(source.id, ledgerStats(result.log));
 
       let summary = `${result.revisions.length} revision(s)`;
       const cursors = readAtCursors(
@@ -1715,6 +1790,28 @@ function ChatInner() {
       );
     } finally {
       setRereadingSourceId(null);
+    }
+  }
+
+  // Opens (or closes, on a second click) the ledger viewer for one
+  // source, loading its full persisted event log back from OPFS -- the
+  // summary counts on EoSource.readLedger are enough for the row's badge,
+  // but "event mode" needs every tick, and "fold mode" needs the whole
+  // log to project through MODIFIER_SCOPE_CURRENT_LENS.
+  async function toggleSourceView(source: EoSource) {
+    if (expandedSourceId === source.id) {
+      setExpandedSourceId(null);
+      setExpandedLedger(null);
+      return;
+    }
+    setExpandedSourceId(source.id);
+    setExpandedLedger(null);
+    setExpandedLedgerLoading(true);
+    try {
+      const ledger = await readSourceLedger(source.id);
+      setExpandedLedger(ledger);
+    } finally {
+      setExpandedLedgerLoading(false);
     }
   }
 
@@ -1892,57 +1989,145 @@ function ChatInner() {
               </div>
             ) : (
               session.eoSources.map((source) => (
-                <label key={source.id} className={styles["source-row"]}>
-                  <input
-                    type="checkbox"
-                    checked={source.enabled}
-                    onChange={() =>
-                      chatStore.updateCurrentSession((current) => {
-                        current.eoSources = (current.eoSources ?? []).map(
-                          (s) =>
-                            s.id === source.id
-                              ? { ...s, enabled: !s.enabled }
-                              : s,
-                        );
-                      })
-                    }
-                  />
-                  <span className={styles["source-row-body"]}>
-                    <strong title={source.name}>{source.name}</strong>
-                    <small>
-                      {(source.byteLength / 1024).toLocaleString(undefined, {
-                        maximumFractionDigits: 1,
-                      })}{" "}
-                      KB ·{" "}
-                      {source.textReadable
-                        ? "text searchable"
-                        : "binary retained"}
-                      {source.structure
-                        ? ` · ${source.structure.clearings} ${source.structure.clearings === 1 ? "boundary" : "boundaries"}`
-                        : ""}
-                      {source.readLedger?.revisionCount
-                        ? ` · ${source.readLedger.revisionCount} revision${source.readLedger.revisionCount === 1 ? "" : "s"}`
-                        : ""}
-                    </small>
-                  </span>
-                  {source.textReadable && (
-                    <button
-                      type="button"
-                      className={styles["source-reread"]}
-                      title="Re-read this source against its ledger"
-                      disabled={rereadingSourceId === source.id}
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        rereadSource(source);
-                      }}
-                    >
-                      {rereadingSourceId === source.id
-                        ? "Re-reading…"
-                        : "Re-read"}
-                    </button>
+                <div key={source.id} className={styles["source-item"]}>
+                  <label className={styles["source-row"]}>
+                    <input
+                      type="checkbox"
+                      checked={source.enabled}
+                      onChange={() =>
+                        chatStore.updateCurrentSession((current) => {
+                          current.eoSources = (current.eoSources ?? []).map(
+                            (s) =>
+                              s.id === source.id
+                                ? { ...s, enabled: !s.enabled }
+                                : s,
+                          );
+                        })
+                      }
+                    />
+                    <span className={styles["source-row-body"]}>
+                      <strong title={source.name}>{source.name}</strong>
+                      <small>
+                        {(source.byteLength / 1024).toLocaleString(undefined, {
+                          maximumFractionDigits: 1,
+                        })}{" "}
+                        KB ·{" "}
+                        {source.textReadable
+                          ? "text searchable"
+                          : "binary retained"}
+                        {source.structure
+                          ? ` · ${source.structure.clearings} ${source.structure.clearings === 1 ? "boundary" : "boundaries"}`
+                          : ""}
+                        {source.readLedger?.revisionCount
+                          ? ` · ${source.readLedger.revisionCount} revision${source.readLedger.revisionCount === 1 ? "" : "s"}`
+                          : ""}
+                      </small>
+                    </span>
+                    {source.textReadable && source.readLedger && (
+                      <button
+                        type="button"
+                        className={styles["source-view"]}
+                        title="View this source's ledger (raw events, or the folded reading)"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          toggleSourceView(source);
+                        }}
+                      >
+                        {expandedSourceId === source.id ? "Hide" : "View"}
+                      </button>
+                    )}
+                    {source.textReadable && (
+                      <button
+                        type="button"
+                        className={styles["source-reread"]}
+                        title="Re-read this source against its ledger"
+                        disabled={rereadingSourceId === source.id}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          rereadSource(source);
+                        }}
+                      >
+                        {rereadingSourceId === source.id
+                          ? "Re-reading…"
+                          : "Re-read"}
+                      </button>
+                    )}
+                  </label>
+
+                  {expandedSourceId === source.id && (
+                    <div className={styles["source-reading"]}>
+                      <div className={styles["source-reading-tabs"]}>
+                        <button
+                          type="button"
+                          className={
+                            styles["source-reading-tab"] +
+                            (sourceViewMode === "fold"
+                              ? " " + styles["active"]
+                              : "")
+                          }
+                          onClick={() => setSourceViewMode("fold")}
+                        >
+                          Fold — current reading
+                        </button>
+                        <button
+                          type="button"
+                          className={
+                            styles["source-reading-tab"] +
+                            (sourceViewMode === "event"
+                              ? " " + styles["active"]
+                              : "")
+                          }
+                          onClick={() => setSourceViewMode("event")}
+                        >
+                          Events — raw ledger
+                        </button>
+                        {source.readLedger && (
+                          <span className={styles["source-reading-stats"]}>
+                            cursor {source.readLedger.cursor} ·{" "}
+                            {source.readLedger.narrowCount} narrow ·{" "}
+                            {source.readLedger.confirmCount} confirmed ·{" "}
+                            {source.readLedger.revisionCount} revised ·{" "}
+                            {source.readLedger.refuseCount} refused
+                          </span>
+                        )}
+                      </div>
+                      {expandedLedgerLoading ? (
+                        <div className={styles["source-reading-body"]}>
+                          Loading ledger…
+                        </div>
+                      ) : !expandedLedger ? (
+                        <div className={styles["source-reading-body"]}>
+                          No persisted ledger for this source yet.
+                        </div>
+                      ) : sourceViewMode === "fold" ? (
+                        <pre className={styles["source-reading-body"]}>
+                          {renderFoldedEOT(
+                            expandedLedger,
+                            `source_${source.id}`,
+                          )}
+                        </pre>
+                      ) : (
+                        <pre className={styles["source-reading-body"]}>
+                          {(() => {
+                            const idToTick = new Map(
+                              expandedLedger.events.map((e: any) => [
+                                e.event_id,
+                                e.tick,
+                              ]),
+                            );
+                            return expandedLedger.events
+                              .map((e: any) =>
+                                formatLedgerEventLine(e, idToTick),
+                              )
+                              .join("\n");
+                          })()}
+                        </pre>
+                      )}
+                    </div>
                   )}
-                </label>
+                </div>
               ))
             )}
           </div>

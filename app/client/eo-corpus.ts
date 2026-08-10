@@ -25,9 +25,20 @@ export interface EoSource {
   /**
    * Summary of this source's persisted read ledger (see
    * persistSourceLedger/readSourceLedger below) -- enough for the source
-   * panel to show state without loading the whole ledger back in.
+   * panel to show real ledger-vs-projection state without loading the
+   * whole ledger back in. `cursor` is the ledger's own tick count as of
+   * the last read; the four counts are a breakdown of every event type
+   * this pipeline mints (narrow/confirm/revise/refuse), so the panel can
+   * show the append-only ledger's actual contents, not just a single
+   * "revisions" number.
    */
-  readLedger?: { cursor: number; revisionCount: number };
+  readLedger?: {
+    cursor: number;
+    narrowCount: number;
+    confirmCount: number;
+    revisionCount: number;
+    refuseCount: number;
+  };
 }
 
 export interface CorpusPassage {

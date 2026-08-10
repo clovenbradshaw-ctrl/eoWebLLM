@@ -1144,16 +1144,10 @@ export const useChatStore = createPersistStore(
         });
       },
 
-      recordSourceLedger(
-        sourceId: string,
-        cursor: number,
-        revisionCount: number,
-      ) {
+      recordSourceLedger(sourceId: string, readLedger: EoSource["readLedger"]) {
         get().updateCurrentSession((session) => {
           session.eoSources = (session.eoSources ?? []).map((s) =>
-            s.id === sourceId
-              ? { ...s, readLedger: { cursor, revisionCount } }
-              : s,
+            s.id === sourceId ? { ...s, readLedger } : s,
           );
         });
       },
