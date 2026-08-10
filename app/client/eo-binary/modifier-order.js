@@ -1,12 +1,8 @@
 // eoreader6's modifier-order organ (modifier-order/index.js), vendored into
 // ./eo-binary/ — TRIMMED, not verbatim: `corpusDirectionTest` and its
-// `temporality` dependency are omitted. That function answers a separate,
-// genuinely statistical question (is an attested corpus's modifier order
-// load-bearing?) this bundle has no use for, and pulling in a second
-// Born-null organ (temporality/index.js, plus everything it needs from
-// nul/index.js) just to leave it uncalled is not worth the bytes. Everything
-// below — `order`, `scopeTree`, `toTriples`, `admissibleTypology` — is
-// unchanged from the source.
+// `temporality` dependency are omitted, same as before. UPDATED alongside
+// this vendoring pass to include `toEvents`, added to the source after the
+// first vendoring (eoreader6 PR #50) — everything else unchanged.
 //
 // Source: eoreader6/modifier-order/index.js (PR #50)
 //   https://github.com/clovenbradshaw-ctrl/eoreader6 (local: eoreader6/)
@@ -28,15 +24,12 @@
 // Per eo-constitution CONSTITUTION.md II.2 (the giver test), which class a
 // real-world word belongs to, and which direction a given language
 // linearizes, is material knowledge and must be received with a named
-// giver. This organ never derives either. It receives a `typology`
-// (class -> rank, a `direction`, and a `giver`) and a sequence of
-// already-classified modifier tags, and answers one purely structural
-// question: does this sequence's rank order nest monotonically toward the
-// head, or does it invert somewhere?
+// giver. This organ never derives either.
 //
 // `toTriples` maps a nested scope onto the (subject, verb, object, polarity)
-// triple shape `./graph.js::readTriples` already consumes — no new graph
-// primitive.
+// triple shape ./graph.js::readTriples already consumes. `toEvents` maps
+// the same scope onto event_log-appendable SEG.narrow events — one per
+// layer — for ./event_log.js + ./lens.js + ./reading.js.
 
 import { gap, isGap } from "./nul.js";
 
@@ -174,4 +167,18 @@ export const toTriples = (sequence, typology, { head } = {}) => {
     headNode: head,
     entityNode: parent,
   });
+};
+
+export const toEvents = (sequence, typology, { head } = {}) => {
+  const t = toTriples(sequence, typology, { head });
+  if (isGap(t)) return t;
+  return t.triples.map((triple) =>
+    Object.freeze({
+      type: "SEG.narrow",
+      subject: triple.subject,
+      object: triple.object,
+      class: triple.verb,
+      polarity: triple.polarity,
+    }),
+  );
 };

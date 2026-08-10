@@ -102,6 +102,7 @@ import {
   enrichModifierGraphFromText,
   formatModifierGraphBlock,
 } from "../client/eo-modifier-graph";
+import { buildReading, toEOTReader } from "../client/eo-reading";
 import { isReadableUtf8, persistRawSource } from "../client/eo-corpus";
 import { nanoid } from "nanoid";
 import type { WebSearchResult } from "../client/eo-websearch";
@@ -1526,6 +1527,7 @@ function ChatInner() {
         let modifierGraphSummary:
           | { applied: number; refusedCount: number; entityNodes: string[] }
           | undefined;
+        let readerEOT: string | undefined;
         if (textReadable) {
           try {
             const decoded = new TextDecoder("utf-8", { fatal: true }).decode(
@@ -1542,6 +1544,21 @@ function ChatInner() {
               chatStore.pushEoLog(
                 "file",
                 formatModifierGraphBlock(file.name, report),
+              );
+            }
+            const readingResult = buildReading(decoded);
+            const eotText = toEOTReader(readingResult, {
+              roomName: `source_${id}`,
+            });
+            if (readingResult.reading && !("gap" in readingResult.reading)) {
+              readerEOT = eotText;
+              chatStore.pushEoLog(
+                "file",
+                `file: "${file.name}" — read as EOT: a room + ${
+                  readingResult.reading.lenses?.find(
+                    (l: any) => l.terrain === "Link",
+                  )?.view?.length ?? 0
+                } narrowing link(s), cursor ${readingResult.reading.cursor}`,
               );
             }
           } catch {
@@ -1564,6 +1581,7 @@ function ChatInner() {
             blockCount: structure.blockCount,
           },
           modifierGraph: modifierGraphSummary,
+          readerEOT,
         });
         chatStore.pushEoLog(
           "file",

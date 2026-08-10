@@ -21,6 +21,7 @@ export interface EoSource {
     refusedCount: number;
     entityNodes: string[];
   };
+  readerEOT?: string;
 }
 
 export interface CorpusPassage {
