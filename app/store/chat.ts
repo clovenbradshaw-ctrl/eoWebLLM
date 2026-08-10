@@ -93,7 +93,9 @@ import {
   describeHypergraphNavigation,
   draftHypergraphThought,
   buildHypergraphThoughtBlock,
+  queryUserFacts,
 } from "../client/eo-hypergraph";
+import { buildSelfFactsBlock } from "../client/eo-self-facts";
 import {
   defineTaskPlan,
   probeReading,
@@ -101,6 +103,10 @@ import {
   runTaskPlan,
   type ThinkingSystem,
 } from "../client/eo-task-plan";
+import {
+  admitRetrievedMaterial,
+  createGraph,
+} from "../client/eo-proposition-firewall";
 import {
   buildFoldLedger,
   buildWarrantBlock,
@@ -303,6 +309,23 @@ export const BOT_HELLO: ChatMessage = createMessage({
 // everything older lives only as the PAST DISCOURSE summary + folds, so the
 // context window never grows past a fixed ceiling.
 const EO_HISTORY_TURNS = 8;
+// The reader's evidence graph is a local, non-prompt state machine. Its
+// forgetting and prune floor are declared here rather than hidden in an
+// engine default; it consumes only byte-addressed retrievals below.
+const EO_EVIDENCE_GRAPH_SPEC = Object.freeze({
+  gamma: 0.9,
+  pruneBelow: 0.001,
+});
+const eoEvidenceGraphs = new Map<string, ReturnType<typeof createGraph>>();
+
+function evidenceGraphFor(sessionId: string) {
+  let graph = eoEvidenceGraphs.get(sessionId);
+  if (!graph) {
+    graph = createGraph(EO_EVIDENCE_GRAPH_SPEC);
+    eoEvidenceGraphs.set(sessionId, graph);
+  }
+  return graph;
+}
 const EO_FOLD_TIMEOUT_MS = 30000;
 // The router call (eo-tool-router) has no way to cap the model's output
 // length — LLMConfig carries no max_tokens knob the WebLLM engine call
@@ -432,7 +455,6 @@ function eoBuildInstructionBlock(
 // turn, the background topic-naming call, and the background fold/summary
 // calls — routes through this before reaching llm.chat().
 const EO_OUTPUT_TOKEN_RESERVE = 512;
-
 function eoMessageTokens(m: RequestMessage): number {
   return countTokens(getMessageTextContent(m)) + 4;
 }
@@ -1174,8 +1196,23 @@ export const useChatStore = createPersistStore(
         // question, just the model's own read of it, same seam eochat's
         // defineAnswerSpec planner uses for its `lookup` field.
         const session0 = get().currentSession();
+
+        // Admit the reader's own message to the visible transcript BEFORE any
+        // pre-turn pass (web routing, surf, math) runs — a send that spends
+        // seconds planning must not look like it dropped the question. The
+        // object below is the same reference the transcript renders, so the
+        // later content mutation (multimodal form) still shows live.
+        let userMessage: ChatMessage = createMessage({
+          role: "user",
+          content: userContent,
+        });
+        get().updateCurrentSession((session) => {
+          session.messages = session.messages.concat([userMessage]);
+          session.lastUpdate = Date.now();
+        });
+
         // The desk's turn counter (see eo-memory.ts) — this turn's index
-        // among user turns, computed before this turn's own message is
+        // among user turns, computed after this turn's own message is
         // appended, same basis getMessagesWithMemory uses for userTurnCount.
         const turnIndex = session0.messages.filter(
           (m) => m.role === "user" && !m.isError,
@@ -1315,6 +1352,19 @@ export const useChatStore = createPersistStore(
           extraSystemBlocks.push(memoryBlock);
         }
 
+        // Structured self-facts (see eo-self-facts.ts): unlike the desk
+        // above, this is not a verbatim sentence the model has to re-find
+        // in prose — it is a bounded, always-included list read directly
+        // off the belief graph (eo-hypergraph.ts::queryUserFacts), with no
+        // relevance gate and no background model call. A user's own name
+        // is exactly the class of fact that must never depend on either a
+        // small model's own attention over raw history, or a second small
+        // model correctly judging the fact "relevant" to this question.
+        const selfFactsBlock = buildSelfFactsBlock(queryUserFacts(session0.id));
+        if (selfFactsBlock) {
+          extraSystemBlocks.push(selfFactsBlock);
+        }
+
         // Source corpus surf: the complete original bytes remain in OPFS.
         // This turn only receives the best matching, byte-addressed passages.
         // No prefix is ever promoted to "the file", and a later question can
@@ -1334,9 +1384,38 @@ export const useChatStore = createPersistStore(
               passages,
             );
             if (corpusBlock) extraSystemBlocks.push(corpusBlock);
+            const graph = evidenceGraphFor(session0.id);
+            let admitted = 0;
+            let rejected = 0;
+            for (const passage of passages) {
+              try {
+                const result = admitRetrievedMaterial(graph, {
+                  text: passage.text,
+                  origin: "retrieved",
+                  source: {
+                    sourceId: passage.source.id,
+                    byteStart: passage.byteStart,
+                    byteEnd: passage.byteEnd,
+                    retrievalEvent: `turn-${turnIndex}:corpus-surf`,
+                    extractionMethod: "eoreader6:relations",
+                  },
+                });
+                admitted += result.admitted.length;
+                rejected += result.rejected;
+              } catch (err) {
+                get().pushEoLog(
+                  "error",
+                  `evidence graph: ${(err as Error).message}`,
+                );
+              }
+            }
             get().pushEoLog(
               "file",
               `surf: ${passages.length} passage(s) from ${sources.filter((s) => s.enabled && s.textReadable).length} enabled source(s)`,
+            );
+            get().pushEoLog(
+              "warrant",
+              `eoreader: admitted ${admitted} source-spanned proposition(s), refused ${rejected} draft candidate(s); graph ${graph.nodes.size} entity/ies, ${graph.edges.size} link(s)`,
             );
           } catch (err) {
             get().pushEoLog(
@@ -1535,10 +1614,9 @@ export const useChatStore = createPersistStore(
             }),
           );
         }
-        let userMessage: ChatMessage = createMessage({
-          role: "user",
-          content: mContent,
-        });
+        // multimodal form (images) is finalized here — the admitted message
+        // up top is the same object, so its rendered content updates live
+        userMessage.content = mContent;
 
         // Admitted AFTER this turn's own navigation ran, so the graph a
         // question is checked against never includes the question's own
@@ -1583,7 +1661,10 @@ export const useChatStore = createPersistStore(
             blocks.map((block) =>
               createMessage({ role: "system", content: block }),
             ),
-            rest,
+            // the admitted transcript copy of this turn's question would
+            // otherwise be re-sent by getMessagesWithMemory — drop it so the
+            // question appears exactly once in the prompt
+            rest.filter((m) => m.id !== userMessage.id),
             [userMessage],
           );
 
@@ -1673,16 +1754,12 @@ export const useChatStore = createPersistStore(
 
         log.debug("Messages: ", sendMessages);
 
-        // save user's and bot's message
+        // save the bot's placeholder — the user's message was already admitted
+        // at the top of onUserInput so it renders the instant the reader hits
+        // send
         get().updateCurrentSession((session) => {
-          const savedUserMessage = {
-            ...userMessage,
-            content: mContent,
-          };
-          session.messages = session.messages.concat([
-            savedUserMessage,
-            botMessage,
-          ]);
+          session.messages = session.messages.concat([botMessage]);
+          session.lastUpdate = Date.now();
           session.isGenerating = true;
         });
 
@@ -2140,20 +2217,15 @@ export const useChatStore = createPersistStore(
 
         const out: ChatMessage[] = [];
 
-        // 0. instruction gate (surf): rules in force for THIS turn. Always the
-        //    System 1 pass here — no draft exists yet for a claim channel to
-        //    score against; the System 2 re-surf runs in onFinish.
+        // 0. Keep the latest warrant-aware surf for routing and audit, but do
+        // not spend the visible answer's context on its verbose rule bodies.
+        // The reader gets their folded discourse and material first. An
         const gate = eoBuildInstructionBlock(
           nextQuestion?.trim() ?? "",
           session,
           clearContextIndex,
           { mode: "system1" },
         );
-        if (gate.systemMessage) {
-          out.push(
-            createMessage({ role: "system", content: gate.systemMessage }),
-          );
-        }
         if (gate.logText) {
           get().pushEoLog("surf", gate.logText);
         }

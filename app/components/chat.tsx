@@ -31,6 +31,7 @@ import BrainIcon from "../icons/brain.svg";
 
 import BottomIcon from "../icons/bottom.svg";
 import StopIcon from "../icons/pause.svg";
+import SpeakerIcon from "../icons/speaker.svg";
 import RobotIcon from "../icons/robot.svg";
 
 import {
@@ -45,6 +46,7 @@ import {
   ModelClient,
   type PlanTrace,
   type WarrantTrace,
+  useTTSStore,
 } from "../store";
 
 import {
@@ -88,6 +90,7 @@ import { Avatar, AvatarPicker } from "./emoji";
 import { ContextPrompts, TemplateAvatar } from "./template";
 import { ChatCommandPrefix, useChatCommand, useCommand } from "../command";
 import { prettyObject } from "../utils/format";
+import { toSpeechText } from "../utils/tts-text";
 import { ExportMessageModal } from "./exporter";
 import { MultimodalContent } from "../client/api";
 import { Template, useTemplateStore } from "../store/template";
@@ -110,6 +113,13 @@ import {
   readRawSource,
   readSourceLedger,
 } from "../client/eo-corpus";
+import {
+  hypergraphSnapshot,
+  foldGraphOnEntity,
+  hypergraphTiersSnapshot,
+  type GraphTerrainSnapshot,
+  type TierTerrainSnapshot,
+} from "../client/eo-hypergraph";
 import type { EoSource, EventLog } from "../client/eo-corpus";
 import {
   readAtCursors,
@@ -184,6 +194,104 @@ function renderFoldedEOT(log: EventLog, roomName: string): string {
   return toEOTReader({ reading, refused: [] } as any, { roomName });
 }
 
+const eotDot = (id: string) => id.replace(/\s+/g, "_").replace(/::/g, ".");
+
+/**
+ * The belief graph, as an EOT surface -- the SAME room/links/reader
+ * grammar toEOTReader already emits for the Link terrain (modifier-order),
+ * here for the Network terrain (emergence/graph.js's own name for "nodes
+ * are Entity, edges are Link, the whole is Network"). Not a second format
+ * invented for this tab: one grammar, two terrains, the same as the
+ * per-source ledger viewer already runs both Fold and Events views
+ * through readDocument/toEOTReader rather than a bespoke renderer per tab.
+ */
+function buildGraphEOT(
+  snap: GraphTerrainSnapshot,
+  { roomName = "graph" }: { roomName?: string } = {},
+): string {
+  const lines: string[] = [];
+  lines.push(
+    `# ── assembly 1: the room — this session's belief graph, narrowed to what a reading needs ──`,
+  );
+  lines.push(`${roomName} : room`);
+  lines.push(
+    `${roomName}.contract.ops = NUL, SIG, INS, SEG, CON, SYN, DEF, EVA`,
+  );
+  lines.push(`${roomName}.contract.terrains = Entity, Link, Network`);
+  lines.push(`${roomName}.contract.stances = Tending, Binding, Composing`);
+  lines.push(`!EVA ${roomName}`);
+  lines.push("");
+
+  if (snap.edges.length === 0) {
+    lines.push(
+      `# no Network-terrain structure in this reading — the room stands with no relations`,
+    );
+    lines.push("");
+  } else {
+    lines.push(
+      `# ── assembly 2: the Network terrain, as links (cursor ${snap.cursor}, ${snap.edgeCount} edge(s) total believed) ──`,
+    );
+    for (const e of snap.edges) {
+      const parts = e.edge.split("|");
+      if (parts.length !== 3) continue;
+      const [subject, verb, object] = parts;
+      lines.push(`${eotDot(subject)} -> ${eotDot(object)}`);
+      lines.push(
+        `${eotDot(subject)}.relation = "${verb.replace(/^!/, "not ")}"`,
+      );
+      lines.push(`${eotDot(subject)}.weight = ${e.weight.toFixed(2)}`);
+    }
+    lines.push(`!EVA ${roomName}`);
+    lines.push("");
+  }
+
+  lines.push(`# ── assembly 3: the reader surface ──`);
+  lines.push(`${roomName}_reader : reader`);
+  lines.push(`${roomName}_reader.room = ${roomName}`);
+  lines.push(`${roomName}_reader.cursor = ${snap.cursor}`);
+  lines.push(`!EVA ${roomName}_reader`);
+
+  return lines.join("\n");
+}
+
+/**
+ * The Network terrain's own click-to-pivot: every `subject -> object` line
+ * in the EOT text above is a fold target, on either side -- the same
+ * mechanism renderEotEntryText performs on quoted names in the Log tab,
+ * reading the EOT surface text itself so what's clickable is exactly what's rendered,
+ * not a shadow structure kept in sync by hand.
+ */
+function renderGraphEOTLine(
+  line: string,
+  activeEntity: string | null,
+  onEntityClick: (entity: string) => void,
+): React.ReactNode {
+  const m = line.match(/^([^\s].*?)\s->\s(.+)$/);
+  if (!m) return line;
+  const [, subject, object] = m;
+  const node = (id: string, key: string) => (
+    <span
+      key={key}
+      className={
+        styles["eot-entity"] +
+        (activeEntity === id ? ` ${styles["eot-entity-active"]}` : "")
+      }
+      title={`Pivot the graph on "${id}"`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onEntityClick(id);
+      }}
+    >
+      {id}
+    </span>
+  );
+  return (
+    <>
+      {node(subject, "s")} -&gt; {node(object, "o")}
+    </>
+  );
+}
+
 // The EOT terminal's click-to-fold: every quoted name inside a log line
 // (a source, a search query, a topic, an expression -- whatever the
 // entry itself named) is a click target. Clicking one narrows the whole
@@ -223,6 +331,56 @@ function renderEotEntryText(
   }
   if (last < text.length) parts.push(text.slice(last));
   return parts;
+}
+
+// A terrain section (Atmosphere / Lens / Paradigm) -- rendered only when
+// the reading has actually reached it (tier.observations > 0), never as an
+// empty placeholder. tiers.js's own sparsification means a higher terrain
+// existing at all IS the finding: it only observes what disturbed the one
+// below it. Genuine Bayesian-surprise shifts (recentShifts) are the
+// "meaningful" content highlighted here -- ordinary placed observations
+// are summarised as a count, never listed individually.
+function renderTerrain(tier: {
+  name: string;
+  observations: number;
+  shifts: number;
+  novelRate: number;
+  recentShifts: { at: number; forms?: string[]; surprise?: number }[];
+}): React.ReactNode {
+  if (tier.observations === 0) return null;
+  return (
+    <div key={tier.name} className={styles["eot-terrain"]}>
+      <div className={styles["eot-terrain-header"]}>
+        {tier.name[0].toUpperCase() + tier.name.slice(1)}
+      </div>
+      <div className={styles["eot-terrain-stats"]}>
+        {tier.observations} observation{tier.observations === 1 ? "" : "s"} ·{" "}
+        {tier.shifts} shift{tier.shifts === 1 ? "" : "s"} · novel rate{" "}
+        {(tier.novelRate * 100).toFixed(0)}%
+      </div>
+      {tier.shifts === 0 ? (
+        <div className={styles["eot-graph-empty"]}>
+          Nothing here has moved belief further than this terrain&apos;s own
+          continuation would have -- no shift yet.
+        </div>
+      ) : (
+        tier.recentShifts.map((s, i) => (
+          <div key={i} className={styles["eot-shift"]}>
+            at {s.at}
+            {typeof s.surprise === "number"
+              ? ` · surprise ${s.surprise.toFixed(3)}`
+              : ""}
+            {s.forms?.length ? (
+              <span className={styles["eot-shift-forms"]}>
+                {" "}
+                — {s.forms.slice(0, 6).join(", ")}
+              </span>
+            ) : null}
+          </div>
+        ))
+      )}
+    </div>
+  );
 }
 
 export function ScrollDownToast(prop: { show: boolean; onclick: () => void }) {
@@ -1136,6 +1294,8 @@ function ChatInner() {
   const session = chatStore.currentSession();
   const config = useAppConfig();
   const fontSize = config.fontSize;
+  const ttsPlayingMessageId = useTTSStore((state) => state.playingMessageId);
+  const ttsStatus = useTTSStore((state) => state.status);
 
   const isStreaming = session.messages.some((m) => m.streaming);
 
@@ -1145,6 +1305,13 @@ function ChatInner() {
   // renderEotEntryText below): a name pulled from a log line's own
   // quoted text, narrowing the terminal to only the lines that name it.
   const [eotFoldEntity, setEotFoldEntity] = useState<string | null>(null);
+  // Which terrain the terminal is showing -- "log" is the existing running
+  // event feed; "graph" is the belief graph + tier stack, added alongside
+  // it, never replacing it.
+  const [eotTerminalTab, setEotTerminalTab] = useState<"log" | "graph">("log");
+  // Manual surf/fold over the graph terrain: the same substring fold a
+  // click on a node already performs, driven by typing instead.
+  const [eotGraphSearch, setEotGraphSearch] = useState("");
   const [showSources, setShowSources] = useState(false);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -1444,26 +1611,8 @@ function ChatInner() {
 
   // preview messages
   const renderMessages = useMemo(() => {
-    return context.concat(session.messages as RenderMessage[]).concat(
-      userInput.length > 0 && config.sendPreviewBubble
-        ? [
-            {
-              ...createMessage({
-                role: "user",
-                content: userInput,
-              }),
-              preview: true,
-            },
-          ]
-        : [],
-    );
-  }, [
-    config.sendPreviewBubble,
-    context,
-    session.messages,
-    session.messages.length,
-    userInput,
-  ]);
+    return context.concat(session.messages as RenderMessage[]);
+  }, [context, session.messages, session.messages.length]);
 
   const [msgRenderIndex, _setMsgRenderIndex] = useState(
     Math.max(0, renderMessages.length - CHAT_PAGE_SIZE),
@@ -1975,6 +2124,20 @@ function ChatInner() {
           const eotEntries = eotFoldEntity
             ? orderedEoLog.filter((entry) => entry.text.includes(eotFoldEntity))
             : orderedEoLog;
+
+          // Graph terrain: the same click-to-fold entity, OR a typed
+          // search — "manually surf and fold" — drive the identical
+          // substring pivot foldGraphOnEntity already performs.
+          const graphQuery = eotFoldEntity || eotGraphSearch.trim() || null;
+          const graphSnap: GraphTerrainSnapshot | null =
+            eotTerminalTab === "graph"
+              ? foldGraphOnEntity(session.id, graphQuery)
+              : null;
+          const tiersSnap: TierTerrainSnapshot | null =
+            eotTerminalTab === "graph"
+              ? hypergraphTiersSnapshot(session.id)
+              : null;
+
           return (
             <div className={styles["eot-panel"]}>
               <div
@@ -1984,50 +2147,149 @@ function ChatInner() {
               >
                 ✕ Close
               </div>
-              {eotFoldEntity && (
-                <div className={styles["eot-panel-fold"]}>
-                  Folded on &quot;{eotFoldEntity}&quot; — showing{" "}
-                  {eotEntries.length} of {orderedEoLog.length} event
-                  {orderedEoLog.length === 1 ? "" : "s"}
-                  <span
-                    className={styles["eot-panel-fold-clear"]}
-                    onClick={() => setEotFoldEntity(null)}
-                  >
-                    Clear
-                  </span>
+              <div className={styles["eot-panel-tabs"]}>
+                <div
+                  className={
+                    styles["eot-panel-tab"] +
+                    (eotTerminalTab === "log"
+                      ? ` ${styles["eot-panel-tab-active"]}`
+                      : "")
+                  }
+                  onClick={() => setEotTerminalTab("log")}
+                >
+                  Log
                 </div>
+                <div
+                  className={
+                    styles["eot-panel-tab"] +
+                    (eotTerminalTab === "graph"
+                      ? ` ${styles["eot-panel-tab-active"]}`
+                      : "")
+                  }
+                  onClick={() => setEotTerminalTab("graph")}
+                  title="The belief graph and tier stack this session has read so far"
+                >
+                  Graph
+                </div>
+              </div>
+
+              {eotTerminalTab === "log" && (
+                <>
+                  {eotFoldEntity && (
+                    <div className={styles["eot-panel-fold"]}>
+                      Folded on &quot;{eotFoldEntity}&quot; — showing{" "}
+                      {eotEntries.length} of {orderedEoLog.length} event
+                      {orderedEoLog.length === 1 ? "" : "s"}
+                      <span
+                        className={styles["eot-panel-fold-clear"]}
+                        onClick={() => setEotFoldEntity(null)}
+                      >
+                        Clear
+                      </span>
+                    </div>
+                  )}
+                  {!orderedEoLog.length ? (
+                    <div className={styles["eot-panel-empty"]}>
+                      EOT — nothing has run yet this session. Send a message to
+                      see surf (instruction gate), fold (context-budget clamp),
+                      send (what reached the engine), and background tasks
+                      (topic naming, discourse fold) logged here as they happen.
+                    </div>
+                  ) : !eotEntries.length ? (
+                    <div className={styles["eot-panel-empty"]}>
+                      No events mention &quot;{eotFoldEntity}&quot;.
+                    </div>
+                  ) : (
+                    eotEntries.map((entry) => (
+                      <div key={entry.id}>
+                        [{new Date(entry.ts).toLocaleTimeString()}]{" "}
+                        <span
+                          className={
+                            styles["eot-entry-kind"] +
+                            " " +
+                            (styles[`eot-entry-${entry.kind}`] ?? "")
+                          }
+                        >
+                          {entry.kind.toUpperCase()}
+                        </span>
+                        {renderEotEntryText(
+                          entry.text,
+                          eotFoldEntity,
+                          (entity) =>
+                            setEotFoldEntity((current) =>
+                              current === entity ? null : entity,
+                            ),
+                        )}
+                      </div>
+                    ))
+                  )}
+                </>
               )}
-              {!orderedEoLog.length ? (
-                <div className={styles["eot-panel-empty"]}>
-                  EOT — nothing has run yet this session. Send a message to see
-                  surf (instruction gate), fold (context-budget clamp), send
-                  (what reached the engine), and background tasks (topic
-                  naming, discourse fold) logged here as they happen.
-                </div>
-              ) : !eotEntries.length ? (
-                <div className={styles["eot-panel-empty"]}>
-                  No events mention &quot;{eotFoldEntity}&quot;.
-                </div>
-              ) : (
-                eotEntries.map((entry) => (
-                  <div key={entry.id}>
-                    [{new Date(entry.ts).toLocaleTimeString()}]{" "}
-                    <span
-                      className={
-                        styles["eot-entry-kind"] +
-                        " " +
-                        (styles[`eot-entry-${entry.kind}`] ?? "")
-                      }
-                    >
-                      {entry.kind.toUpperCase()}
-                    </span>
-                    {renderEotEntryText(entry.text, eotFoldEntity, (entity) =>
-                      setEotFoldEntity((current) =>
-                        current === entity ? null : entity,
-                      ),
-                    )}
-                  </div>
-                ))
+
+              {eotTerminalTab === "graph" && (
+                <>
+                  <input
+                    className={styles["eot-graph-search"]}
+                    type="text"
+                    placeholder="Search / fold the graph — a name, a relation…"
+                    value={eotGraphSearch}
+                    onChange={(e) => setEotGraphSearch(e.target.value)}
+                  />
+                  {!graphSnap ? (
+                    <div className={styles["eot-panel-empty"]}>
+                      EOT — no graph yet this session. Send a message or add a
+                      source to start one.
+                    </div>
+                  ) : (
+                    <>
+                      <div className={styles["eot-graph-stats"]}>
+                        cursor {graphSnap.cursor} · {graphSnap.nodeCount} node
+                        {graphSnap.nodeCount === 1 ? "" : "s"} total ·{" "}
+                        {graphSnap.edgeCount} edge
+                        {graphSnap.edgeCount === 1 ? "" : "s"} total
+                      </div>
+                      {graphQuery && (
+                        <div className={styles["eot-panel-fold"]}>
+                          Folded on &quot;{graphQuery}&quot; — showing{" "}
+                          {graphSnap.edges.length} edge
+                          {graphSnap.edges.length === 1 ? "" : "s"}
+                          <span
+                            className={styles["eot-panel-fold-clear"]}
+                            onClick={() => {
+                              setEotFoldEntity(null);
+                              setEotGraphSearch("");
+                            }}
+                          >
+                            Clear
+                          </span>
+                        </div>
+                      )}
+                      {!graphSnap.edges.length ? (
+                        <div className={styles["eot-graph-empty"]}>
+                          {graphQuery
+                            ? `No relation matches "${graphQuery}".`
+                            : "No relations read yet."}
+                        </div>
+                      ) : (
+                        buildGraphEOT(graphSnap, { roomName: "graph" })
+                          .split("\n")
+                          .map((line, i) => (
+                            <div key={i} className={styles["eot-graph-edge"]}>
+                              {renderGraphEOTLine(
+                                line,
+                                eotFoldEntity,
+                                (entity) =>
+                                  setEotFoldEntity((current) =>
+                                    current === entity ? null : entity,
+                                  ),
+                              )}
+                            </div>
+                          ))
+                      )}
+                      {tiersSnap?.tiers.map(renderTerrain)}
+                    </>
+                  )}
+                </>
               )}
             </div>
           );
@@ -2234,7 +2496,10 @@ function ChatInner() {
         {session.modelLoadProgress && (
           <div className={styles["model-load-progress"]}>
             <div className={styles["model-load-progress-header"]}>
-              <span>{Locale.Chat.ModelLoading.Title}</span>
+              <span className={styles["model-load-progress-title"]}>
+                <span className={styles["model-load-spinner"]} />
+                {Locale.Chat.ModelLoading.Title}
+              </span>
               <span>
                 {Math.round(session.modelLoadProgress.progress * 100)}%
               </span>
@@ -2378,6 +2643,43 @@ function ChatInner() {
                                     )
                                   }
                                 />
+
+                                {!isUser && (
+                                  <ChatAction
+                                    text={
+                                      ttsPlayingMessageId === message.id
+                                        ? Locale.Chat.Actions.StopSpeak
+                                        : Locale.Chat.Actions.Speak
+                                    }
+                                    icon={
+                                      ttsPlayingMessageId === message.id &&
+                                      ttsStatus === "loading" ? (
+                                        <LoadingButtonIcon />
+                                      ) : ttsPlayingMessageId === message.id ? (
+                                        <StopIcon />
+                                      ) : (
+                                        <SpeakerIcon />
+                                      )
+                                    }
+                                    selected={
+                                      ttsPlayingMessageId === message.id
+                                    }
+                                    onClick={() => {
+                                      const tts = useTTSStore.getState();
+                                      if (ttsPlayingMessageId === message.id) {
+                                        tts.stop();
+                                        return;
+                                      }
+                                      const { rest } = splitThinking(
+                                        getMessageTextContent(message),
+                                      );
+                                      tts.speak(
+                                        String(message.id ?? i),
+                                        toSpeechText(rest),
+                                      );
+                                    }}
+                                  />
+                                )}
                               </>
                             )}
                           </div>
@@ -2494,20 +2796,6 @@ function ChatInner() {
                     )}
                   </div>
                   <div className={styles["chat-message-action-date"]}>
-                    {message.role === "assistant" && message.usage && (
-                      <>
-                        <div>
-                          {`Prefill: ${message.usage.extra.prefill_tokens_per_s.toFixed(
-                            1,
-                          )} tok/s,`}
-                        </div>
-                        <div>
-                          {`Decode: ${message.usage.extra.decode_tokens_per_s.toFixed(
-                            1,
-                          )} tok/s,`}
-                        </div>
-                      </>
-                    )}
                     <div>
                       {isContext
                         ? Locale.Chat.IsContext

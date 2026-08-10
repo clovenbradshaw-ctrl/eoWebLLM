@@ -39,6 +39,7 @@
 // call by call.
 import * as eoreaderHost from "../../eoreader6/packages/host/index.js";
 const eoreader: any = eoreaderHost;
+import { extractSelfFacts } from "./eo-self-facts";
 
 export interface HypergraphMovement {
   newEdges: number;
@@ -90,6 +91,13 @@ function wrapperFor(chatSessionId: string): HypergraphWrapper {
  * movement, by design, so the caller — this file — is the one place that
  * must not admit the same immutable turn or source twice).
  */
+// Fixed, declared — not Date.now()/a random session id — the same standing
+// this app's other eoreader6 callers already hold (host/tiers.js itself
+// throws rather than default one): a tier stack's seed does not need to be
+// UNIQUE across chat sessions, only declared, so every session's stack is a
+// reproducible reading of that session's own turns.
+const TIER_SEED = 20260810;
+
 function admitOnce(
   w: HypergraphWrapper,
   docId: string,
@@ -98,8 +106,9 @@ function admitOnce(
   if (!text.trim() || w.admitted.has(docId)) return null;
   w.admitted.add(docId);
   eoreader.admitChunked(w.session, { text, sourceId: docId });
-  const { admitted } = eoreader.admitGraph(w.session, { sourceId: docId });
-  const result = admitted[0];
+  eoreader.attachTiers(w.session, { seed: TIER_SEED });
+  const { admitted } = eoreader.admitTiers(w.session, { sourceId: docId });
+  const result = admitted[0]?.admitted;
   if (!result) return null;
   return {
     newEdges: result.newEdges ?? 0,
@@ -123,7 +132,165 @@ export function admitHypergraphTurn(
   chatSessionId: string,
   turn: { id: string; content: string },
 ): HypergraphMovement | null {
-  return admitOnce(wrapperFor(chatSessionId), `turn:${turn.id}`, turn.content);
+  const movement = admitOnce(
+    wrapperFor(chatSessionId),
+    `turn:${turn.id}`,
+    turn.content,
+  );
+  // Self-facts are extracted from every turn's own text, not gated on
+  // admitOnce's dedup above: a duplicate docId (unusual, but not this
+  // function's business to assume against) still names its own content,
+  // and extraction is pure/idempotent on unchanged text either way — the
+  // real dedup that matters is per-VERB inside admitSelfFacts's own
+  // injectPrior call, which is intentionally NOT deduped (a restated fact
+  // is real, if redundant, evidence, the same standing readTriples holds
+  // everywhere else in this codebase).
+  const facts = extractSelfFacts(turn.content);
+  if (facts.length) admitSelfFacts(chatSessionId, facts);
+  return movement;
+}
+
+// ── Self-facts: a received prior injected directly, never re-derived ────
+//
+// eo-self-facts.ts's extraction is pure (no eoreader6 import); this is the
+// one place its output actually reaches a graph, and it reaches the SAME
+// graph admitHypergraphTurn already builds — a self-declared name and a
+// name discovered through ordinary relation extraction canonicalise onto
+// one node, not two. injectPrior (emergence/graph.js) is eoreader6's own
+// mechanism for exactly this: a fact whose origin is not "found in the
+// text" but "handed in," and it refuses to run without a named giver.
+
+const SELF_FACT_GIVER = "eo-self-facts:user-stated";
+
+export function admitSelfFacts(
+  chatSessionId: string,
+  facts: { verb: string; object: string }[],
+): void {
+  if (!facts.length) return;
+  const w = wrapperFor(chatSessionId);
+  const graph = eoreader.attachGraph(w.session);
+  const triples = facts.map((f) => ({
+    subject: "user",
+    verb: f.verb,
+    object: f.object,
+  }));
+  eoreader.injectPrior(graph, triples, { giver: SELF_FACT_GIVER });
+}
+
+/**
+ * Mechanistic — no token-overlap gate, no model call. Every edge whose
+ * subject canonicalises to "user" is a fact about the user, by construction
+ * (the only thing that ever writes such an edge is admitSelfFacts above),
+ * so this is a direct read, not a search.
+ */
+export function queryUserFacts(
+  chatSessionId: string,
+): { verb: string; object: string }[] {
+  const w = wrappers.get(chatSessionId);
+  const graph = w?.session?.graph;
+  if (!graph?.edges) return [];
+  const out: { verb: string; object: string }[] = [];
+  for (const key of graph.edges.keys()) {
+    const parts = String(key).split("|");
+    if (parts.length !== 3 || parts[0] !== "user") continue;
+    out.push({ verb: parts[1], object: parts[2] });
+  }
+  return out;
+}
+
+// ── Terminal exposure: the graph and tier stack, as data, and one fold ──
+//
+// "Pivot" is not a new mechanism: it is the SAME fold this file's own
+// click-to-fold entity narrowing already performs on the eo-log terminal
+// (renderEotEntryText / eotFoldEntity in chat.tsx), applied to the graph
+// instead of the log — and it has the same cursor that fold always had,
+// namely the graph's own `tick` (emergence/graph.js's append-only advance
+// counter, incremented once per admission), never a separately-invented
+// position. Folding to an entity does not mutate the graph; it is a
+// read-only projection over graph.edges as they stand at the current tick,
+// exactly as `readDocument(log, lenses, cursor)` projects the modifier-
+// order ledger at a named cursor elsewhere in this app.
+
+export interface GraphTerrainSnapshot {
+  nodeCount: number;
+  edgeCount: number;
+  cursor: number;
+  nodes: { id: string; mentions: number }[];
+  edges: { edge: string; weight: number }[];
+}
+
+/** Plain-data graph view for the terminal's Graph tab — never the live Maps. */
+export function hypergraphSnapshot(
+  chatSessionId: string,
+  { limit = 60 }: { limit?: number } = {},
+): GraphTerrainSnapshot | null {
+  const w = wrappers.get(chatSessionId);
+  if (!w?.session?.graph) return null;
+  const snap = eoreader.sessionGraphSnapshot(w.session, { limit });
+  return {
+    nodeCount: snap.nodeCount,
+    edgeCount: snap.edgeCount,
+    cursor: snap.tick,
+    nodes: snap.nodes,
+    edges: snap.edges,
+  };
+}
+
+/**
+ * Fold the graph terrain to one entity's own neighbourhood — every edge
+ * whose subject or object names it, at the current cursor. Read-only;
+ * `null` entity returns the unfolded snapshot's own edges unchanged.
+ */
+export function foldGraphOnEntity(
+  chatSessionId: string,
+  entity: string | null,
+  { limit = 60 }: { limit?: number } = {},
+): GraphTerrainSnapshot | null {
+  const snap = hypergraphSnapshot(chatSessionId, { limit: 1000 });
+  if (!snap) return null;
+  if (!entity) return { ...snap, edges: snap.edges.slice(0, limit) };
+  const needle = entity.toLowerCase();
+  const edges = snap.edges
+    .filter((e) => e.edge.toLowerCase().includes(needle))
+    .slice(0, limit);
+  const touched = new Set<string>();
+  for (const e of edges)
+    for (const part of e.edge.split("|")) touched.add(part);
+  const nodes = snap.nodes.filter((n) => touched.has(n.id)).slice(0, limit);
+  return { ...snap, nodes, edges };
+}
+
+export interface TierShiftRecord {
+  at: number;
+  tier: string;
+  surprise: number;
+  rank: number | null;
+  censored: string | null;
+  reZero: boolean;
+  forms: string[];
+}
+
+export interface TierTerrainSnapshot {
+  seeded: boolean;
+  cursor: number;
+  tiers: {
+    name: string;
+    observations: number;
+    shifts: number;
+    novelRate: number;
+    recentShifts: TierShiftRecord[];
+  }[];
+}
+
+/** Plain-data tier-stack view for the terminal's Graph tab — the Atmosphere/Lens/Paradigm reading alongside the graph, from the same session. */
+export function hypergraphTiersSnapshot(
+  chatSessionId: string,
+): TierTerrainSnapshot | null {
+  const w = wrappers.get(chatSessionId);
+  if (!w?.session?.tiers) return null;
+  const snap = eoreader.sessionTiersSnapshot(w.session);
+  const cursor = w.session.tiersAdmitted?.size ?? 0;
+  return { ...snap, cursor };
 }
 
 /**

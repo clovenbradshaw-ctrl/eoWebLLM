@@ -320,7 +320,7 @@
   z-index: 10;
   background: #0b0f0c;
   color: #7ee787;
-  font-family: "SF Mono", "Fira Code", Consolas, Menlo, monospace;
+  font-family: var(--font-plex-mono), "SF Mono", "Fira Code", Consolas, Menlo, monospace;
   font-size: 12.5px;
   line-height: 1.6;
   overflow-y: auto;
@@ -432,6 +432,133 @@
   }
 }
 
+// The terminal's own tabs (Log / Graph): a fixed header row inside the
+// panel's sticky top, alongside eot-panel-close, so switching tabs never
+// requires scrolling back up.
+.eot-panel-tabs {
+  position: sticky;
+  top: 34px;
+  z-index: 11;
+  display: flex;
+  gap: 2px;
+  margin: 0 0 12px;
+  background: #0b0f0c;
+}
+
+.eot-panel-tab {
+  padding: 5px 12px;
+  background: #161b17;
+  color: #4d6b52;
+  border: 1px solid #2d3b30;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  font-size: 12px;
+
+  &:hover {
+    color: #7ee787;
+  }
+}
+
+.eot-panel-tab-active {
+  color: #7ee787;
+  background: #1a2119;
+  border-color: #3a4d3e;
+}
+
+// Manual surf/fold: a free-text filter over the graph terrain, the same
+// substring match a click on an entity already performs -- typing IS
+// folding, driven by hand instead of by a click target.
+//
+// input[type="text"] (a global app-wide reset, ../styles/globals.scss)
+// carries higher specificity than a single class (element + attribute vs.
+// one class) and also sets max-width: 50% -- uncontested since this rule
+// never declared its own, silently halving the input's real width. Both
+// fixed by qualifying the selector with the element itself, which ties
+// specificity and wins on source order (this stylesheet loads after the
+// global one), and by overriding max-width explicitly rather than leaving
+// it to the cascade.
+input.eot-graph-search {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  background: #0f1411;
+  color: #7ee787;
+  border: 1px solid #2d3b30;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 12.5px;
+
+  &::placeholder {
+    color: #4d6b52;
+  }
+
+  &:focus {
+    outline: none;
+    border-color: #7ee787;
+  }
+}
+
+.eot-graph-stats {
+  margin-bottom: 10px;
+  color: #4d6b52;
+  font-size: 12px;
+}
+
+.eot-graph-edge {
+  cursor: pointer;
+  padding: 1px 0;
+
+  &:hover {
+    color: #e3b341;
+  }
+}
+
+.eot-graph-empty {
+  color: #4d6b52;
+  margin-bottom: 10px;
+}
+
+// Terrain sections (Atmosphere / Lens / Paradigm) appear only once the
+// reading has actually earned them (tiers.js's own sparsification -- a
+// higher tier only observes what disturbed the one below it), never shown
+// unconditionally as empty placeholders.
+.eot-terrain {
+  margin: 14px 0 0;
+  padding-top: 10px;
+  border-top: 1px dashed #2d3b30;
+}
+
+.eot-terrain-header {
+  color: #79c0ff;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.eot-terrain-stats {
+  color: #4d6b52;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+// A genuine Bayesian-surprise shift (belief actually moved, ranked against
+// the tier's own continuation null) -- distinguished from ordinary placed
+// observations, which are never listed individually here. This is the
+// "meaningful", not merely novel, content the terrain surfaces.
+.eot-shift {
+  padding: 2px 0 2px 8px;
+  border-left: 2px solid #e3b341;
+  color: #e3b341;
+  margin-bottom: 3px;
+}
+
+.eot-shift-forms {
+  color: #c9b06a;
+  opacity: 0.85;
+}
+
 .chat-action-context {
   display: flex;
   justify-content: center;
@@ -455,6 +582,12 @@
   }
 }
 
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .model-load-progress {
   margin: 0 auto 16px auto;
   max-width: 420px;
@@ -462,30 +595,49 @@
   border-radius: 12px;
   background-color: var(--white);
   border: var(--border-in-light);
-  box-shadow: var(--card-shadow);
+  box-shadow: 0 2px 3px rgba(38, 36, 31, 0.08), 0 10px 24px -14px rgba(38, 36, 31, 0.35);
 }
 
 .model-load-progress-header {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   font-size: 13px;
   font-weight: 600;
   color: var(--black);
   margin-bottom: 8px;
 }
 
+.model-load-progress-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-load-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--gray);
+  border-top-color: var(--primary);
+  animation: spin 0.9s linear infinite;
+  flex: none;
+}
+
 .model-load-progress-track {
   width: 100%;
-  height: 6px;
-  border-radius: 3px;
+  height: 8px;
+  border-radius: 4px;
   background-color: var(--gray);
   overflow: hidden;
+  box-shadow: inset 0 1px 2px rgba(38, 36, 31, 0.18);
 }
 
 .model-load-progress-bar {
   height: 100%;
-  border-radius: 3px;
-  background-color: var(--primary);
+  border-radius: 4px;
+  background: linear-gradient(180deg, var(--primary), rgba(31, 90, 76, 0.72));
+  box-shadow: 0 1px 1px rgba(255, 255, 255, 0.25) inset, 0 -1px 2px rgba(0, 0, 0, 0.18) inset;
   transition: width 0.3s ease;
 }
 
@@ -561,7 +713,6 @@
     }
   }
 }
-
 
 .chat-message-container {
   max-width: var(--message-max-width);
@@ -652,7 +803,6 @@
   height: auto;
   display: block;
 }
-
 
 @media only screen and (max-width: 600px) {
   $calc-image-width: calc(100vw/3*2/var(--image-count));
@@ -912,7 +1062,7 @@
   border-radius: 6px;
   background: #0b0f0c;
   color: #7ee787;
-  font-family: "SF Mono", "Fira Code", Consolas, Menlo, monospace;
+  font-family: var(--font-plex-mono), "SF Mono", "Fira Code", Consolas, Menlo, monospace;
   font-size: 11px;
   line-height: 1.5;
   white-space: pre-wrap;
@@ -1029,7 +1179,6 @@
   font-size: 14px;
   margin-left: 8px;
 }
-
 
 .toast-container {
   position: absolute;
