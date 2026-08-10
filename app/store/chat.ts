@@ -104,10 +104,6 @@ import {
   type ThinkingSystem,
 } from "../client/eo-task-plan";
 import {
-  admitRetrievedMaterial,
-  createGraph,
-} from "../client/eo-proposition-firewall";
-import {
   buildFoldLedger,
   buildWarrantBlock,
   classifyResponseSet,
@@ -309,23 +305,6 @@ export const BOT_HELLO: ChatMessage = createMessage({
 // everything older lives only as the PAST DISCOURSE summary + folds, so the
 // context window never grows past a fixed ceiling.
 const EO_HISTORY_TURNS = 8;
-// The reader's evidence graph is a local, non-prompt state machine. Its
-// forgetting and prune floor are declared here rather than hidden in an
-// engine default; it consumes only byte-addressed retrievals below.
-const EO_EVIDENCE_GRAPH_SPEC = Object.freeze({
-  gamma: 0.9,
-  pruneBelow: 0.001,
-});
-const eoEvidenceGraphs = new Map<string, ReturnType<typeof createGraph>>();
-
-function evidenceGraphFor(sessionId: string) {
-  let graph = eoEvidenceGraphs.get(sessionId);
-  if (!graph) {
-    graph = createGraph(EO_EVIDENCE_GRAPH_SPEC);
-    eoEvidenceGraphs.set(sessionId, graph);
-  }
-  return graph;
-}
 const EO_FOLD_TIMEOUT_MS = 30000;
 // The router call (eo-tool-router) has no way to cap the model's output
 // length — LLMConfig carries no max_tokens knob the WebLLM engine call
@@ -1384,38 +1363,9 @@ export const useChatStore = createPersistStore(
               passages,
             );
             if (corpusBlock) extraSystemBlocks.push(corpusBlock);
-            const graph = evidenceGraphFor(session0.id);
-            let admitted = 0;
-            let rejected = 0;
-            for (const passage of passages) {
-              try {
-                const result = admitRetrievedMaterial(graph, {
-                  text: passage.text,
-                  origin: "retrieved",
-                  source: {
-                    sourceId: passage.source.id,
-                    byteStart: passage.byteStart,
-                    byteEnd: passage.byteEnd,
-                    retrievalEvent: `turn-${turnIndex}:corpus-surf`,
-                    extractionMethod: "eoreader6:relations",
-                  },
-                });
-                admitted += result.admitted.length;
-                rejected += result.rejected;
-              } catch (err) {
-                get().pushEoLog(
-                  "error",
-                  `evidence graph: ${(err as Error).message}`,
-                );
-              }
-            }
             get().pushEoLog(
               "file",
               `surf: ${passages.length} passage(s) from ${sources.filter((s) => s.enabled && s.textReadable).length} enabled source(s)`,
-            );
-            get().pushEoLog(
-              "warrant",
-              `eoreader: admitted ${admitted} source-spanned proposition(s), refused ${rejected} draft candidate(s); graph ${graph.nodes.size} entity/ies, ${graph.edges.size} link(s)`,
             );
           } catch (err) {
             get().pushEoLog(

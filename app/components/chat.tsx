@@ -31,7 +31,6 @@ import BrainIcon from "../icons/brain.svg";
 
 import BottomIcon from "../icons/bottom.svg";
 import StopIcon from "../icons/pause.svg";
-import SpeakerIcon from "../icons/speaker.svg";
 import RobotIcon from "../icons/robot.svg";
 
 import {
@@ -46,7 +45,6 @@ import {
   ModelClient,
   type PlanTrace,
   type WarrantTrace,
-  useTTSStore,
 } from "../store";
 
 import {
@@ -90,7 +88,6 @@ import { Avatar, AvatarPicker } from "./emoji";
 import { ContextPrompts, TemplateAvatar } from "./template";
 import { ChatCommandPrefix, useChatCommand, useCommand } from "../command";
 import { prettyObject } from "../utils/format";
-import { toSpeechText } from "../utils/tts-text";
 import { ExportMessageModal } from "./exporter";
 import { MultimodalContent } from "../client/api";
 import { Template, useTemplateStore } from "../store/template";
@@ -1294,8 +1291,6 @@ function ChatInner() {
   const session = chatStore.currentSession();
   const config = useAppConfig();
   const fontSize = config.fontSize;
-  const ttsPlayingMessageId = useTTSStore((state) => state.playingMessageId);
-  const ttsStatus = useTTSStore((state) => state.status);
 
   const isStreaming = session.messages.some((m) => m.streaming);
 
@@ -2643,43 +2638,6 @@ function ChatInner() {
                                     )
                                   }
                                 />
-
-                                {!isUser && (
-                                  <ChatAction
-                                    text={
-                                      ttsPlayingMessageId === message.id
-                                        ? Locale.Chat.Actions.StopSpeak
-                                        : Locale.Chat.Actions.Speak
-                                    }
-                                    icon={
-                                      ttsPlayingMessageId === message.id &&
-                                      ttsStatus === "loading" ? (
-                                        <LoadingButtonIcon />
-                                      ) : ttsPlayingMessageId === message.id ? (
-                                        <StopIcon />
-                                      ) : (
-                                        <SpeakerIcon />
-                                      )
-                                    }
-                                    selected={
-                                      ttsPlayingMessageId === message.id
-                                    }
-                                    onClick={() => {
-                                      const tts = useTTSStore.getState();
-                                      if (ttsPlayingMessageId === message.id) {
-                                        tts.stop();
-                                        return;
-                                      }
-                                      const { rest } = splitThinking(
-                                        getMessageTextContent(message),
-                                      );
-                                      tts.speak(
-                                        String(message.id ?? i),
-                                        toSpeechText(rest),
-                                      );
-                                    }}
-                                  />
-                                )}
                               </>
                             )}
                           </div>
