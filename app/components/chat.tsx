@@ -184,6 +184,47 @@ function renderFoldedEOT(log: EventLog, roomName: string): string {
   return toEOTReader({ reading, refused: [] } as any, { roomName });
 }
 
+// The EOT terminal's click-to-fold: every quoted name inside a log line
+// (a source, a search query, a topic, an expression -- whatever the
+// entry itself named) is a click target. Clicking one narrows the whole
+// terminal to just the lines mentioning that name, reusing the ledger
+// viewer's own "fold" vocabulary above for narrowing a full history down
+// to what one thing did.
+function renderEotEntryText(
+  text: string,
+  activeEntity: string | null,
+  onEntityClick: (entity: string) => void,
+): React.ReactNode[] {
+  const re = /"([^"]{1,80})"/g;
+  const parts: React.ReactNode[] = [];
+  let last = 0;
+  let match: RegExpExecArray | null;
+  let key = 0;
+  while ((match = re.exec(text))) {
+    if (match.index > last) parts.push(text.slice(last, match.index));
+    const entity = match[1];
+    parts.push(
+      <span
+        key={`eot-entity-${key++}`}
+        className={
+          styles["eot-entity"] +
+          (activeEntity === entity ? ` ${styles["eot-entity-active"]}` : "")
+        }
+        title={`Fold the log on "${entity}"`}
+        onClick={(e) => {
+          e.stopPropagation();
+          onEntityClick(entity);
+        }}
+      >
+        &quot;{entity}&quot;
+      </span>,
+    );
+    last = re.lastIndex;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts;
+}
+
 export function ScrollDownToast(prop: { show: boolean; onclick: () => void }) {
   return (
     <div
@@ -1100,6 +1141,10 @@ function ChatInner() {
 
   const [showExport, setShowExport] = useState(false);
   const [showEoLog, setShowEoLog] = useState(false);
+  // The terminal's active click-to-fold target, if any (see
+  // renderEotEntryText below): a name pulled from a log line's own
+  // quoted text, narrowing the terminal to only the lines that name it.
+  const [eotFoldEntity, setEotFoldEntity] = useState<string | null>(null);
   const [showSources, setShowSources] = useState(false);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -1918,41 +1963,75 @@ function ChatInner() {
         </div>
       </div>
 
-      {showEoLog && (
-        <div className={styles["eot-panel"]}>
-          <div
-            className={styles["eot-panel-close"]}
-            onClick={() => setShowEoLog(false)}
-            title="Close system log"
-          >
-            ✕ Close
-          </div>
-          {!session.eoLog?.length ? (
-            <div className={styles["eot-panel-empty"]}>
-              EOT — nothing has run yet this session. Send a message to see surf
-              (instruction gate), fold (context-budget clamp), send (what
-              reached the engine), and background tasks (topic naming, discourse
-              fold) logged here as they happen.
-            </div>
-          ) : (
-            session.eoLog.map((entry) => (
-              <div key={entry.id}>
-                [{new Date(entry.ts).toLocaleTimeString()}]{" "}
-                <span
-                  className={
-                    styles["eot-entry-kind"] +
-                    " " +
-                    styles[`eot-entry-${entry.kind}`]
-                  }
-                >
-                  {entry.kind.toUpperCase()}
-                </span>
-                {entry.text}
+      {showEoLog &&
+        (() => {
+          // Newest first -- a running terminal is read for "what just
+          // happened", not scrolled to the bottom to find it. Every event
+          // pushed this session stays in the feed (EO_LOG_MAX bounds the
+          // session's own ring buffer, not this render); folding on an
+          // entity only narrows which of them are shown, never drops them
+          // from the underlying log.
+          const orderedEoLog = [...(session.eoLog ?? [])].reverse();
+          const eotEntries = eotFoldEntity
+            ? orderedEoLog.filter((entry) => entry.text.includes(eotFoldEntity))
+            : orderedEoLog;
+          return (
+            <div className={styles["eot-panel"]}>
+              <div
+                className={styles["eot-panel-close"]}
+                onClick={() => setShowEoLog(false)}
+                title="Close system log"
+              >
+                ✕ Close
               </div>
-            ))
-          )}
-        </div>
-      )}
+              {eotFoldEntity && (
+                <div className={styles["eot-panel-fold"]}>
+                  Folded on &quot;{eotFoldEntity}&quot; — showing{" "}
+                  {eotEntries.length} of {orderedEoLog.length} event
+                  {orderedEoLog.length === 1 ? "" : "s"}
+                  <span
+                    className={styles["eot-panel-fold-clear"]}
+                    onClick={() => setEotFoldEntity(null)}
+                  >
+                    Clear
+                  </span>
+                </div>
+              )}
+              {!orderedEoLog.length ? (
+                <div className={styles["eot-panel-empty"]}>
+                  EOT — nothing has run yet this session. Send a message to see
+                  surf (instruction gate), fold (context-budget clamp), send
+                  (what reached the engine), and background tasks (topic
+                  naming, discourse fold) logged here as they happen.
+                </div>
+              ) : !eotEntries.length ? (
+                <div className={styles["eot-panel-empty"]}>
+                  No events mention &quot;{eotFoldEntity}&quot;.
+                </div>
+              ) : (
+                eotEntries.map((entry) => (
+                  <div key={entry.id}>
+                    [{new Date(entry.ts).toLocaleTimeString()}]{" "}
+                    <span
+                      className={
+                        styles["eot-entry-kind"] +
+                        " " +
+                        (styles[`eot-entry-${entry.kind}`] ?? "")
+                      }
+                    >
+                      {entry.kind.toUpperCase()}
+                    </span>
+                    {renderEotEntryText(entry.text, eotFoldEntity, (entity) =>
+                      setEotFoldEntity((current) =>
+                        current === entity ? null : entity,
+                      ),
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          );
+        })()}
 
       {showSources && (
         <aside className={styles["source-panel"]} aria-label="Source corpus">
