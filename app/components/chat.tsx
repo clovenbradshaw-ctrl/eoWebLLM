@@ -678,14 +678,20 @@ export function ChatActions(props: {
   );
 }
 
-// A collapsible reasoning panel, like Claude's extended-thinking display:
-// collapsed by default once the answer has started, auto-expanded while the
-// model is still inside the <think> block so a reader can watch it reason
-// live instead of staring at a spinner.
-function ThinkingPanel(props: { thinking: string; open: boolean }) {
+// Shared shell for every collapsible reasoning trace (thinking, plan,
+// warrant, ...), styled like Claude's extended-thinking display: a small
+// clock while the step is still running, a checkmark + "Done" once it has
+// resolved, and an italic muted-gray body so the trace reads as scratch
+// work rather than part of the answer.
+function TracePanel(props: {
+  label: string;
+  running: boolean;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
   return (
     <details
-      open={props.open}
+      open={props.defaultOpen ?? props.running}
       style={{
         margin: "0 0 10px",
         padding: "8px 12px",
@@ -701,21 +707,69 @@ function ThinkingPanel(props: { thinking: string; open: boolean }) {
           color: "var(--black)",
           opacity: 0.6,
           userSelect: "none",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
         }}
       >
-        {props.open ? "Reasoning…" : "Reasoning"}
+        <span
+          aria-hidden
+          style={{
+            display: "inline-flex",
+            animation: props.running
+              ? "eo-trace-tick 1.4s linear infinite"
+              : undefined,
+          }}
+        >
+          {props.running ? "\u{1F550}" : "\u{2713}"}
+        </span>
+        <span>{props.label}</span>
+        {!props.running && <span style={{ opacity: 0.7 }}>· Done</span>}
       </summary>
       <div
         style={{
           marginTop: 8,
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          fontStyle: "italic",
+          color: "var(--black)",
+          opacity: 0.65,
+        }}
+      >
+        {props.children}
+      </div>
+      <style jsx>{`
+        @keyframes eo-trace-tick {
+          0%,
+          100% {
+            transform: rotate(0deg);
+          }
+          50% {
+            transform: rotate(20deg);
+          }
+        }
+      `}</style>
+    </details>
+  );
+}
+
+// A collapsible reasoning panel, like Claude's extended-thinking display:
+// collapsed by default once the answer has started, auto-expanded while the
+// model is still inside the <think> block so a reader can watch it reason
+// live instead of staring at a spinner.
+function ThinkingPanel(props: { thinking: string; open: boolean }) {
+  return (
+    <TracePanel label="Reasoning" running={props.open} defaultOpen={props.open}>
+      <div
+        style={{
           whiteSpace: "pre-wrap",
-          opacity: 0.75,
           fontFamily: "var(--font-mono, monospace)",
         }}
       >
         {props.thinking.trim()}
       </div>
-    </details>
+    </TracePanel>
   );
 }
 
@@ -738,69 +792,43 @@ function PlanPanel(props: { trace: PlanTrace }) {
         : "revised — still flagged"
       : "flagged, not revised";
   return (
-    <details
-      style={{
-        margin: "0 0 10px",
-        padding: "8px 12px",
-        borderRadius: 8,
-        border: "1px solid var(--border-in-light)",
-        background: "var(--gray)",
-        fontSize: "13px",
-      }}
+    <TracePanel
+      label={`\u{1F4CB} Plan — ${t.kind} · ${t.delivery} · ${status}`}
+      running={false}
     >
-      <summary
-        style={{
-          cursor: "pointer",
-          color: "var(--black)",
-          opacity: 0.6,
-          userSelect: "none",
-        }}
-      >
-        {`\u{1F4CB} Plan — ${t.kind} · ${t.delivery} · ${status}`}
-      </summary>
-      <div
-        style={{
-          marginTop: 8,
-          display: "flex",
-          flexDirection: "column",
-          gap: 6,
-          opacity: 0.85,
-        }}
-      >
-        {t.reason && <div>Why: {t.reason}</div>}
-        <div>
-          Contract: delivery={t.delivery}, minWords={t.minWords}
-          {t.mathExpression && `, ${t.mathExpression} = ${t.mathValue}`}
-        </div>
-        {hadViolations ? (
-          <div>
-            <div style={{ opacity: 0.7 }}>Initial check found:</div>
-            {t.initialViolations.map((v, i) => (
-              <div key={i}>
-                – [{v.type}/{v.severity}] {v.detail}
-              </div>
-            ))}
-            {t.reconciled ? (
-              <div style={{ marginTop: 4 }}>
-                Rewrote once to fix these.{" "}
-                {t.finalCompliant
-                  ? "Recheck: compliant."
-                  : `Recheck: still non-compliant — ${t.finalViolations.map((v) => v.type).join(", ")} (shipped anyway, flagged here rather than looping).`}
-              </div>
-            ) : (
-              <div style={{ marginTop: 4, opacity: 0.7 }}>
-                Rewrite did not run (background call failed) — shipped as
-                drafted, flagged here.
-              </div>
-            )}
-          </div>
-        ) : (
-          <div style={{ opacity: 0.7 }}>
-            No violations on the first pass — no rewrite needed.
-          </div>
-        )}
+      {t.reason && <div>Why: {t.reason}</div>}
+      <div>
+        Contract: delivery={t.delivery}, minWords={t.minWords}
+        {t.mathExpression && `, ${t.mathExpression} = ${t.mathValue}`}
       </div>
-    </details>
+      {hadViolations ? (
+        <div>
+          <div style={{ opacity: 0.7 }}>Initial check found:</div>
+          {t.initialViolations.map((v, i) => (
+            <div key={i}>
+              – [{v.type}/{v.severity}] {v.detail}
+            </div>
+          ))}
+          {t.reconciled ? (
+            <div style={{ marginTop: 4 }}>
+              Rewrote once to fix these.{" "}
+              {t.finalCompliant
+                ? "Recheck: compliant."
+                : `Recheck: still non-compliant — ${t.finalViolations.map((v) => v.type).join(", ")} (shipped anyway, flagged here rather than looping).`}
+            </div>
+          ) : (
+            <div style={{ marginTop: 4, opacity: 0.7 }}>
+              Rewrite did not run (background call failed) — shipped as drafted,
+              flagged here.
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ opacity: 0.7 }}>
+          No violations on the first pass — no rewrite needed.
+        </div>
+      )}
+    </TracePanel>
   );
 }
 
@@ -818,83 +846,55 @@ function WarrantPanel(props: { trace: WarrantTrace }) {
         : "deliberated"
       : "answered from general knowledge";
   return (
-    <details
-      style={{
-        margin: "0 0 10px",
-        padding: "8px 12px",
-        borderRadius: 8,
-        border: "1px solid var(--border-in-light)",
-        background: "var(--gray)",
-        fontSize: "13px",
-      }}
+    <TracePanel
+      label={`\u{2696} Warrant — ${t.system === "system2" ? "System 2" : "System 1"} · ${headline}`}
+      running={false}
     >
-      <summary
-        style={{
-          cursor: "pointer",
-          color: "var(--black)",
-          opacity: 0.6,
-          userSelect: "none",
-        }}
-      >
-        {`\u{2696} Warrant — ${t.system === "system2" ? "System 2" : "System 1"} · ${headline}`}
-      </summary>
-      <div
-        style={{
-          marginTop: 8,
-          display: "flex",
-          flexDirection: "column",
-          gap: 6,
-          opacity: 0.85,
-        }}
-      >
-        <div>
-          Routed at {t.stage},{" "}
-          {t.mechanical
-            ? "with no model call — from the turn's own counts"
-            : "on a model's reading of the turn"}
-          .
-        </div>
-        {t.channels.length > 0 && (
-          <div>
-            <div style={{ opacity: 0.7 }}>What bore on this turn:</div>
-            {t.channels.map((c, i) => (
-              <div key={i}>
-                – {c.channel}: {c.note}
-              </div>
-            ))}
-          </div>
-        )}
-        {t.checkedChannels.length > 0 && (
-          <div>
-            Claims were checked against: {t.checkedChannels.join(", ")}.
-          </div>
-        )}
-        {t.unfoldChannels.length > 0 && (
-          <div>
-            Folded and not read this turn: {t.unfoldChannels.join(", ")} — the
-            answer must not rest on it.
-          </div>
-        )}
-        {t.forbiddenChannels.length > 0 && (
-          <div>
-            Cannot carry a claim: {t.forbiddenChannels.join(", ")} (a paraphrase
-            has no source to check).
-          </div>
-        )}
-        <div style={{ opacity: 0.7 }}>
-          Fold pressure {Math.round(t.foldPressure * 100)}% of bearing material
-          held back
-          {t.lostPressure > 0 &&
-            `, ${Math.round(t.lostPressure * 100)}% of it unrecoverable`}
-          .
-        </div>
-        {t.reasons.map((r, i) => (
-          <div key={i} style={{ opacity: 0.7 }}>
-            · {r}
-          </div>
-        ))}
+      <div>
+        Routed at {t.stage},{" "}
+        {t.mechanical
+          ? "with no model call — from the turn's own counts"
+          : "on a model's reading of the turn"}
+        .
       </div>
-    </details>
+      {t.channels.length > 0 && (
+        <div>
+          <div style={{ opacity: 0.7 }}>What bore on this turn:</div>
+          {t.channels.map((c, i) => (
+            <div key={i}>
+              – {c.channel}: {c.note}
+            </div>
+          ))}
+        </div>
+      )}
+      {t.checkedChannels.length > 0 && (
+        <div>Claims were checked against: {t.checkedChannels.join(", ")}.</div>
+      )}
+      {t.unfoldChannels.length > 0 && (
+        <div>
+          Folded and not read this turn: {t.unfoldChannels.join(", ")} — the
+          answer must not rest on it.
+        </div>
+      )}
+      {t.forbiddenChannels.length > 0 && (
+        <div>
+          Cannot carry a claim: {t.forbiddenChannels.join(", ")} (a paraphrase
+          has no source to check).
+        </div>
+      )}
+      <div style={{ opacity: 0.7 }}>
+        Fold pressure {Math.round(t.foldPressure * 100)}% of bearing material
+        held back
+        {t.lostPressure > 0 &&
+          `, ${Math.round(t.lostPressure * 100)}% of it unrecoverable`}
+        .
+      </div>
+      {t.reasons.map((r, i) => (
+        <div key={i} style={{ opacity: 0.7 }}>
+          · {r}
+        </div>
+      ))}
+    </TracePanel>
   );
 }
 
