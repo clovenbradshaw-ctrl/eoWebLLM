@@ -177,6 +177,27 @@ function extractQueryText(raw: string): string {
   return q;
 }
 
+// planTools above hands the decision to the model because most turns are
+// genuinely ambiguous — "thanks, that's clearer" needs a judgment call, not
+// a keyword match. But some turns aren't ambiguous at all: "research
+// dolphins", "look up the Taylor C709 manual", "google the current Fed
+// rate" are the reader naming the tool they want in their own words. Routing
+// those through a model-judged call still works when the model is strong,
+// but the web_search tool description above is written for "specific,
+// checkable, possibly time-sensitive fact" lookups — a small local model
+// asked to weigh a broad "research X" ask against that description can
+// reasonably (and, from the reader's seat, wrongly) decide the topic is too
+// broad to need a search at all. An explicit ask should never be overruled
+// by an implicit judgment call the reader never asked the model to make —
+// same "a positive signal wins" principle as the fail-open default below,
+// just applied one step earlier, before the model gets a vote.
+const EXPLICIT_SEARCH_INTENT_RE =
+  /^(please\s+)?(search(\s+the\s+web)?\s+for|look\s+up|google|research|find\s+(out\s+)?(about|info(rmation)?\s+(on|about)))\b/i;
+
+export function hasExplicitSearchIntent(question: string): boolean {
+  return EXPLICIT_SEARCH_INTENT_RE.test(String(question || "").trim());
+}
+
 /**
  * Ask the model (the same background seam planTools uses) to rewrite the
  * reader's message into a search-engine query. Falls back to `fallback`
