@@ -38,7 +38,11 @@ import {
   stripCitationBrackets,
   distillQuery,
 } from "../client/eo-websearch";
-import { planTools, planSearchQuery } from "../client/eo-tool-router";
+import {
+  planTools,
+  planSearchQuery,
+  hasExplicitSearchIntent,
+} from "../client/eo-tool-router";
 import {
   defineAnswerSpec,
   evaluateCompliance,
@@ -1191,39 +1195,51 @@ export const useChatStore = createPersistStore(
           // model that was too slow to answer the routing question. Only a
           // decision that POSITIVELY said "no tools" suppresses the search.
           let decision: Awaited<ReturnType<typeof planTools>>;
-          try {
-            decision = await planTools({
-              question: userContent.trim(),
-              tools: [
-                {
-                  name: "web_search",
-                  description:
-                    "Looks up a specific, checkable, possibly time-sensitive fact " +
-                    "on the web (Wikipedia + DuckDuckGo). Not for greetings, " +
-                    "opinions, or follow-ups about what was already said.",
-                },
-              ],
-              generate: (systemPrompt, userPrompt) =>
-                eoRunBackground(
-                  llm,
-                  [
-                    createMessage({ role: "system", content: systemPrompt }),
-                    createMessage({ role: "user", content: userPrompt }),
-                  ],
-                  {
-                    model: modelConfig.model,
-                    cache: useAppConfig.getState().cacheType,
-                    stream: false,
-                  },
-                  EO_ROUTER_TIMEOUT_MS,
-                ),
-            });
-          } catch (err) {
+          if (hasExplicitSearchIntent(userContent)) {
+            // The reader already named the tool ("research dolphins",
+            // "look up X") — don't hand that to a model-judged call that
+            // might read the topic as too broad for its "specific,
+            // checkable fact" framing and talk itself out of searching.
             decision = {
               tools: ["web_search"],
-              reason: `router call failed — ${(err as Error).message}`,
-              fellBack: true,
+              reason: "explicit search intent in the reader's own words",
+              fellBack: false,
             };
+          } else {
+            try {
+              decision = await planTools({
+                question: userContent.trim(),
+                tools: [
+                  {
+                    name: "web_search",
+                    description:
+                      "Looks up a specific, checkable, possibly time-sensitive fact " +
+                      "on the web (Wikipedia + DuckDuckGo). Not for greetings, " +
+                      "opinions, or follow-ups about what was already said.",
+                  },
+                ],
+                generate: (systemPrompt, userPrompt) =>
+                  eoRunBackground(
+                    llm,
+                    [
+                      createMessage({ role: "system", content: systemPrompt }),
+                      createMessage({ role: "user", content: userPrompt }),
+                    ],
+                    {
+                      model: modelConfig.model,
+                      cache: useAppConfig.getState().cacheType,
+                      stream: false,
+                    },
+                    EO_ROUTER_TIMEOUT_MS,
+                  ),
+              });
+            } catch (err) {
+              decision = {
+                tools: ["web_search"],
+                reason: `router call failed — ${(err as Error).message}`,
+                fellBack: true,
+              };
+            }
           }
           get().pushEoLog(
             "web",
