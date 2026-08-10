@@ -37,7 +37,11 @@ import {
   stripCitationBrackets,
   distillQuery,
 } from "../client/eo-websearch";
-import { planTools, planSearchQuery } from "../client/eo-tool-router";
+import {
+  planTools,
+  planSearchQuery,
+  hasExplicitSearchIntent,
+} from "../client/eo-tool-router";
 import {
   defineAnswerSpec,
   evaluateCompliance,
@@ -76,12 +80,21 @@ import {
   questionRequestsCorpus,
   formatDeliberateContext,
   corpusCitations,
+  readRawSource,
   type CorpusPassage,
   type EoSource,
 } from "../client/eo-corpus";
 import {
-  type ThinkingSystem,
-} from "../client/eo-task-plan";
+  isHypergraphHydrated,
+  ensureHypergraphHydrated,
+  admitHypergraphTurn,
+  navigateHypergraph,
+  hasHypergraphSignal,
+  describeHypergraphNavigation,
+  draftHypergraphThought,
+  buildHypergraphThoughtBlock,
+} from "../client/eo-hypergraph";
+import { type ThinkingSystem } from "../client/eo-task-plan";
 import {
   buildFoldLedger,
   buildWarrantBlock,
@@ -220,7 +233,12 @@ export type EoLogKind =
   // The warrant decision: what could carry a claim this turn, what was folded
   // away, and which system the turn routed to. Its own kind because it is the
   // line a reader checks when an answer looks ungrounded.
-  | "warrant";
+  | "warrant"
+  // The full hypergraph navigation eoreader6 ran this turn — every span,
+  // node, and edge it considered, not just the bounded slice (if any) that
+  // made it into a thought block. The model sees the bounded slice; a
+  // reader who opens this log sees the whole search.
+  | "hypergraph";
 
 export interface EoLogEntry {
   id: string;
@@ -1070,6 +1088,14 @@ export const useChatStore = createPersistStore(
         });
       },
 
+      recordSourceLedger(sourceId: string, readLedger: EoSource["readLedger"]) {
+        get().updateCurrentSession((session) => {
+          session.eoSources = (session.eoSources ?? []).map((s) =>
+            s.id === sourceId ? { ...s, readLedger } : s,
+          );
+        });
+      },
+
       async onUserInput(
         content: string,
         llm: LLMApi,
@@ -1119,39 +1145,51 @@ export const useChatStore = createPersistStore(
           // model that was too slow to answer the routing question. Only a
           // decision that POSITIVELY said "no tools" suppresses the search.
           let decision: Awaited<ReturnType<typeof planTools>>;
-          try {
-            decision = await planTools({
-              question: userContent.trim(),
-              tools: [
-                {
-                  name: "web_search",
-                  description:
-                    "Looks up a specific, checkable, possibly time-sensitive fact " +
-                    "on the web (Wikipedia + DuckDuckGo). Not for greetings, " +
-                    "opinions, or follow-ups about what was already said.",
-                },
-              ],
-              generate: (systemPrompt, userPrompt) =>
-                eoRunConsciousUnspoken(
-                  llm,
-                  [
-                    createMessage({ role: "system", content: systemPrompt }),
-                    createMessage({ role: "user", content: userPrompt }),
-                  ],
-                  {
-                    model: modelConfig.model,
-                    cache: useAppConfig.getState().cacheType,
-                    stream: false,
-                  },
-                  EO_ROUTER_TIMEOUT_MS,
-                ),
-            });
-          } catch (err) {
+          if (hasExplicitSearchIntent(userContent)) {
+            // The reader already named the tool ("research dolphins",
+            // "look up X") — don't hand that to a model-judged call that
+            // might read the topic as too broad for its "specific,
+            // checkable fact" framing and talk itself out of searching.
             decision = {
               tools: ["web_search"],
-              reason: `router call failed — ${(err as Error).message}`,
-              fellBack: true,
+              reason: "explicit search intent in the reader's own words",
+              fellBack: false,
             };
+          } else {
+            try {
+              decision = await planTools({
+                question: userContent.trim(),
+                tools: [
+                  {
+                    name: "web_search",
+                    description:
+                      "Looks up a specific, checkable, possibly time-sensitive fact " +
+                      "on the web (Wikipedia + DuckDuckGo). Not for greetings, " +
+                      "opinions, or follow-ups about what was already said.",
+                  },
+                ],
+                generate: (systemPrompt, userPrompt) =>
+                  eoRunConsciousUnspoken(
+                    llm,
+                    [
+                      createMessage({ role: "system", content: systemPrompt }),
+                      createMessage({ role: "user", content: userPrompt }),
+                    ],
+                    {
+                      model: modelConfig.model,
+                      cache: useAppConfig.getState().cacheType,
+                      stream: false,
+                    },
+                    EO_ROUTER_TIMEOUT_MS,
+                  ),
+              });
+            } catch (err) {
+              decision = {
+                tools: ["web_search"],
+                reason: `router call failed — ${(err as Error).message}`,
+                fellBack: true,
+              };
+            }
           }
           get().pushEoLog(
             "web",
@@ -1260,6 +1298,83 @@ export const useChatStore = createPersistStore(
               "error",
               `source corpus: ${(err as Error).message}`,
             );
+          }
+        }
+
+        // Hypergraph surf/fold (eo-hypergraph.ts): eoreader6's own mechanical
+        // navigation over the accumulated corpus + relation graph — surf
+        // (executePrompt) and fold (foldSpans), plus the graph nodes/edges
+        // that actually touch this turn's own words. Gated on that touch: a
+        // standing dump of the graph's strongest edges, re-announced every
+        // turn regardless of relevance, would be bloat, not signal. Only a
+        // bounded, model-written prose "thought" — never the raw graph —
+        // ever reaches the talking model; the full navigation is always
+        // logged to the "hypergraph" channel for a reader who wants to see
+        // the whole search.
+        let hypergraphEdgesConsidered = 0;
+        let hypergraphThoughtDrafted = false;
+        if (userContent.trim()) {
+          try {
+            if (!isHypergraphHydrated(session0.id)) {
+              const hydrateSources: { id: string; text: string }[] = [];
+              for (const s of sources.filter(
+                (s) => s.enabled && s.textReadable,
+              )) {
+                try {
+                  const text = new TextDecoder("utf-8", { fatal: true }).decode(
+                    await readRawSource(s.id),
+                  );
+                  hydrateSources.push({ id: s.id, text });
+                } catch {
+                  // A source that fails to decode is simply not hydrated —
+                  // the same fail-open discipline retrieveCorpus already uses.
+                }
+              }
+              const hydrateTurns = session0.messages
+                .filter((m) => !m.isError && !m.streaming)
+                .map((m) => ({ id: m.id, content: getMessageTextContent(m) }));
+              ensureHypergraphHydrated(
+                session0.id,
+                hydrateSources,
+                hydrateTurns,
+              );
+            }
+
+            const nav = navigateHypergraph(session0.id, userContent.trim());
+            if (nav) {
+              get().pushEoLog("hypergraph", describeHypergraphNavigation(nav));
+              hypergraphEdgesConsidered = nav.relevantEdges.length;
+              if (hasHypergraphSignal(nav)) {
+                const thought = await draftHypergraphThought({
+                  navigation: nav,
+                  question: userContent.trim(),
+                  generate: (systemPrompt, userPrompt) =>
+                    eoRunConsciousUnspoken(
+                      llm,
+                      [
+                        createMessage({
+                          role: "system",
+                          content: systemPrompt,
+                        }),
+                        createMessage({ role: "user", content: userPrompt }),
+                      ],
+                      {
+                        model: modelConfig.model,
+                        cache: useAppConfig.getState().cacheType,
+                        stream: false,
+                      },
+                      EO_ROUTER_TIMEOUT_MS,
+                    ),
+                });
+                if (thought) {
+                  extraSystemBlocks.push(buildHypergraphThoughtBlock(thought));
+                  hypergraphThoughtDrafted = true;
+                  get().pushEoLog("hypergraph", `thought: ${thought}`);
+                }
+              }
+            }
+          } catch (err) {
+            get().pushEoLog("error", `hypergraph: ${(err as Error).message}`);
           }
         }
 
@@ -1380,6 +1495,16 @@ export const useChatStore = createPersistStore(
           content: mContent,
         });
 
+        // Admitted AFTER this turn's own navigation ran, so the graph a
+        // question is checked against never includes the question's own
+        // words as if they were prior context.
+        if (userContent.trim()) {
+          admitHypergraphTurn(session0.id, {
+            id: userMessage.id,
+            content: userContent,
+          });
+        }
+
         // Every message this turn emits shares a turn id. The first one is the
         // System-1 draft by definition: it is what the model said before
         // anything checked it.
@@ -1446,6 +1571,10 @@ export const useChatStore = createPersistStore(
           },
           file: { attached: fileAttached },
           desk: { facts: session0.eoMemory?.facts?.length ?? 0 },
+          hypergraph: {
+            edgesConsidered: hypergraphEdgesConsidered,
+            thoughtDrafted: hypergraphThoughtDrafted,
+          },
           discourse: assembled.discourse,
           budget: {
             droppedMessages: dryRun.dropped,
@@ -1459,7 +1588,9 @@ export const useChatStore = createPersistStore(
         // attached mechanically to the visible reply. Add it only when a
         // pre-answer condition has actually earned System 2.
         const warrantBlock =
-          preRoute.system === "system2" ? buildWarrantBlock(ledger, demand) : "";
+          preRoute.system === "system2"
+            ? buildWarrantBlock(ledger, demand)
+            : "";
         get().pushEoLog("warrant", warrantLogLine(ledger, demand, preRoute));
 
         const budgetResult = eoEnforceContextBudget(
@@ -1577,6 +1708,15 @@ export const useChatStore = createPersistStore(
               if (!this.config.enable_thinking) {
                 message = message.replace(/<think>\s*<\/think>/g, "");
               }
+
+              // The assistant's own reply is content too — admitted here so
+              // the graph accumulates entities and relations discussed in
+              // either direction of the conversation, not only in what the
+              // reader typed or uploaded.
+              admitHypergraphTurn(session0.id, {
+                id: botMessage.id,
+                content: message,
+              });
 
               // System 2: DEFINE against the draft only when the mechanical
               // pre-route found real warrant pressure. System 1 must remain a
@@ -1972,7 +2112,8 @@ export const useChatStore = createPersistStore(
             const isAborted = errorMessage?.includes("aborted");
             botMessage = {
               ...botMessage,
-              content: getMessageTextContent(botMessage) + "\n\n" + errorMessage,
+              content:
+                getMessageTextContent(botMessage) + "\n\n" + errorMessage,
               streaming: false,
             };
             userMessage.isError = !isAborted;
@@ -2192,7 +2333,12 @@ export const useChatStore = createPersistStore(
               try {
                 const raw = await eoRunConsciousUnspoken(
                   llm,
-                  [{ role: "user", content: buildFoldPrompt(question, answer) }],
+                  [
+                    {
+                      role: "user",
+                      content: buildFoldPrompt(question, answer),
+                    },
+                  ],
                   {
                     model: modelConfig.model,
                     cache: useAppConfig.getState().cacheType,
