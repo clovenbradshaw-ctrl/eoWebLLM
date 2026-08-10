@@ -377,6 +377,60 @@
 .eot-entry-error {
   color: #ff7b72;
 }
+.eot-entry-web {
+  color: #56d4dd;
+}
+.eot-entry-file {
+  color: #f2cc60;
+}
+.eot-entry-warrant {
+  color: #ff9bce;
+}
+.eot-entry-hypergraph {
+  color: #8b949e;
+}
+
+// Click-to-fold (see renderEotEntryText in chat.tsx): every quoted name
+// in a log line is a target that narrows the terminal to just the lines
+// mentioning it -- the same "fold" vocabulary the ledger viewer above
+// uses for narrowing a full history down to what's current.
+.eot-entity {
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+
+  &:hover {
+    color: #e3b341;
+  }
+}
+
+.eot-entity-active {
+  color: #e3b341;
+  text-decoration: underline solid;
+  font-weight: 600;
+}
+
+.eot-panel-fold {
+  clear: both;
+  margin: 0 0 12px;
+  padding: 6px 10px;
+  border: 1px solid #2d3b30;
+  border-radius: 6px;
+  background: #161b17;
+  color: #e3b341;
+  font-size: 12px;
+}
+
+.eot-panel-fold-clear {
+  margin-left: 10px;
+  cursor: pointer;
+  color: #7ee787;
+  text-decoration: underline;
+
+  &:hover {
+    color: #9ff2a0;
+  }
+}
 
 .chat-action-context {
   display: flex;
