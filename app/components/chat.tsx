@@ -102,8 +102,19 @@ import {
   enrichModifierGraphFromText,
   formatModifierGraphBlock,
 } from "../client/eo-modifier-graph";
-import { buildReading, toEOTReader } from "../client/eo-reading";
-import { isReadableUtf8, persistRawSource } from "../client/eo-corpus";
+import { buildReading, toEOTReader, reReadSource } from "../client/eo-reading";
+import {
+  isReadableUtf8,
+  persistRawSource,
+  persistSourceLedger,
+  readRawSource,
+} from "../client/eo-corpus";
+import type { EoSource } from "../client/eo-corpus";
+import {
+  readAtCursors,
+  diffLinkViews,
+} from "../client/eo-binary/reading-diff.js";
+import { MODIFIER_SCOPE_CURRENT_LENS } from "../client/eo-binary/modifier-order-lens.js";
 import { nanoid } from "nanoid";
 import type { WebSearchResult } from "../client/eo-websearch";
 import type { GroundingReport, Snippet } from "../client/eo-citation-check";
@@ -1046,6 +1057,9 @@ function ChatInner() {
   const [attachImages, setAttachImages] = useState<ChatImage[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadingFile, setUploadingFile] = useState(false);
+  const [rereadingSourceId, setRereadingSourceId] = useState<string | null>(
+    null,
+  );
   const [showEditPromptModal, setShowEditPromptModal] = useState(false);
   const webllm = useContext(WebLLMContext)!;
   const mlcllm = useContext(MLCLLMContext)!;
@@ -1561,6 +1575,11 @@ function ChatInner() {
                 } narrowing link(s), cursor ${readingResult.reading.cursor}`,
               );
             }
+            // Persist the ledger itself, not just the rendered EOT text —
+            // every source gets a real read log from first upload, so a
+            // later "Re-read" always has something to resolve against.
+            await persistSourceLedger(id, readingResult.log);
+            chatStore.recordSourceLedger(id, readingResult.log.tick, 0);
           } catch {
             // isReadableUtf8 is a coarser check than a strict decode; a
             // failure here just means no modifier-graph enrichment for this
@@ -1596,6 +1615,106 @@ function ChatInner() {
       );
     } finally {
       setUploadingFile(false);
+    }
+  }
+
+  // A file picker that resolves to null on cancel instead of hanging —
+  // unlike uploadFile's promise, which never resolves if the user backs
+  // out (fine there, since nothing depends on the cancel path; rereadSource
+  // below does).
+  async function pickReplacementFile(): Promise<File | null> {
+    return new Promise((resolve) => {
+      const fileInput = document.createElement("input");
+      fileInput.type = "file";
+      fileInput.onchange = (event: any) => {
+        resolve((event.target.files as FileList)[0] ?? null);
+      };
+      fileInput.oncancel = () => resolve(null);
+      fileInput.click();
+    });
+  }
+
+  // Re-reads a source against its persisted ledger. Offers to replace the
+  // source's bytes first (e.g. the underlying file changed on disk) —
+  // cancelling the picker just re-reads what's already stored, which
+  // mostly exercises the confirm path unless the tagger/typology itself
+  // changed since the last read. Either way, a disagreement with what the
+  // ledger already held mints a real SEG.revise event (never overwriting
+  // the prior entry); the before/after Link-terrain views are compared via
+  // reading-diff.js's readAtCursors + diffLinkViews (the multi-cursor
+  // projection built for exactly this) to report what actually changed.
+  async function rereadSource(source: EoSource) {
+    if (!source.textReadable) return;
+    setRereadingSourceId(source.id);
+    try {
+      const replacement = await pickReplacementFile();
+      let bytes: Uint8Array;
+      if (replacement) {
+        bytes = new Uint8Array(await replacement.arrayBuffer());
+        await persistRawSource(source.id, bytes);
+      } else {
+        bytes = await readRawSource(source.id);
+      }
+      const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      const result = await reReadSource(source.id, decoded);
+
+      const readerEOT =
+        result.reading && !("gap" in result.reading)
+          ? toEOTReader(result, { roomName: `source_${source.id}` })
+          : undefined;
+      chatStore.updateCurrentSession((current) => {
+        current.eoSources = (current.eoSources ?? []).map((s) =>
+          s.id === source.id
+            ? {
+                ...s,
+                ...(readerEOT ? { readerEOT } : {}),
+                ...(replacement
+                  ? {
+                      byteLength: bytes.length,
+                      mimeType: replacement.type || "application/octet-stream",
+                    }
+                  : {}),
+              }
+            : s,
+        );
+      });
+
+      const totalRevisions = result.log.events.filter(
+        (e: any) => e.type === "SEG.revise",
+      ).length;
+      chatStore.recordSourceLedger(source.id, result.log.tick, totalRevisions);
+
+      let summary = `${result.revisions.length} revision(s)`;
+      const cursors = readAtCursors(
+        result.log,
+        [{ lensDef: MODIFIER_SCOPE_CURRENT_LENS, terrain: "Link" }],
+        [
+          { name: "before", cursor: result.cursorBeforeThisRun },
+          { name: "after", cursor: result.log.tick },
+        ],
+      );
+      if (!("gap" in cursors)) {
+        const viewA = cursors[0].lenses.find(
+          (l: any) => l.terrain === "Link",
+        ).view;
+        const viewB = cursors[1].lenses.find(
+          (l: any) => l.terrain === "Link",
+        ).view;
+        const diff = diffLinkViews(viewA, viewB);
+        summary = `${diff.added.length} new, ${diff.changed.length} revised, ${diff.unchanged.length} unchanged`;
+      }
+
+      chatStore.pushEoLog(
+        "file",
+        `file: ${result.isFirstRead ? "read" : "re-read"} "${source.name}" — ${summary}, cursor ${result.log.tick}`,
+      );
+    } catch (err) {
+      chatStore.pushEoLog(
+        "error",
+        `file: re-read "${source.name}" failed — ${(err as Error).message}`,
+      );
+    } finally {
+      setRereadingSourceId(null);
     }
   }
 
@@ -1801,8 +1920,28 @@ function ChatInner() {
                       {source.structure
                         ? ` · ${source.structure.clearings} ${source.structure.clearings === 1 ? "boundary" : "boundaries"}`
                         : ""}
+                      {source.readLedger?.revisionCount
+                        ? ` · ${source.readLedger.revisionCount} revision${source.readLedger.revisionCount === 1 ? "" : "s"}`
+                        : ""}
                     </small>
                   </span>
+                  {source.textReadable && (
+                    <button
+                      type="button"
+                      className={styles["source-reread"]}
+                      title="Re-read this source against its ledger"
+                      disabled={rereadingSourceId === source.id}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        rereadSource(source);
+                      }}
+                    >
+                      {rereadingSourceId === source.id
+                        ? "Re-reading…"
+                        : "Re-read"}
+                    </button>
+                  )}
                 </label>
               ))
             )}

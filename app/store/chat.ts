@@ -1144,6 +1144,20 @@ export const useChatStore = createPersistStore(
         });
       },
 
+      recordSourceLedger(
+        sourceId: string,
+        cursor: number,
+        revisionCount: number,
+      ) {
+        get().updateCurrentSession((session) => {
+          session.eoSources = (session.eoSources ?? []).map((s) =>
+            s.id === sourceId
+              ? { ...s, readLedger: { cursor, revisionCount } }
+              : s,
+          );
+        });
+      },
+
       async onUserInput(
         content: string,
         llm: LLMApi,

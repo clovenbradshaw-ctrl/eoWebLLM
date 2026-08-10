@@ -34,11 +34,16 @@
 // here is emitted text, not an executed check. Wiring an actual kernel
 // (elsewhere, per Article I.4 an application concern) is future work.
 
-import { createLog, tick } from "./eo-binary/event_log.js";
+import { createLog, tick, asOf } from "./eo-binary/event_log.js";
 import { readDocument } from "./eo-binary/reading.js";
 import { MODIFIER_SCOPE_LENS } from "./eo-binary/modifier-order-lens.js";
 import { toEvents } from "./eo-binary/modifier-order.js";
 import { isGap } from "./eo-binary/nul.js";
+import {
+  foldNarrowState,
+  resolveAgainstLedger,
+  recordTicked,
+} from "./eo-binary/modifier-order-revision.js";
 import {
   ENGLISH_DEMO_TYPOLOGY,
   extractEnglishModifierStacks,
@@ -53,8 +58,16 @@ import {
 // authored refusal from a measured one. Adding a third tagger later means
 // adding one entry here, not touching the loop below.
 const TAGGERS = Object.freeze([
-  Object.freeze({ source: "english-demo", extract: extractEnglishModifierStacks, typology: ENGLISH_DEMO_TYPOLOGY }),
-  Object.freeze({ source: "induced-prior", extract: extractInducedModifierStacks, typology: INDUCED_MODIFIER_PRIOR }),
+  Object.freeze({
+    source: "english-demo",
+    extract: extractEnglishModifierStacks,
+    typology: ENGLISH_DEMO_TYPOLOGY,
+  }),
+  Object.freeze({
+    source: "induced-prior",
+    extract: extractInducedModifierStacks,
+    typology: INDUCED_MODIFIER_PRIOR,
+  }),
 ]);
 
 /**
@@ -67,34 +80,92 @@ const TAGGERS = Object.freeze([
  * reading "black fat cat") is refused by toEvents and recorded in
  * `refused` with which tagger found it, never silently dropped or ticked
  * anyway.
+ *
+ * `log` may be an existing ledger (e.g. loaded back for a source that was
+ * already read once) instead of a fresh one. When it is, every fresh
+ * SEG.narrow candidate is resolved against what the ledger already holds
+ * for that (subject, object) — via modifier-order-revision.js's
+ * resolveAgainstLedger, following eoreader6's emergence/voice.js::
+ * reviseVoice precedent: a disagreement never overwrites the prior entry,
+ * it ticks a SEG.revise event that supersedes it (returned in
+ * `revisions`); agreement still ticks — a SEG.confirm event pointing back
+ * at what it confirmed — because the master log is append-only and holds
+ * every act, not only the ones that changed something (folding that down
+ * to "current state" is the projection layer's job — see
+ * MODIFIER_SCOPE_CURRENT_LENS — never the ledger's). A brand-new log
+ * (log.tick === 0, true for every caller today) skips this resolution
+ * entirely and ticks every candidate directly, exactly as before — this
+ * function's output for a fresh log is unchanged.
+ *
+ * A refusal is a witnessed act too, not a non-event: the ledger is
+ * meant to hold everything the system did while reading, not only its
+ * successful narrows, so every refusal ticks a real SEG.refuse event
+ * (kept out of MODIFIER_SCOPE_LENS.reads, so it never shows up as a
+ * narrowing edge — only as an honestly-reported discardedTypes entry for
+ * a caller reading through that lens, and as first-class provenance for
+ * a caller who reads SEG.refuse directly) in addition to being collected
+ * in the `refused` array for convenience.
+ *
+ * `lenses` defaults to the single historical Link-terrain lens
+ * (MODIFIER_SCOPE_LENS — every SEG.narrow tick ever made, unfolded). A
+ * caller who wants the ledger's CURRENT state instead (history folded to
+ * one edge per node, per the append-only-log-vs-projection split above)
+ * passes `[{ lensDef: MODIFIER_SCOPE_CURRENT_LENS, terrain: "Link" }]`
+ * explicitly — received, never inferred, matching this codebase's
+ * discipline everywhere else a lens is chosen.
  */
-export function buildReading(text) {
-  const log = createLog();
+export function buildReading(
+  text,
+  {
+    log = createLog(),
+    lenses = [{ lensDef: MODIFIER_SCOPE_LENS, terrain: "Link" }],
+  } = {},
+) {
+  const cursorBeforeThisRun = log.tick;
+  const priorState = foldNarrowState(asOf(log, cursorBeforeThisRun));
   const refused = [];
+  const revisions = [];
 
   for (const { source, extract, typology } of TAGGERS) {
     for (const stack of extract(text)) {
       const events = toEvents(stack.tags, typology, { head: stack.head });
       if (isGap(events)) {
-        refused.push({
+        const entry = {
           source,
           head: stack.head,
           gap: events.gap,
           reason: events.reason ?? events.why,
-        });
+        };
+        refused.push(entry);
+        tick(log, { type: "SEG.refuse", ...entry });
         continue;
       }
-      for (const e of events) tick(log, e);
+      for (const e of events) {
+        if (cursorBeforeThisRun === 0) {
+          tick(log, e);
+          continue;
+        }
+        const resolved = resolveAgainstLedger(priorState, e);
+        const ticked = tick(log, resolved.event);
+        recordTicked(priorState, ticked);
+        if (resolved.action === "revise") {
+          revisions.push({
+            subject: ticked.subject,
+            object: ticked.object,
+            class: ticked.class,
+            polarity: ticked.polarity,
+            priorClass: resolved.event.priorClass,
+            priorPolarity: resolved.event.priorPolarity,
+            event_id: ticked.event_id,
+          });
+        }
+      }
     }
   }
 
   const cursor = log.tick;
-  const reading = readDocument(
-    log,
-    [{ lensDef: MODIFIER_SCOPE_LENS, terrain: "Link" }],
-    cursor,
-  );
-  return { reading, refused };
+  const reading = readDocument(log, lenses, cursor);
+  return { reading, refused, revisions, log, cursorBeforeThisRun };
 }
 
 const dot = (id) => id.replace(/::/g, ".");
