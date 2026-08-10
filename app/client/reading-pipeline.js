@@ -9,11 +9,23 @@
 // `node --test`, same as the vendored modules it composes. eo-reading.ts
 // is a thin typed re-export of this file for callers in chat.tsx/chat.ts.
 //
-// Pipeline: text -> extractEnglishModifierStacks (english-modifier-demo.js,
-// disclosed English-only scope) -> toEvents (modifier-order.js) -> ticked
-// into a real event_log (event_log.js) -> readDocument (reading.js), one
-// lens (MODIFIER_SCOPE_LENS, Link terrain) -> formatted as an EOT `reader`
-// surface over a `room`.
+// Pipeline: text -> two independent taggers, each producing its own
+// {head, tags} stacks over the SAME text -- extractEnglishModifierStacks
+// (english-modifier-demo.js, a disclosed, hand-authored ~50-word English
+// lexicon) and extractInducedModifierStacks (modifier-order-induced-
+// prior.js, a measured prior baked by eoreader6's induction/stacks.js
+// against real live_priors text — see that file's header for what it
+// covers and its own disclosed limits) -> each stack's tags run through
+// toEvents against ITS OWN typology (modifier-order.js) -> every accepted
+// stack from both taggers ticks into ONE real event_log (event_log.js) ->
+// readDocument (reading.js), one lens (MODIFIER_SCOPE_LENS, Link terrain)
+// -> formatted as an EOT `reader` surface over a `room`. Running both
+// taggers over the same text is not redundant: the induced prior covers
+// specific tokens ("mock", "turtle", "rabbit", ...) the hand lexicon
+// never claimed to (it has no entries for proper-noun epithets at all),
+// so a document mentioning "Mock Turtle" gets real Link-terrain structure
+// from the measured path even though the hand-authored lexicon alone
+// would find nothing there.
 //
 // What this file does NOT do: run an EOT kernel. There is no EOT
 // validation/rendering infrastructure in this repo (or in eoreader6/
@@ -31,32 +43,49 @@ import {
   ENGLISH_DEMO_TYPOLOGY,
   extractEnglishModifierStacks,
 } from "./eo-binary/english-modifier-demo.js";
+import {
+  INDUCED_MODIFIER_PRIOR,
+  extractInducedModifierStacks,
+} from "./eo-binary/modifier-order-induced-prior.js";
+
+// Every tagger this pipeline runs, paired with its own typology and a
+// `source` label carried into `refused` so a caller can tell a hand-
+// authored refusal from a measured one. Adding a third tagger later means
+// adding one entry here, not touching the loop below.
+const TAGGERS = Object.freeze([
+  Object.freeze({ source: "english-demo", extract: extractEnglishModifierStacks, typology: ENGLISH_DEMO_TYPOLOGY }),
+  Object.freeze({ source: "induced-prior", extract: extractInducedModifierStacks, typology: INDUCED_MODIFIER_PRIOR }),
+]);
 
 /**
- * Runs the disclosed-scope English tagger over `text`, ticks every nested
- * stack's SEG.narrow events into a fresh log, and reads it back as one
- * Link-terrain reading at the log's own current cursor — named explicitly,
- * never defaulted (II.17). A stack the tagger finds in an INVERTED order
- * (e.g. real text reading "black fat cat") is refused by toEvents and
- * recorded in `refused`, never silently dropped or ticked anyway.
+ * Runs every registered tagger over `text` (the disclosed-scope English
+ * lexicon and the measured, live_priors-induced prior — see the taggers'
+ * own files for what each covers), ticks every nested stack's SEG.narrow
+ * events into one shared log, and reads it back as one Link-terrain
+ * reading at the log's own current cursor — named explicitly, never
+ * defaulted (II.17). A stack found in an INVERTED order (e.g. real text
+ * reading "black fat cat") is refused by toEvents and recorded in
+ * `refused` with which tagger found it, never silently dropped or ticked
+ * anyway.
  */
 export function buildReading(text) {
   const log = createLog();
   const refused = [];
 
-  for (const stack of extractEnglishModifierStacks(text)) {
-    const events = toEvents(stack.tags, ENGLISH_DEMO_TYPOLOGY, {
-      head: stack.head,
-    });
-    if (isGap(events)) {
-      refused.push({
-        head: stack.head,
-        gap: events.gap,
-        reason: events.reason ?? events.why,
-      });
-      continue;
+  for (const { source, extract, typology } of TAGGERS) {
+    for (const stack of extract(text)) {
+      const events = toEvents(stack.tags, typology, { head: stack.head });
+      if (isGap(events)) {
+        refused.push({
+          source,
+          head: stack.head,
+          gap: events.gap,
+          reason: events.reason ?? events.why,
+        });
+        continue;
+      }
+      for (const e of events) tick(log, e);
     }
-    for (const e of events) tick(log, e);
   }
 
   const cursor = log.tick;
