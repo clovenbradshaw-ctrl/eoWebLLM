@@ -50,6 +50,15 @@ export interface ReadingResult {
   cursorBeforeThisRun: number;
 }
 
+// reading-pipeline.js is plain, untyped JS (deliberately -- see its own
+// header) and TypeScript infers buildReading's `opts.log` parameter type
+// from its default value's literal shape (`createLog()`'s `events: []`
+// narrows to `never[]`), which has nothing to do with this file's own
+// EventLog type. Cast once at the boundary, same as eo-hypergraph.ts does
+// for eoreader6, rather than fighting the inference call by call.
+const buildReadingUntyped: (text: string, opts?: unknown) => ReadingResult =
+  buildReadingImpl as any;
+
 /**
  * `log`: an existing ledger to read this text against (e.g. a source's
  * ledger loaded back from OPFS), instead of starting a fresh one. See
@@ -61,7 +70,7 @@ export function buildReading(
   text: string,
   opts?: { log?: EventLog },
 ): ReadingResult {
-  return buildReadingImpl(text, opts) as ReadingResult;
+  return buildReadingUntyped(text, opts);
 }
 
 export function toEOTReader(
