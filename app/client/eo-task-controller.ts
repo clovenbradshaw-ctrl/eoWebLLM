@@ -106,11 +106,25 @@ export interface TaskDefinition {
 export interface TaskRecord extends TaskDefinition {
   status: "pending" | "running" | "completed" | "dropped";
   result?: string;
+  // Holonic nesting: a running task MAY open its own sub-plan, itself a
+  // full TaskController with its own SEG/CON/.../SYN closure. A task is a
+  // whole (its own controller closes it) and can also be a part (one
+  // record in a PARENT controller's own task list) -- the same holon
+  // shape at every depth, not a special case at depth 0.
+  subplan?: TaskController;
 }
 
 export interface TaskEvent {
   seq: number;
-  kind: "propose" | "bind" | "start" | "complete" | "drop" | "close";
+  kind:
+    | "propose"
+    | "bind"
+    | "start"
+    | "complete"
+    | "drop"
+    | "close"
+    | "descend"
+    | "ascend";
   taskId?: string;
   cell: CubeCell;
   detail: string;
@@ -263,6 +277,39 @@ export function startTask(
   return task;
 }
 
+/**
+ * Descend: a running task opens its own sub-plan, a full TaskController
+ * nested one holon-level deeper. `INS · Existence · Ground` -- generating a
+ * fresh, undifferentiated existence-ground for the sub-plan to differentiate
+ * into its own tasks (the SAME act `createTaskController`'s own "propose"
+ * loop performs one grain up, at Figure). Declared by STRUCTURE (a task is
+ * currently running, and has not already descended), never by reading the
+ * task's own text -- the cube stays a legality check, not a classifier.
+ */
+export function openSubplan(
+  controller: TaskController,
+  taskId: string,
+  definitions: TaskDefinition[],
+): TaskController {
+  const task = controller.tasks.find((t) => t.id === taskId);
+  if (!task || task.status !== "running")
+    throw new TypeError(`task ${JSON.stringify(taskId)} is not running`);
+  if (task.subplan)
+    throw new TypeError(
+      `task ${JSON.stringify(taskId)} already has an open sub-plan`,
+    );
+  const subplan = createTaskController(definitions);
+  task.subplan = subplan;
+  event(
+    controller,
+    "descend",
+    cellFor("INS", "Ground"),
+    `controller opened a sub-plan of ${subplan.tasks.length} task(s)`,
+    task.id,
+  );
+  return subplan;
+}
+
 export function finishTask(
   controller: TaskController,
   taskId: string,
@@ -272,6 +319,29 @@ export function finishTask(
   const task = controller.tasks.find((t) => t.id === taskId);
   if (!task || task.status !== "running")
     throw new TypeError(`task ${JSON.stringify(taskId)} is not running`);
+  // A whole is not done until its parts are: a task that descended into its
+  // own sub-plan cannot be marked completed while that sub-plan still has
+  // open work. A rejected task (accepted=false) may still drop with an open
+  // sub-plan -- dropping abandons the branch, it does not claim it closed.
+  if (accepted && task.subplan && !task.subplan.closed)
+    throw new TypeError(
+      `task ${JSON.stringify(taskId)} cannot complete: its sub-plan has not closed`,
+    );
+  // Ascend: the return from a closed sub-plan, back up to the task that
+  // opened it. `REC · Interpretation · Ground` -- CUBE.md's own second
+  // validated cell ("unravel the frame, return and cultivate... witness
+  // happens on the return"), the exact shape of folding a closed whole back
+  // up as a part of what comes next, reused rather than a new cell invented
+  // for the occasion.
+  if (accepted && task.subplan && task.subplan.closed) {
+    event(
+      controller,
+      "ascend",
+      cellFor("REC", "Ground"),
+      "controller returned from a closed sub-plan",
+      task.id,
+    );
+  }
   task.status = accepted ? "completed" : "dropped";
   task.result = result;
   event(
@@ -324,17 +394,40 @@ export function finishTask(
   }
 }
 
-export function controllerAudit(controller: TaskController) {
+/**
+ * Recurses into every open sub-plan: a holon's own audit is not complete
+ * while a part of it, at any depth, is left unchecked. `path` names the
+ * descent so a nested incoherence or incomplete task is reported against
+ * where it actually lives, not folded up as if it were the top level's own.
+ */
+export function controllerAudit(
+  controller: TaskController,
+  path: string[] = [],
+): {
+  closed: boolean;
+  legalNext: string | null;
+  incomplete: string[];
+  incoherent: { seq: number; reason: string | null; path: string[] }[];
+} {
   const incoherent = controller.events.flatMap((e) => {
     const check = coherence(e.cell);
-    return check.ok ? [] : [{ seq: e.seq, reason: check.reason }];
+    return check.ok ? [] : [{ seq: e.seq, reason: check.reason, path }];
   });
+  const incomplete = controller.tasks
+    .filter((t) => t.status === "pending" || t.status === "running")
+    .map((t) => [...path, t.id].join("/"));
+
+  for (const task of controller.tasks) {
+    if (!task.subplan) continue;
+    const nested = controllerAudit(task.subplan, [...path, task.id]);
+    incoherent.push(...nested.incoherent);
+    incomplete.push(...nested.incomplete);
+  }
+
   return {
     closed: controller.closed,
     legalNext: nextLegalTask(controller)?.id ?? null,
-    incomplete: controller.tasks
-      .filter((t) => t.status === "pending" || t.status === "running")
-      .map((t) => t.id),
+    incomplete,
     incoherent,
   };
 }

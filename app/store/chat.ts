@@ -93,7 +93,9 @@ import {
   describeHypergraphNavigation,
   draftHypergraphThought,
   buildHypergraphThoughtBlock,
+  queryUserFacts,
 } from "../client/eo-hypergraph";
+import { buildSelfFactsBlock } from "../client/eo-self-facts";
 import { type ThinkingSystem } from "../client/eo-task-plan";
 import {
   buildFoldLedger,
@@ -448,7 +450,6 @@ function eoBuildInstructionBlock(
 // turn, the background topic-naming call, and the background fold/summary
 // calls — routes through this before reaching llm.chat().
 const EO_OUTPUT_TOKEN_RESERVE = 512;
-
 function eoMessageTokens(m: RequestMessage): number {
   return countTokens(getMessageTextContent(m)) + 4;
 }
@@ -1124,8 +1125,23 @@ export const useChatStore = createPersistStore(
         // question, just the model's own read of it, same seam eochat's
         // defineAnswerSpec planner uses for its `lookup` field.
         const session0 = get().currentSession();
+
+        // Admit the reader's own message to the visible transcript BEFORE any
+        // pre-turn pass (web routing, surf, math) runs — a send that spends
+        // seconds planning must not look like it dropped the question. The
+        // object below is the same reference the transcript renders, so the
+        // later content mutation (multimodal form) still shows live.
+        let userMessage: ChatMessage = createMessage({
+          role: "user",
+          content: userContent,
+        });
+        get().updateCurrentSession((session) => {
+          session.messages = session.messages.concat([userMessage]);
+          session.lastUpdate = Date.now();
+        });
+
         // The desk's turn counter (see eo-memory.ts) — this turn's index
-        // among user turns, computed before this turn's own message is
+        // among user turns, computed after this turn's own message is
         // appended, same basis getMessagesWithMemory uses for userTurnCount.
         const turnIndex = session0.messages.filter(
           (m) => m.role === "user" && !m.isError,
@@ -1263,6 +1279,19 @@ export const useChatStore = createPersistStore(
         const memoryBlock = buildMemoryMessage(session0.eoMemory);
         if (memoryBlock) {
           extraSystemBlocks.push(memoryBlock);
+        }
+
+        // Structured self-facts (see eo-self-facts.js): unlike the desk
+        // above, this is not a verbatim sentence the model has to re-find
+        // in prose — it is a bounded, always-included list read directly
+        // off the belief graph (eo-hypergraph.ts::queryUserFacts), with no
+        // relevance gate and no background model call. A user's own name
+        // is exactly the class of fact that must never depend on either a
+        // small model's own attention over raw history, or a second small
+        // model correctly judging the fact "relevant" to this question.
+        const selfFactsBlock = buildSelfFactsBlock(queryUserFacts(session0.id));
+        if (selfFactsBlock) {
+          extraSystemBlocks.push(selfFactsBlock);
         }
 
         // Source corpus surf: the complete original bytes remain in OPFS.
@@ -1490,10 +1519,9 @@ export const useChatStore = createPersistStore(
             }),
           );
         }
-        let userMessage: ChatMessage = createMessage({
-          role: "user",
-          content: mContent,
-        });
+        // multimodal form (images) is finalized here — the admitted message
+        // up top is the same object, so its rendered content updates live
+        userMessage.content = mContent;
 
         // Admitted AFTER this turn's own navigation ran, so the graph a
         // question is checked against never includes the question's own
@@ -1539,7 +1567,10 @@ export const useChatStore = createPersistStore(
             blocks.map((block) =>
               createMessage({ role: "system", content: block }),
             ),
-            rest,
+            // the admitted transcript copy of this turn's question would
+            // otherwise be re-sent by getMessagesWithMemory — drop it so the
+            // question appears exactly once in the prompt
+            rest.filter((m) => m.id !== userMessage.id),
             [userMessage],
           );
 
@@ -1636,20 +1667,16 @@ export const useChatStore = createPersistStore(
 
         log.debug("Messages: ", sendMessages);
 
-        // save user's and bot's message
+        // save the bot's placeholder — the user's message was already admitted
+        // at the top of onUserInput so it renders the instant the reader hits
+        // send
         get().updateCurrentSession((session) => {
-          const savedUserMessage = {
-            ...userMessage,
-            content: mContent,
-          };
-          session.messages = session.messages.concat([
-            savedUserMessage,
-            // Keep the callback-owned object outside Immer. If the exact same
-            // object is inserted here, Immer freezes it and later WebLLM
-            // onUpdate/onFinish mutations silently leave the stored reply
-            // empty. Store a snapshot and replace it by id in each callback.
-            { ...botMessage },
-          ]);
+          // Keep the callback-owned object outside Immer. If the exact same
+          // object is inserted here, Immer freezes it and later WebLLM
+          // onUpdate/onFinish mutations silently leave the stored reply
+          // empty. Store a snapshot and replace it by id in each callback.
+          session.messages = session.messages.concat([{ ...botMessage }]);
+          session.lastUpdate = Date.now();
           session.isGenerating = true;
         });
 

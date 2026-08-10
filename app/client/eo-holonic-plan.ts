@@ -314,6 +314,24 @@ export function evaluateCompliance(
 
 // ── REC: one bounded revision toward the flagged violations ────────────
 
+// A small model asked to rewrite a draft sometimes echoes the PROMPT's own
+// framing back instead of producing just the rewritten answer -- "Reader's
+// question: ... YOUR DRAFT ..." reappearing verbatim (or near-verbatim) as
+// if it were the reply. Checked structurally rather than against the exact
+// wording above, so a reworded prompt doesn't silently stop being guarded:
+// two or more of this shape's own section markers surviving into the
+// output is the signature of an echo, not a real rewrite.
+const SCAFFOLD_MARKERS = [
+  /reader'?s question\s*:/i,
+  /your draft/i,
+  /review flags\s*:/i,
+  /fixing only the (?:listed )?violations/i,
+];
+
+function echoesPromptScaffold(text: string): boolean {
+  return SCAFFOLD_MARKERS.filter((re) => re.test(text)).length >= 2;
+}
+
 export async function reconcileDraft({
   question,
   delivery,
@@ -327,7 +345,7 @@ export async function reconcileDraft({
   violations: ComplianceViolation[];
   generate: (systemPrompt: string, userPrompt: string) => Promise<string>;
 }): Promise<string> {
-  const sys = `You are rewriting an answer to pass its compliance review. Fix ONLY the violations listed. Keep the assigned delivery (${delivery}). Never mention sources, citations, or "the material" in the writing.`;
+  const sys = `You are rewriting an answer to pass its compliance review. Fix ONLY the violations listed. Keep the assigned delivery (${delivery}). Never mention sources, citations, or "the material" in the writing. Output ONLY the rewritten answer itself -- never repeat the question, the draft, or these instructions.`;
   const user = [
     `Reader's question: ${question}`,
     "",
@@ -337,5 +355,12 @@ export async function reconcileDraft({
     "REVIEW FLAGS:",
     violations.map((v) => `- [${v.type}] ${v.detail}`).join("\n") || "(none)",
   ].join("\n");
-  return generate(sys, user);
+  const revised = await generate(sys, user);
+  // A corrupted rewrite (the model echoing its own prompt) is worse than
+  // the original, merely non-compliant draft -- the caller's own existing
+  // discipline is "ships as-is, flagged, never silently" when a rewrite
+  // doesn't clear review; a rewrite that isn't even a real answer gets the
+  // same treatment, one level earlier.
+  if (echoesPromptScaffold(revised)) return draft;
+  return revised;
 }
