@@ -18,6 +18,8 @@
 // Source of the algorithm: eochat/server/holonic-chat.js
 //   https://github.com/clovenbradshaw-ctrl/eochat
 
+import { bayesianSurprise } from "./eo-binary/surprise.js";
+
 // ── bounds ─────────────────────────────────────────────────────────────
 export const DEFAULT_MIN_WORDS = 15;
 export const DEFAULT_RECONCILE_ROUNDS = 1;
@@ -93,6 +95,7 @@ function normalizeCompliance(c: any): AnswerCompliance {
 const MAX_LABEL_WORDS = 8;
 const PLACEHOLDER_REASON =
   "one short sentence justifying the kind and delivery";
+const PLACEHOLDER_KIND = "an emergent name for this response";
 
 function looksLikeLabel(s: string): boolean {
   return s.split(/\s+/).filter(Boolean).length <= MAX_LABEL_WORDS;
@@ -106,7 +109,11 @@ function normalizeSpec(p: any): AnswerSpec {
       : "direct response";
   const rawKind = String(p?.kind || "").trim();
   const kind =
-    rawKind && looksLikeLabel(rawKind) ? rawKind.slice(0, 60) : delivery;
+    rawKind &&
+    rawKind.toLowerCase() !== PLACEHOLDER_KIND &&
+    looksLikeLabel(rawKind)
+      ? rawKind.slice(0, 60)
+      : delivery;
   const rawReason = String(p?.reason || "").trim();
   const reason =
     rawReason.toLowerCase() === PLACEHOLDER_REASON
@@ -316,20 +323,84 @@ export function evaluateCompliance(
 
 // A small model asked to rewrite a draft sometimes echoes the PROMPT's own
 // framing back instead of producing just the rewritten answer -- "Reader's
-// question: ... YOUR DRAFT ..." reappearing verbatim (or near-verbatim) as
-// if it were the reply. Checked structurally rather than against the exact
-// wording above, so a reworded prompt doesn't silently stop being guarded:
-// two or more of this shape's own section markers surviving into the
-// output is the signature of an echo, not a real rewrite.
-const SCAFFOLD_MARKERS = [
-  /reader'?s question\s*:/i,
-  /your draft/i,
-  /review flags\s*:/i,
-  /fixing only the (?:listed )?violations/i,
-];
+// question: ... YOUR DRAFT ..." reappearing, paraphrased, as if it were the
+// reply (observed live: "YOUR DRAFT" restated in first person as "MY
+// DRAFT"). A regex list over the exact wording only catches a verbatim
+// echo -- paraphrase slides straight through it, because a regex asks
+// "does this text CONTAIN these words," not "does this text's own word
+// usage look statistically like the scaffold's." The latter is what
+// Bayesian surprise measures directly: KL(revised's word distribution ||
+// the scaffold's own word distribution), in bits, using the same
+// Map<token,count> machinery this codebase already uses for exactly this
+// "did belief move" question (eo-binary/surprise.js, used the same way by
+// eo-binary/graph.js to decide whether a passage moved a reader's belief).
+// gamma: 0 is the documented full-commitment boundary in surprise.js's own
+// header -- the posterior is `revised`'s own distribution alone, since a
+// rewrite is a fresh utterance being checked AGAINST the scaffold, not the
+// scaffold's evolving belief. A real answer's vocabulary (question- and
+// domain-specific words the scaffold never held) drives KL up; an echo's
+// vocabulary is close to entirely the scaffold's own recurring framing
+// words, which drives KL down toward zero.
+const WORD_RE = /[\p{L}\p{N}']+/gu;
 
-function echoesPromptScaffold(text: string): boolean {
-  return SCAFFOLD_MARKERS.filter((re) => re.test(text)).length >= 2;
+function wordFrequency(text: string): {
+  counts: Map<string, number>;
+  total: number;
+} {
+  const counts = new Map<string, number>();
+  let total = 0;
+  for (const w of String(text || "")
+    .toLowerCase()
+    .match(WORD_RE) ?? []) {
+    counts.set(w, (counts.get(w) ?? 0) + 1);
+    total += 1;
+  }
+  return { counts, total };
+}
+
+// The scaffold's OWN fixed framing text -- never the per-call question/
+// draft/violations, which would contaminate "does this look like the
+// SCAFFOLD's words" with real content words.
+const RECONCILE_SCAFFOLD_TEXT = [
+  `You are rewriting an answer to pass its compliance review. Fix ONLY the violations listed. Keep the assigned delivery. Never mention sources, citations, or "the material" in the writing. Output ONLY the rewritten answer itself -- never repeat the question, the draft, or these instructions.`,
+  `Reader's question:`,
+  `YOUR DRAFT — rewrite it, fixing ONLY the listed violations:`,
+  `REVIEW FLAGS:`,
+].join(" ");
+const RECONCILE_SCAFFOLD_PRIOR = wordFrequency(RECONCILE_SCAFFOLD_TEXT);
+
+// A measured starting point (per surprise.js's own discipline: a threshold
+// is measured from the caller's own history, never declared as a law) --
+// tune against real (question, revised) pairs, not treated as fixed.
+const RECONCILE_ECHO_KL_THRESHOLD_BITS = 0.75;
+
+function echoesPromptScaffold(revised: string): {
+  echo: boolean;
+  klBits: number | null;
+} {
+  const arrival = wordFrequency(revised);
+  if (arrival.total === 0) return { echo: true, klBits: null };
+  const kl = bayesianSurprise(
+    RECONCILE_SCAFFOLD_PRIOR.counts,
+    RECONCILE_SCAFFOLD_PRIOR.total,
+    arrival.counts,
+    arrival.total,
+    // surprise.js is plain JS (vendored verbatim from eoreader6, no JSDoc
+    // types): TS's allowJs inference for a destructured options param only
+    // picks up properties with a default value ({ alpha = 1 }), so it
+    // infers this options type as `{ alpha?: number }` and drops `gamma`
+    // even though the function reads and validates it at runtime. Not a
+    // real type mismatch — a gap in inferring untyped JS, cast around it.
+    { gamma: 0, alpha: 1 } as { gamma: number; alpha?: number },
+  );
+  if (kl == null) return { echo: true, klBits: null };
+  return { echo: kl < RECONCILE_ECHO_KL_THRESHOLD_BITS, klBits: kl };
+}
+
+export interface ReconcileResult {
+  text: string;
+  echoDetected: boolean;
+  echoKLBits: number | null;
 }
 
 export async function reconcileDraft({
@@ -344,7 +415,7 @@ export async function reconcileDraft({
   draft: string;
   violations: ComplianceViolation[];
   generate: (systemPrompt: string, userPrompt: string) => Promise<string>;
-}): Promise<string> {
+}): Promise<ReconcileResult> {
   const sys = `You are rewriting an answer to pass its compliance review. Fix ONLY the violations listed. Keep the assigned delivery (${delivery}). Never mention sources, citations, or "the material" in the writing. Output ONLY the rewritten answer itself -- never repeat the question, the draft, or these instructions.`;
   const user = [
     `Reader's question: ${question}`,
@@ -361,6 +432,9 @@ export async function reconcileDraft({
   // discipline is "ships as-is, flagged, never silently" when a rewrite
   // doesn't clear review; a rewrite that isn't even a real answer gets the
   // same treatment, one level earlier.
-  if (echoesPromptScaffold(revised)) return draft;
-  return revised;
+  const echoCheck = echoesPromptScaffold(revised);
+  if (echoCheck.echo) {
+    return { text: draft, echoDetected: true, echoKLBits: echoCheck.klBits };
+  }
+  return { text: revised, echoDetected: false, echoKLBits: echoCheck.klBits };
 }

@@ -292,7 +292,47 @@ export interface ChatSession {
   // EO_HISTORY_TURNS and the PAST DISCOURSE fold has paraphrased it away.
   eoMemory?: ConversationMemory;
 
+  // Which project (see Project below) this session belongs to, if any. A
+  // session with no projectId behaves exactly as it always has -- projects
+  // are purely additive grouping, never a required concept.
+  projectId?: string;
+
   template: Template;
+}
+
+// A named collection of sessions that share a knowledge base -- eoWebLLM's
+// take on eochat's Projects. eochat's version is server-backed (a project
+// row, a retrieval-pool namespace, conversations tagged by spaceId); this
+// app has no server, so a project here is just a name plus the id every
+// session in it carries. The "shared knowledge base" part falls out for
+// free: source bytes already live in a single global OPFS directory keyed
+// by source id (see eo-corpus.ts), so nothing needs to be copied between
+// sessions -- see projectSources below, which is the only piece that
+// actually implements the sharing (by widening which sources a turn's
+// retrieval considers, not by moving any bytes).
+export interface Project {
+  id: string;
+  name: string;
+  createdAt: number;
+}
+
+// The union of every source enabled anywhere in a project, deduped by
+// source id -- a file uploaded in one session of a project becomes
+// answerable from any other session in the same project. Used in place of
+// a single session's own eoSources wherever retrieval or the source panel
+// needs to know what a project-scoped session can see.
+export function projectSources(
+  sessions: ChatSession[],
+  projectId: string,
+): EoSource[] {
+  const byId = new Map<string, EoSource>();
+  for (const session of sessions) {
+    if (session.projectId !== projectId) continue;
+    for (const source of session.eoSources ?? []) {
+      if (!byId.has(source.id)) byId.set(source.id, source);
+    }
+  }
+  return [...byId.values()];
 }
 
 export const DEFAULT_TOPIC = Locale.Store.DefaultTopic;
@@ -306,6 +346,28 @@ export const BOT_HELLO: ChatMessage = createMessage({
 // context window never grows past a fixed ceiling.
 const EO_HISTORY_TURNS = 8;
 const EO_FOLD_TIMEOUT_MS = 30000;
+
+// Drop priority for eoEnforceContextBudget's `required` (system-block)
+// bucket. Replaces pure push-order FIFO, which had the actual importance
+// of these blocks backwards: warrant (routing/audit metadata) was pushed
+// first and so was dropped FIRST under real budget pressure, while a
+// user's own stated name (self-facts) — the least acceptable thing to
+// silently lose — sat mid-order with no special protection. Higher value
+// = kept longer / dropped later.
+const EO_BLOCK_PRIORITY = {
+  PROTECTED: 40, // warrant, self-facts — last resort only
+  DESK: 30, // conversation "desk" verbatim backstop
+  CONTEXT: 20, // web, file — this turn's situational context
+  SURF: 10, // corpus, hypergraph, math — cheapest to lose
+} as const;
+
+// Safety margin for the desk/self-facts window estimate below: a System 2
+// turn can emit more than one assistant message (see appendTurnResponse),
+// shrinking how many *user* turns actually fit inside EO_HISTORY_TURNS*2
+// raw messages. Padding the boundary later (more recent) errs toward
+// treating a turn as NOT yet visible raw, so a fact is included rather
+// than silently dropped when the estimate is off.
+const EO_DESK_WINDOW_MARGIN_TURNS = 2;
 // The router call (eo-tool-router) has no way to cap the model's output
 // length — LLMConfig carries no max_tokens knob the WebLLM engine call
 // forwards — so on a slow local model a verbose reply can blow past the
@@ -333,6 +395,14 @@ function eoRunBackground(
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      // A timeout is a terminal outcome for this call too — release the
+      // busy flag exactly like onError does. Left unset before this fix,
+      // a single slow/timed-out background call anywhere in a turn could
+      // leave eoEngineBusy stuck true for the rest of that turn's onFinish,
+      // silently blocking topic-naming and foldNextTurn until the next
+      // onUserInput force-reset it (see line ~1718) — too late to help the
+      // turn that hit it.
+      eoEngineBusy = false;
       reject(new Error("eo background model call timed out"));
     }, timeoutMs);
     eoEngineBusy = true;
@@ -438,6 +508,13 @@ function eoMessageTokens(m: RequestMessage): number {
   return countTokens(getMessageTextContent(m)) + 4;
 }
 
+// Untagged system messages (template context, PAST DISCOURSE, ON RECORD)
+// default to CONTEXT — mid-tier, same as before this priority scheme
+// existed, neither specially protected nor specially expendable.
+function eoBlockPriority(m: RequestMessage): number {
+  return m.eoPriority ?? EO_BLOCK_PRIORITY.CONTEXT;
+}
+
 function eoEnforceContextBudget(
   messages: RequestMessage[],
   contextWindowSize: number,
@@ -482,8 +559,22 @@ function eoEnforceContextBudget(
     total -= eoMessageTokens(droppable.shift()!);
     droppedCount += 1;
   }
+  // Lowest-priority-first, not push-order FIFO — see EO_BLOCK_PRIORITY.
+  // Oldest-of-equal-priority still breaks ties first (stable scan, first
+  // match at the lowest priority wins), matching the previous FIFO
+  // behavior within a tier.
   while (required.length && total > budget) {
-    total -= eoMessageTokens(required.shift()!);
+    let dropIdx = 0;
+    let dropPriority = eoBlockPriority(required[0]);
+    for (let i = 1; i < required.length; i++) {
+      const p = eoBlockPriority(required[i]);
+      if (p < dropPriority) {
+        dropPriority = p;
+        dropIdx = i;
+      }
+    }
+    total -= eoMessageTokens(required[dropIdx]);
+    required.splice(dropIdx, 1);
     droppedCount += 1;
   }
 
@@ -603,13 +694,19 @@ async function eoRunSystem2(input: {
   } = input;
 
   const claims = eoClaimSentences(draft);
-  const background = (systemPrompt: string, userPrompt: string) =>
-    eoRunBackground(
-      llm,
+  const background = (systemPrompt: string, userPrompt: string) => {
+    const budgeted = eoEnforceContextBudget(
       [
         createMessage({ role: "system", content: systemPrompt }),
         createMessage({ role: "user", content: userPrompt }),
       ],
+      modelConfig.context_window_size ?? 4096,
+      "system2 background call",
+    );
+    if (budgeted.dropped) get().pushEoLog("fold", budgeted.logText);
+    return eoRunBackground(
+      llm,
+      budgeted.messages,
       {
         model: modelConfig.model,
         cache: useAppConfig.getState().cacheType,
@@ -617,6 +714,7 @@ async function eoRunSystem2(input: {
       },
       EO_ROUTER_TIMEOUT_MS,
     );
+  };
 
   // 1. The deliberate re-surf.
   let deliberate: Awaited<ReturnType<typeof retrieveCorpusDeliberate>> = {
@@ -652,6 +750,21 @@ async function eoRunSystem2(input: {
     { mode: "system2", claims },
   );
   if (checkGate.logText) get().pushEoLog("surf", checkGate.logText);
+
+  // RULES IN FORCE THIS TURN, actually reaching a generation pass: until
+  // now this gate's systemMessage was computed and logged (.logText/.stats
+  // above) but never sent to any model — the same is true of System-1's own
+  // call to eoBuildInstructionBlock in getMessagesWithMemory, deliberately,
+  // per its own comment ("do not spend the visible answer's context on its
+  // verbose rule bodies"). System 2 is the deliberate, escalated pass and
+  // has no equivalent excuse: every "earned" response below is new reader-
+  // facing text, generated by a background call with no other guardrail on
+  // it. Only wraps prompts that produce prose the reader will see — not
+  // probeReading/defineTaskPlan, which are task-internal.
+  const withRulesInForce = (systemPrompt: string): string =>
+    checkGate.systemMessage
+      ? `${systemPrompt}\n\n${checkGate.systemMessage}`
+      : systemPrompt;
 
   // 3. The reading probe. It used to run before the first token, where it was
   //    a model call standing between the reader and any answer at all. Here it
@@ -710,7 +823,9 @@ async function eoRunSystem2(input: {
           ? `\nMaterial that exists but was not read this turn: ${externalUnread.join(", ")}.`
           : "";
         const raw = await background(
-          "You are checking an answer that has already been given. Write a short, plain note to the reader about what in it is NOT supported by the material actually consulted. Name the specific claims. Do not restate the answer, do not apologise, do not hedge with generalities about AI limitations. If something merely was not checked, say it was not checked rather than saying it is wrong. Three sentences at most.",
+          withRulesInForce(
+            "You are checking an answer that has already been given. Write a short, plain note to the reader about what in it is NOT supported by the material actually consulted. Name the specific claims. Do not restate the answer, do not apologise, do not hedge with generalities about AI limitations. If something merely was not checked, say it was not checked rather than saying it is wrong. Three sentences at most.",
+          ),
           `The answer given:\n${draft.slice(0, 2000)}\n\nUnsupported claims found by a mechanical check:\n${findings || "(none)"}${unread}`,
         );
         const text = String(raw || "").trim();
@@ -748,7 +863,9 @@ async function eoRunSystem2(input: {
         );
         if (!material && !contested) return null;
         const raw = await background(
-          "An answer has already been given. You are checking it against material retrieved specifically because it might cut against it. Say plainly whether anything actually does. If something does, name it and say what it changes. If nothing does, say the check was made and the answer held — in one sentence. Never invent a tension the material does not contain.",
+          withRulesInForce(
+            "An answer has already been given. You are checking it against material retrieved specifically because it might cut against it. Say plainly whether anything actually does. If something does, name it and say what it changes. If nothing does, say the check was made and the answer held — in one sentence. Never invent a tension the material does not contain.",
+          ),
           [
             material ??
               "No competing passage was retrieved from the reader's sources.",
@@ -789,7 +906,9 @@ async function eoRunSystem2(input: {
         );
         if (!run.context) return null;
         const raw = await background(
-          "Synthesize the bounded task results below into one warranted addition to an answer the reader already has. Do not repeat what the answer already said. Distinguish direct support from inference, name any live alternative, and preserve an unresolved gap rather than filling it. Never mention tasks, planning, or that you were given results.",
+          withRulesInForce(
+            "Synthesize the bounded task results below into one warranted addition to an answer the reader already has. Do not repeat what the answer already said. Distinguish direct support from inference, name any live alternative, and preserve an unresolved gap rather than filling it. Never mention tasks, planning, or that you were given results.",
+          ),
           `${run.context}\n\nThe answer already given:\n${draft.slice(0, 1500)}`,
         );
         return String(raw || "").trim() || null;
@@ -921,6 +1040,7 @@ function fillTemplateWith(input: string, modelConfig: ConfigType) {
 const DEFAULT_CHAT_STATE = {
   sessions: [createEmptySession()],
   currentSessionIndex: 0,
+  projects: [] as Project[],
 };
 
 export const useChatStore = createPersistStore(
@@ -972,7 +1092,7 @@ export const useChatStore = createPersistStore(
         });
       },
 
-      newSession(template?: Template) {
+      newSession(template?: Template, projectId?: string) {
         const session = createEmptySession();
 
         if (template) {
@@ -981,10 +1101,36 @@ export const useChatStore = createPersistStore(
           };
           session.topic = template.name;
         }
+        if (projectId) session.projectId = projectId;
 
         set((state) => ({
           currentSessionIndex: 0,
           sessions: [session].concat(state.sessions),
+        }));
+      },
+
+      createProject(name: string): Project {
+        const project: Project = { id: nanoid(), name, createdAt: Date.now() };
+        set((state) => ({ projects: [project].concat(state.projects) }));
+        return project;
+      },
+
+      renameProject(id: string, name: string) {
+        set((state) => ({
+          projects: state.projects.map((p) =>
+            p.id === id ? { ...p, name } : p,
+          ),
+        }));
+      },
+
+      // Sessions keep their projectId even after the project itself is
+      // deleted, the same way eochat leaves a conversation's spaceId alone
+      // on project delete -- they just fall back to behaving like any other
+      // ungrouped session (see projectSources: a dangling id simply never
+      // matches a project again).
+      deleteProject(id: string) {
+        set((state) => ({
+          projects: state.projects.filter((p) => p.id !== id),
         }));
       },
 
@@ -1150,10 +1296,31 @@ export const useChatStore = createPersistStore(
       },
 
       recordSourceLedger(sourceId: string, readLedger: EoSource["readLedger"]) {
-        get().updateCurrentSession((session) => {
-          session.eoSources = (session.eoSources ?? []).map((s) =>
-            s.id === sourceId ? { ...s, readLedger } : s,
-          );
+        get().updateEoSource(sourceId, (s) => ({ ...s, readLedger }));
+      },
+
+      // Finds whichever session actually owns a source (not necessarily the
+      // current one -- a project-scoped source panel shows every session's
+      // sources, see projectSources) and applies `updater` to it there.
+      // Plain updateCurrentSession silently no-ops when a source belongs to
+      // a different session in the same project, since its .map() never
+      // matches; every mutation to an existing EoSource (toggling enabled,
+      // recording a re-read) should go through this instead.
+      updateEoSource(
+        sourceId: string,
+        updater: (source: EoSource) => EoSource,
+      ) {
+        get().update((state) => {
+          for (const session of state.sessions) {
+            const idx = (session.eoSources ?? []).findIndex(
+              (s) => s.id === sourceId,
+            );
+            if (idx === -1) continue;
+            session.eoSources = session.eoSources!.map((s, i) =>
+              i === idx ? updater(s) : s,
+            );
+            break;
+          }
         });
       },
 
@@ -1196,7 +1363,16 @@ export const useChatStore = createPersistStore(
         const turnIndex = session0.messages.filter(
           (m) => m.role === "user" && !m.isError,
         ).length;
-        const extraSystemBlocks: string[] = [];
+        // Same recency boundary getMessagesWithMemory's verbatim window
+        // uses (EO_HISTORY_TURNS), estimated here since this runs before
+        // that window is built — a fact whose lastTurn falls on or after
+        // this boundary is (estimated to be) already visible raw, so the
+        // desk/self-facts blocks below skip restating it.
+        const oldestVerbatimTurn = Math.max(
+          1,
+          turnIndex - EO_HISTORY_TURNS + 1 + EO_DESK_WINDOW_MARGIN_TURNS,
+        );
+        const extraSystemBlocks: { text: string; priority: number }[] = [];
         // Populated only if web_search actually ran this turn; onFinish below
         // uses it to mechanically strip any self-authored [n] brackets and
         // attach the real source list — the talker itself is never told
@@ -1296,7 +1472,10 @@ export const useChatStore = createPersistStore(
               const results = await webSearch(turnWebQuery);
               turnWebResults = results;
               const block = formatWebSearchBlock(turnWebQuery, results);
-              extraSystemBlocks.push(block);
+              extraSystemBlocks.push({
+                text: block,
+                priority: EO_BLOCK_PRIORITY.CONTEXT,
+              });
               get().pushEoLog(
                 "web",
                 `web: ${results.length} result(s) for "${userContent.trim().slice(0, 80)}"`,
@@ -1315,7 +1494,10 @@ export const useChatStore = createPersistStore(
         const pendingFile = get().currentSession().pendingFileContext;
         const fileAttached = !!pendingFile;
         if (pendingFile) {
-          extraSystemBlocks.push(pendingFile);
+          extraSystemBlocks.push({
+            text: pendingFile,
+            priority: EO_BLOCK_PRIORITY.CONTEXT,
+          });
           get().updateCurrentSession((session) => {
             session.pendingFileContext = null;
           });
@@ -1326,9 +1508,16 @@ export const useChatStore = createPersistStore(
         // backstop for stated facts, injected every turn regardless of
         // whether EO_HISTORY_TURNS or the PAST DISCOURSE fold still holds
         // the turn that stated them.
-        const memoryBlock = buildMemoryMessage(session0.eoMemory);
+        const memoryBlock = buildMemoryMessage({
+          hot: session0.eoMemory?.hot,
+          facts: session0.eoMemory?.facts,
+          oldestVerbatimTurn,
+        });
         if (memoryBlock) {
-          extraSystemBlocks.push(memoryBlock);
+          extraSystemBlocks.push({
+            text: memoryBlock,
+            priority: EO_BLOCK_PRIORITY.DESK,
+          });
         }
 
         // Structured self-facts (see eo-self-facts.ts): unlike the desk
@@ -1339,16 +1528,25 @@ export const useChatStore = createPersistStore(
         // is exactly the class of fact that must never depend on either a
         // small model's own attention over raw history, or a second small
         // model correctly judging the fact "relevant" to this question.
-        const selfFactsBlock = buildSelfFactsBlock(queryUserFacts(session0.id));
+        const selfFactsBlock = buildSelfFactsBlock(
+          queryUserFacts(session0.id, oldestVerbatimTurn),
+        );
         if (selfFactsBlock) {
-          extraSystemBlocks.push(selfFactsBlock);
+          extraSystemBlocks.push({
+            text: selfFactsBlock,
+            priority: EO_BLOCK_PRIORITY.PROTECTED,
+          });
         }
 
         // Source corpus surf: the complete original bytes remain in OPFS.
         // This turn only receives the best matching, byte-addressed passages.
         // No prefix is ever promoted to "the file", and a later question can
-        // surface a different part of the same raw source.
-        const sources = session0.eoSources ?? [];
+        // surface a different part of the same raw source. A project-scoped
+        // session searches every source uploaded anywhere in the project,
+        // not just its own -- see projectSources.
+        const sources = session0.projectId
+          ? projectSources(get().sessions, session0.projectId)
+          : (session0.eoSources ?? []);
         let corpusPassages: CorpusPassage[] = [];
         if (
           sources.some((s) => s.enabled && s.textReadable) &&
@@ -1362,7 +1560,11 @@ export const useChatStore = createPersistStore(
               sources,
               passages,
             );
-            if (corpusBlock) extraSystemBlocks.push(corpusBlock);
+            if (corpusBlock)
+              extraSystemBlocks.push({
+                text: corpusBlock,
+                priority: EO_BLOCK_PRIORITY.SURF,
+              });
             get().pushEoLog(
               "file",
               `surf: ${passages.length} passage(s) from ${sources.filter((s) => s.enabled && s.textReadable).length} enabled source(s)`,
@@ -1441,7 +1643,10 @@ export const useChatStore = createPersistStore(
                     ),
                 });
                 if (thought) {
-                  extraSystemBlocks.push(buildHypergraphThoughtBlock(thought));
+                  extraSystemBlocks.push({
+                    text: buildHypergraphThoughtBlock(thought),
+                    priority: EO_BLOCK_PRIORITY.SURF,
+                  });
                   hypergraphThoughtDrafted = true;
                   get().pushEoLog("hypergraph", `thought: ${thought}`);
                 }
@@ -1520,7 +1725,11 @@ export const useChatStore = createPersistStore(
                 mathResult = result;
                 mathExpression = mathSpec.expression;
                 const mathBlock = buildMathBlock(mathSpec, result);
-                if (mathBlock) extraSystemBlocks.push(mathBlock);
+                if (mathBlock)
+                  extraSystemBlocks.push({
+                    text: mathBlock,
+                    priority: EO_BLOCK_PRIORITY.SURF,
+                  });
                 get().pushEoLog(
                   "task",
                   `math: ${mathSpec.expression} = ${result.formatted}`,
@@ -1572,10 +1781,11 @@ export const useChatStore = createPersistStore(
         // question is checked against never includes the question's own
         // words as if they were prior context.
         if (userContent.trim()) {
-          admitHypergraphTurn(session0.id, {
-            id: userMessage.id,
-            content: userContent,
-          });
+          admitHypergraphTurn(
+            session0.id,
+            { id: userMessage.id, content: userContent },
+            turnIndex,
+          );
         }
 
         // Every message this turn emits shares a turn id. The first one is the
@@ -1606,10 +1816,14 @@ export const useChatStore = createPersistStore(
         const systemPrefix = recentMessages.slice(0, splitAt);
         const rest = recentMessages.slice(splitAt);
         const contextWindow = modelConfig.context_window_size ?? 4096;
-        const buildMessages = (blocks: string[]) =>
+        const buildMessages = (blocks: { text: string; priority: number }[]) =>
           systemPrefix.concat(
             blocks.map((block) =>
-              createMessage({ role: "system", content: block }),
+              createMessage({
+                role: "system",
+                content: block.text,
+                eoPriority: block.priority,
+              }),
             ),
             // the admitted transcript copy of this turn's question would
             // otherwise be re-sent by getMessagesWithMemory — drop it so the
@@ -1664,7 +1878,10 @@ export const useChatStore = createPersistStore(
         const budgetResult = eoEnforceContextBudget(
           buildMessages(
             warrantBlock
-              ? [warrantBlock, ...extraSystemBlocks]
+              ? [
+                  { text: warrantBlock, priority: EO_BLOCK_PRIORITY.PROTECTED },
+                  ...extraSystemBlocks,
+                ]
               : extraSystemBlocks,
           ),
           contextWindow,
@@ -1756,10 +1973,11 @@ export const useChatStore = createPersistStore(
               // the graph accumulates entities and relations discussed in
               // either direction of the conversation, not only in what the
               // reader typed or uploaded.
-              admitHypergraphTurn(session0.id, {
-                id: botMessage.id,
-                content: message,
-              });
+              admitHypergraphTurn(
+                session0.id,
+                { id: botMessage.id, content: message },
+                turnIndex,
+              );
 
               // System 2: DEFINE now, against the System-1 draft that
               // already exists — unconditional, every turn, no mechanical
@@ -1865,8 +2083,13 @@ export const useChatStore = createPersistStore(
                           EO_ROUTER_TIMEOUT_MS,
                         ),
                     });
-                    if (revised && revised.trim()) {
-                      message = revised.trim();
+                    if (revised.echoDetected) {
+                      get().pushEoLog(
+                        "task",
+                        `reconcile: rewrite echoed the prompt scaffold (KL=${revised.echoKLBits?.toFixed(2) ?? "n/a"} bits) — kept the original draft`,
+                      );
+                    } else if (revised.text && revised.text.trim()) {
+                      message = revised.text.trim();
                       reconciled = true;
                       eva = answerSpec
                         ? evaluateCompliance(message, answerSpec)
@@ -2193,16 +2416,24 @@ export const useChatStore = createPersistStore(
         const userTurnCount = session.messages.filter(
           (m) => m.role === "user" && !m.isError,
         ).length;
-        const summaryInPrompt =
-          clearContextIndex === 0 &&
-          userTurnCount > EO_HISTORY_TURNS &&
-          !!session.eoSummary;
-        if (summaryInPrompt) {
-          const summaryText = buildSummarySystemMessage(session.eoSummary);
-          if (summaryText) {
-            out.push(createMessage({ role: "system", content: summaryText }));
-          }
+        // summaryInPrompt must reflect whether a system message was actually
+        // pushed below, not merely whether session.eoSummary exists. It
+        // becomes truthy after the very first successful fold phase 1, even
+        // when phase 2 (the model call that sets .topic) fails and falls
+        // back to advanceSummaryFold (eo-discourse.ts), which does not set
+        // .topic — and buildSummarySystemMessage returns null whenever
+        // .topic is unset. Gating on existence alone let the warrant ledger
+        // and its EOT log line claim "summary in prompt" on turns where
+        // getMessagesWithMemory never actually pushed anything for it.
+        const summaryEligible =
+          clearContextIndex === 0 && userTurnCount > EO_HISTORY_TURNS;
+        const summaryText = summaryEligible
+          ? buildSummarySystemMessage(session.eoSummary)
+          : null;
+        if (summaryText) {
+          out.push(createMessage({ role: "system", content: summaryText }));
         }
+        const summaryInPrompt = !!summaryText;
 
         // 2b. ON RECORD: the System 2 folds — earlier turns that were checked,
         //     carrying the addresses they were checked against. Unlike the
@@ -2288,8 +2519,6 @@ export const useChatStore = createPersistStore(
           );
           const topicMessages = topicBudget.messages;
           get().pushEoLog("fold", topicBudget.logText);
-          // one background engine call per turn: if the topic call takes the
-          // slot now, the fold for this turn is deferred to a later onNewMessage
           if (!eoEngineBusy) {
             get().pushEoLog("task", "task: topic-naming started");
             eoRunBackground(
@@ -2318,10 +2547,24 @@ export const useChatStore = createPersistStore(
                 log.error("[Topic] ", err);
                 get().pushEoLog("error", `task: topic-naming failed — ${err}`);
               });
+          } else {
+            get().pushEoLog(
+              "task",
+              "task: topic-naming skipped — engine busy with another background call",
+            );
           }
-        } else {
-          get().foldNextTurn(llm);
         }
+
+        // The discourse fold used to live in the `else` above, making it
+        // mutually exclusive with topic-naming: until the topic call
+        // SUCCEEDS and moves session.topic off DEFAULT_TOPIC, every turn
+        // took the `if` branch above and foldNextTurn was never reached at
+        // all — not delayed, skipped outright, every turn, for as long as
+        // topic-naming kept failing/timing out on a slow local model.
+        // foldNextTurn has its own eoFoldInFlight/eoEngineBusy guard, so
+        // it's safe to always attempt it here regardless of whether
+        // topic-naming just took the engine slot above.
+        get().foldNextTurn(llm);
       },
 
       // fold: compress completed turns into the PAST DISCOURSE summary. Runs
@@ -2329,7 +2572,15 @@ export const useChatStore = createPersistStore(
       // it never overlaps another engine call; the next user turn interrupts
       // it. A fold that never completes is retried after the next turn.
       foldNextTurn(llm: LLMApi) {
-        if (eoFoldInFlight || eoEngineBusy) return;
+        if (eoFoldInFlight || eoEngineBusy) {
+          get().pushEoLog(
+            "fold",
+            eoFoldInFlight
+              ? "fold: skipped — a fold is already in flight"
+              : "fold: skipped — engine busy with another background call",
+          );
+          return;
+        }
         eoFoldInFlight = true;
         const run = async () => {
           try {

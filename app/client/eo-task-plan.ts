@@ -271,13 +271,14 @@ export async function runTaskPlan({
     );
     let review = evaluateCompliance(draft, taskSpec);
     if (!review.compliant) {
-      draft = await reconcileDraft({
+      const revised = await reconcileDraft({
         question: task.goal,
         delivery: taskSpec.delivery,
         draft,
         violations: review.violations,
         generate,
       });
+      draft = revised.text;
       review = evaluateCompliance(draft, taskSpec);
     }
     finishTask(controller, task.id, draft, review.compliant);

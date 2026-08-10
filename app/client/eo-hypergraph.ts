@@ -65,6 +65,8 @@ interface HypergraphWrapper {
   session: any;
   admitted: Set<string>;
   hydrated: boolean;
+  /** verb|object (lowercased object) -> turns this self-fact was (re)stated on. */
+  selfFactTurns: Map<string, { firstTurn: number; lastTurn: number }>;
 }
 
 const wrappers = new Map<string, HypergraphWrapper>();
@@ -76,6 +78,7 @@ function wrapperFor(chatSessionId: string): HypergraphWrapper {
       session: eoreader.createSession(),
       admitted: new Set(),
       hydrated: false,
+      selfFactTurns: new Map(),
     };
     wrappers.set(chatSessionId, w);
   }
@@ -131,6 +134,7 @@ export function admitHypergraphSource(
 export function admitHypergraphTurn(
   chatSessionId: string,
   turn: { id: string; content: string },
+  turnIndex?: number,
 ): HypergraphMovement | null {
   const movement = admitOnce(
     wrapperFor(chatSessionId),
@@ -146,7 +150,7 @@ export function admitHypergraphTurn(
   // is real, if redundant, evidence, the same standing readTriples holds
   // everywhere else in this codebase).
   const facts = extractSelfFacts(turn.content);
-  if (facts.length) admitSelfFacts(chatSessionId, facts);
+  if (facts.length) admitSelfFacts(chatSessionId, facts, turnIndex);
   return movement;
 }
 
@@ -165,6 +169,7 @@ const SELF_FACT_GIVER = "eo-self-facts:user-stated";
 export function admitSelfFacts(
   chatSessionId: string,
   facts: { verb: string; object: string }[],
+  turnIndex?: number,
 ): void {
   if (!facts.length) return;
   const w = wrapperFor(chatSessionId);
@@ -175,6 +180,16 @@ export function admitSelfFacts(
     object: f.object,
   }));
   eoreader.injectPrior(graph, triples, { giver: SELF_FACT_GIVER });
+  if (Number.isFinite(turnIndex)) {
+    for (const f of facts) {
+      const key = `${f.verb}|${f.object.toLowerCase()}`;
+      const prev = w.selfFactTurns.get(key);
+      w.selfFactTurns.set(key, {
+        firstTurn: prev ? prev.firstTurn : turnIndex!,
+        lastTurn: turnIndex!,
+      });
+    }
+  }
 }
 
 /**
@@ -185,6 +200,7 @@ export function admitSelfFacts(
  */
 export function queryUserFacts(
   chatSessionId: string,
+  oldestVerbatimTurn?: number,
 ): { verb: string; object: string }[] {
   const w = wrappers.get(chatSessionId);
   const graph = w?.session?.graph;
@@ -193,7 +209,17 @@ export function queryUserFacts(
   for (const key of graph.edges.keys()) {
     const parts = String(key).split("|");
     if (parts.length !== 3 || parts[0] !== "user") continue;
-    out.push({ verb: parts[1], object: parts[2] });
+    const verb = parts[1];
+    const object = parts[2];
+    if (oldestVerbatimTurn) {
+      const turns = w?.selfFactTurns.get(`${verb}|${object.toLowerCase()}`);
+      // No recorded turn (e.g. admitted via ensureHypergraphHydrated's bulk
+      // admitOnce path, which bypasses admitSelfFacts, or before this
+      // instrumentation existed) — unknown means we can't prove it's still
+      // visible raw, so the safe default is to keep it.
+      if (turns && turns.lastTurn >= oldestVerbatimTurn) continue;
+    }
+    out.push({ verb, object });
   }
   return out;
 }

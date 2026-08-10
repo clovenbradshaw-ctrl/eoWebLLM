@@ -22,6 +22,8 @@ export interface MultimodalContent {
 export interface RequestMessage {
   role: MessageRole;
   content: string | MultimodalContent[];
+  /** eoWebLLM: drop priority for eoEnforceContextBudget (chat.ts). Never sent to the engine. */
+  eoPriority?: number;
 }
 
 export interface LLMConfig {
