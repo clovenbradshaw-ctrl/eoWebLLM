@@ -1144,6 +1144,14 @@ export const useChatStore = createPersistStore(
         });
       },
 
+      recordSourceLedger(sourceId: string, readLedger: EoSource["readLedger"]) {
+        get().updateCurrentSession((session) => {
+          session.eoSources = (session.eoSources ?? []).map((s) =>
+            s.id === sourceId ? { ...s, readLedger } : s,
+          );
+        });
+      },
+
       async onUserInput(
         content: string,
         llm: LLMApi,

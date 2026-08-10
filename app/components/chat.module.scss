@@ -783,6 +783,88 @@
   small { color: var(--light-gray); font-size: 10px; line-height: 1.35; }
 }
 
+.source-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.source-reread,
+.source-view {
+  flex-shrink: 0;
+  align-self: flex-start;
+  padding: 3px 7px;
+  border: var(--border-in-light);
+  border-radius: 6px;
+  background: var(--white);
+  color: var(--black);
+  font-size: 10px;
+  cursor: pointer;
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+}
+
+.source-view {
+  background: var(--second);
+}
+
+// The ledger viewer: two named modes over the same persisted log --
+// "fold" (MODIFIER_SCOPE_CURRENT_LENS, the projected, current reading)
+// and "event" (every raw tick, in order) -- so the append-only ledger and
+// what it folds to are both a click away, never only one or the other.
+.source-reading {
+  margin: 6px 0 2px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.source-reading-tabs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.source-reading-tab {
+  padding: 3px 8px;
+  border: var(--border-in-light);
+  border-radius: 5px;
+  background: var(--white);
+  color: var(--black);
+  font-size: 10px;
+  cursor: pointer;
+
+  &.active {
+    background: var(--primary);
+    color: white;
+    border-color: var(--primary);
+  }
+}
+
+.source-reading-stats {
+  color: var(--light-gray);
+  font-size: 10px;
+  margin-left: auto;
+}
+
+.source-reading-body {
+  margin: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #0b0f0c;
+  color: #7ee787;
+  font-family: "SF Mono", "Fira Code", Consolas, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 @mixin single-line {
   white-space: nowrap;
   overflow: hidden;
