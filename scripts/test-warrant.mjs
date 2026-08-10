@@ -92,6 +92,16 @@ test("a surfaced reader source demands grounding against the corpus", () => {
   assert.ok(demand.check.includes("corpus"));
 });
 
+test("fully surfaced direct corpus retrieval remains System 1", () => {
+  const { demand, route } = decide({
+    ...PLAIN_TURN,
+    corpus: { enabledSources: 1, sourcesSurfaced: 1, passages: 3 },
+  });
+  assert.equal(route.system, "system1");
+  assert.equal(demand.required, true);
+  assert.ok(demand.check.includes("corpus"));
+});
+
 test("a reader source that surfaced NOTHING still demands grounding, and demands an unfold", () => {
   // This is the failure the whole module exists for: the reader attached a
   // document, the lexical surf missed, and the turn is now one step away from
@@ -121,16 +131,17 @@ test("a web search that ran and found nothing is not the same as never searching
 });
 
 test("surfaced web results demand grounding against the web", () => {
-  const { demand } = decide({
+  const { demand, route } = decide({
     ...PLAIN_TURN,
     web: { attempted: true, results: 4 },
   });
   assert.ok(demand.check.includes("web"));
+  assert.equal(route.system, "system1");
 });
 
 test("an uploaded file demands grounding", () => {
   const { demand, route } = decide({ ...PLAIN_TURN, file: { attached: true } });
-  assert.equal(route.system, "system2");
+  assert.equal(route.system, "system1");
   assert.ok(demand.check.includes("file"));
 });
 
@@ -291,7 +302,10 @@ test("System 2 wins from any stage, in any order", () => {
 });
 
 test("a model probe can raise the route and can never lower it", () => {
-  const mechanical2 = decide({ ...PLAIN_TURN, file: { attached: true } }).route;
+  const mechanical2 = decide({
+    ...PLAIN_TURN,
+    corpus: { enabledSources: 1, sourcesSurfaced: 0, passages: 0 },
+  }).route;
   const probeSaysEasy = {
     system: "system1",
     stage: "probe",

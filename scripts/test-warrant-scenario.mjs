@@ -39,15 +39,15 @@ import {
   emptySummary,
 } from "../app/client/eo-discourse.ts";
 
-// chat.ts:285 — "const EO_HISTORY_TURNS = 8". Not exported (that module pulls
+// chat.ts:285 — "const EO_HISTORY_TURNS = 2". Not exported (that module pulls
 // in the web-llm engine and browser storage, so it is not something a
 // node --test file can import), so it is pinned here instead. If chat.ts's
 // constant ever moves, this is the number to update alongside it.
-const EO_HISTORY_TURNS = 8;
+const EO_HISTORY_TURNS = 2;
 
 // The turn horizon past which chat.ts's own verbatim window + fold list can no
-// longer cover a turn: 8 verbatim + 12 folded = 20 turns of coverage, so turn
-// 21 is the first one a conversation can lose outright.
+// longer cover a turn: 2 verbatim + 12 folded = 14 turns of coverage, so turn
+// 15 is the first one a conversation can lose outright.
 const LOSS_HORIZON = EO_HISTORY_TURNS + MAX_FOLDS_IN_PROMPT;
 
 /**
@@ -102,12 +102,12 @@ test("a fact surfaced early stays checkable while verbatim, becomes an unwarrant
   });
   const surfacingDemand = groundingDemand(surfacingTurn);
   assert.ok(surfacingDemand.check.includes("web"));
-  assert.equal(routeTurn(surfacingTurn, surfacingDemand).system, "system2");
+  assert.equal(routeTurn(surfacingTurn, surfacingDemand).system, "system1");
 
-  // Turns 4 through 8: the fact from turn 3 is still inside the verbatim
-  // recency window (EO_HISTORY_TURNS = 8) — it is still literally in the
+  // Turns 3 and 4: the fact from turn 3 is still inside the verbatim
+  // recency window (EO_HISTORY_TURNS = 2) — it is still literally in the
   // prompt, not yet folded to anything.
-  for (const n of [4, 6, 8]) {
+  for (const n of [3, 4]) {
     const ledger = ledgerAtTurn(n);
     assert.equal(
       channelOf(ledger, "discourse").surfaced,
@@ -116,14 +116,14 @@ test("a fact surfaced early stays checkable while verbatim, becomes an unwarrant
     );
   }
 
-  // Turn 15: the reader circles back and asks a question whose answer needs
+  // Turn 9: the reader circles back and asks a question whose answer needs
   // that turn-3 fact. Nothing else external is in play this turn, so the
   // pre-answer route does not fire on the fold alone — that would make every
   // long conversation System 2 regardless of what the current turn actually
   // asks (see test-warrant.mjs: "folded past discourse ... does not alone
   // escalate"). What fires is the DRAFT: once the model's answer actually
   // states the figure, that is a checkable claim resting on a paraphrase.
-  const foldedLedger = ledgerAtTurn(15);
+  const foldedLedger = ledgerAtTurn(9);
   const foldedDemand = groundingDemand(foldedLedger);
   assert.ok(
     foldedDemand.forbidden.includes("discourse"),
@@ -147,7 +147,7 @@ test("a fact surfaced early stays checkable while verbatim, becomes an unwarrant
     "a draft that states the figure from turn 3 must be checked before it ships, because the only thing carrying it forward is a paraphrase",
   );
 
-  // Turn 21: turn 3 has fallen out of both the verbatim window and the fold
+  // Turn 15: turn 3 has fallen out of both the verbatim window and the fold
   // list. It is not merely ungrounded now — it left no name to follow back at
   // all. That is unknown provenance, and unknown provenance escalates before
   // a single token of the draft exists, with no need to wait and see what the

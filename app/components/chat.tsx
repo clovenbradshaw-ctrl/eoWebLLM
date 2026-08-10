@@ -1292,7 +1292,11 @@ function ChatInner() {
   const config = useAppConfig();
   const fontSize = config.fontSize;
 
-  const isStreaming = session.messages.some((m) => m.streaming);
+  // Keep sends blocked through the complete turn lifecycle, including
+  // post-draft System 2 checks. The draft stops streaming before those checks
+  // finish, so message.streaming alone exposes a false-ready Send button.
+  const isStreaming =
+    session.isGenerating || session.messages.some((m) => m.streaming);
 
   const [showExport, setShowExport] = useState(false);
   const [showEoLog, setShowEoLog] = useState(false);
@@ -1527,10 +1531,20 @@ function ChatInner() {
   };
 
   const deleteMessage = (msgId?: string) => {
-    chatStore.updateCurrentSession(
-      (session) =>
-        (session.messages = session.messages.filter((m) => m.id !== msgId)),
-    );
+    chatStore.updateCurrentSession((session) => {
+      session.messages = session.messages.filter((m) => m.id !== msgId);
+      // Fold, desk, and clear-context indices are derived from message order.
+      // Once the transcript is empty, retaining their previous values makes a
+      // new conversation start past the end of its own history and no fold can
+      // ever run. Reset only derived conversation state; OPFS sources remain.
+      if (session.messages.length === 0) {
+        session.eoSummary = null;
+        session.eoLastFoldIndex = 0;
+        session.eoMemory = undefined;
+        session.clearContextIndex = 0;
+        session.topic = DEFAULT_TOPIC;
+      }
+    });
   };
 
   const onDelete = (msgId: string) => {

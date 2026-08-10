@@ -20,6 +20,7 @@ import { fixMessage } from "../utils";
 import { DEFAULT_MODELS } from "../constant";
 
 const KEEP_ALIVE_INTERVAL = 5_000;
+const GENERATION_TIMEOUT_MS = 60_000;
 
 type ServiceWorkerWebLLMHandler = {
   type: "serviceWorker";
@@ -138,11 +139,26 @@ export class WebLLMApi implements LLMApi {
     let stopReason: ChatCompletionFinishReason | undefined;
     let usage: CompletionUsage | undefined;
     try {
-      const completion = await this.chatCompletion(
-        !!options.config.stream,
-        options.messages,
-        options.onUpdate,
-      );
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const completion = await Promise.race([
+        this.chatCompletion(
+          !!options.config.stream,
+          options.messages,
+          options.onUpdate,
+        ),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => {
+            void this.abort();
+            reject(
+              new Error(
+                `WebLLM generation timed out after ${GENERATION_TIMEOUT_MS / 1000}s`,
+              ),
+            );
+          }, GENERATION_TIMEOUT_MS);
+        }),
+      ]).finally(() => {
+        if (timeout) clearTimeout(timeout);
+      });
       reply = completion.content;
       stopReason = completion.stopReason;
       usage = completion.usage;
