@@ -15,7 +15,6 @@ import {
 } from "react-router-dom";
 import { ServiceWorkerMLCEngine } from "@mlc-ai/web-llm";
 
-import MlcIcon from "../icons/mlc.svg";
 import LoadingIcon from "../icons/three-dots.svg";
 
 import Locale from "../locales";
@@ -34,11 +33,6 @@ import { MlcLLMApi } from "../client/mlcllm";
 export function Loading(props: { noLogo?: boolean }) {
   return (
     <div className={styles["loading-content"] + " no-dark"}>
-      {!props.noLogo && (
-        <div className={styles["loading-content-logo"] + " no-dark mlc-icon"}>
-          <MlcIcon />
-        </div>
-      )}
       <LoadingIcon />
     </div>
   );
@@ -168,17 +162,24 @@ const useWebLLM = () => {
   const [isWebllmActive, setWebllmAlive] = useState(false);
 
   const isWebllmInitialized = useRef(false);
+  const fallbackTimeout = useRef<ReturnType<typeof setTimeout>>();
 
-  // If service worker registration timeout, fall back to web worker
-  const timeout = setTimeout(() => {
-    if (!isWebllmInitialized.current && !isWebllmActive && !webllm) {
-      log.info(
-        "Service Worker activation is timed out. Falling back to use web worker.",
-      );
-      setWebLLM(new WebLLMApi("webWorker", config.logLevel));
-      setWebllmAlive(true);
-    }
-  }, 2_000);
+  // If service worker registration timeout, fall back to web worker.
+  // Scheduled from an effect, not the render body: the render body also
+  // runs during SSR, where `setTimeout` is real (unlike `useEffect`), and
+  // the callback below reaches `new Worker(...)`, which doesn't exist server-side.
+  useEffect(() => {
+    fallbackTimeout.current = setTimeout(() => {
+      if (!isWebllmInitialized.current && !isWebllmActive && !webllm) {
+        log.info(
+          "Service Worker activation is timed out. Falling back to use web worker.",
+        );
+        setWebLLM(new WebLLMApi("webWorker", config.logLevel));
+        setWebllmAlive(true);
+      }
+    }, 2_000);
+    return () => clearTimeout(fallbackTimeout.current);
+  }, []);
 
   // Initialize WebLLM engine
   useEffect(() => {
@@ -215,7 +216,7 @@ const useWebLLM = () => {
               );
               setWebllmAlive(true);
               isWebllmInitialized.current = true;
-              clearTimeout(timeout);
+              clearTimeout(fallbackTimeout.current);
             }
             navigator.serviceWorker.removeEventListener(
               "message",
@@ -236,7 +237,7 @@ const useWebLLM = () => {
       setWebLLM(new WebLLMApi("webWorker", config.logLevel));
       setWebllmAlive(true);
       isWebllmInitialized.current = true;
-      clearTimeout(timeout);
+      clearTimeout(fallbackTimeout.current);
     }
   }, []);
 
@@ -353,9 +354,15 @@ const usePreloadModel = (webllm: WebLLMApi | undefined, active: boolean) => {
     attempted.current.add(model);
     let cancelled = false;
 
-    chatStore.updateCurrentSession((session) => {
-      session.modelLoadProgress = { progress: 0, text: `Preparing ${model}` };
-    });
+    const current = webllm.currentProgress;
+    if (current.progress < 1) {
+      chatStore.updateCurrentSession((session) => {
+        session.modelLoadProgress = {
+          progress: current.progress,
+          text: current.text || `Preparing ${model}`,
+        };
+      });
+    }
     webllm
       .preload(
         {

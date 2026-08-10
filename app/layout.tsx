@@ -1,9 +1,40 @@
 /* eslint-disable @next/next/no-page-custom-font */
+import localFont from "next/font/local";
 import "./styles/globals.scss";
 import "./styles/markdown.scss";
 import "./styles/highlight.scss";
 import { getClientConfig } from "./config/client";
 import { type Metadata } from "next";
+
+// Self-hosted type, same origin as the app (CSP font-src 'self').
+// Instrument Sans is a variable font (400–700) loaded in one normal + one
+// italic file; IBM Plex Mono is the fixed-pitch companion for code.
+const instrument = localFont({
+  src: [
+    {
+      path: "./fonts/instrument-sans-latin.woff2",
+      weight: "400 700",
+      style: "normal",
+    },
+    {
+      path: "./fonts/instrument-sans-latin-italic.woff2",
+      weight: "400 700",
+      style: "italic",
+    },
+  ],
+  variable: "--font-instrument",
+  display: "swap",
+});
+
+const plexMono = localFont({
+  src: [
+    { path: "./fonts/ibm-plex-mono-400-latin.woff2", weight: "400" },
+    { path: "./fonts/ibm-plex-mono-500-latin.woff2", weight: "500" },
+    { path: "./fonts/ibm-plex-mono-600-latin.woff2", weight: "600" },
+  ],
+  variable: "--font-plex-mono",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://clovenbradshaw-ctrl.github.io/eoWebLLM/"),
@@ -45,9 +76,9 @@ export const metadata: Metadata = {
     siteName: "eoWebLLM",
     images: [
       {
-        url: "https://clovenbradshaw-ctrl.github.io/eoWebLLM/mlc-logo.png",
-        width: 360,
-        height: 360,
+        url: "https://clovenbradshaw-ctrl.github.io/eoWebLLM/favicon-32x32.png",
+        width: 32,
+        height: 32,
         alt: "eoWebLLM - Browser-based AI conversation",
       },
     ],
@@ -57,7 +88,9 @@ export const metadata: Metadata = {
     title: "eoWebLLM",
     description:
       "Chat with AI large language models running natively in your browser, gated by a surf/fold instruction set",
-    images: ["https://clovenbradshaw-ctrl.github.io/eoWebLLM/mlc-logo.png"],
+    images: [
+      "https://clovenbradshaw-ctrl.github.io/eoWebLLM/favicon-32x32.png",
+    ],
   },
   alternates: {
     canonical: "https://clovenbradshaw-ctrl.github.io/eoWebLLM/",
@@ -148,7 +181,9 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body>{children}</body>
+      <body className={`${instrument.variable} ${plexMono.variable}`}>
+        {children}
+      </body>
     </html>
   );
 }

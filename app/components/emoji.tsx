@@ -6,7 +6,7 @@ import EmojiPicker, {
 
 import { Model } from "../store";
 
-import MlcIcon from "../icons/mlc.svg";
+import { Robot } from "@phosphor-icons/react";
 
 export function getEmojiUrl(unified: string, style: EmojiStyle) {
   // Whoever owns this Content Delivery Network (CDN), I am using your CDN to serve emojis
@@ -34,8 +34,8 @@ export function AvatarPicker(props: {
 export function Avatar(props: { model?: Model; avatar?: string }) {
   if (props.model) {
     return (
-      <div className="bot-avatar mlc-icon no-dark">
-        <MlcIcon />
+      <div className="bot-avatar no-dark">
+        <Robot size={18} weight="fill" />
       </div>
     );
   }

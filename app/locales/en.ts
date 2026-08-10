@@ -24,6 +24,8 @@ const en = {
       Export: "Export All Messages as Markdown",
       Copy: "Copy",
       Stop: "Stop",
+      Speak: "Play",
+      StopSpeak: "Stop",
       Share: "Share",
       Retry: "Retry",
       Delete: "Delete",
@@ -66,6 +68,9 @@ const en = {
       var inputHints = `${submitKey} to send`;
       if (submitKey === String(SubmitKey.Enter)) {
         inputHints += ", Shift + Enter to wrap";
+      }
+      if (submitKey === String(SubmitKey.MetaEnter)) {
+        inputHints = "Enter to wrap, Meta + Enter to send";
       }
       return inputHints + ", / to search prompts, : to use commands";
     },

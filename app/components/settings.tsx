@@ -1,23 +1,9 @@
-import { useState, useEffect, useContext } from "react";
-import log from "loglevel";
+import { useEffect } from "react";
 
 import styles from "./settings.module.scss";
-import AddIcon from "../icons/add.svg";
 import CloseIcon from "../icons/close.svg";
-import CopyIcon from "../icons/copy.svg";
-import ClearIcon from "../icons/clear.svg";
-import EditIcon from "../icons/edit.svg";
-import EyeIcon from "../icons/eye.svg";
 
-import {
-  Input,
-  List,
-  ListItem,
-  Modal,
-  Select,
-  showConfirm,
-  showToast,
-} from "./ui-lib";
+import { List, ListItem, Select, showConfirm } from "./ui-lib";
 import { ModelConfigList } from "./model-config";
 
 import { IconButton } from "./button";
@@ -27,338 +13,12 @@ import {
   Theme,
   useAppConfig,
   CacheType,
-  useGithubSyncStore,
 } from "../store";
-import {
-  startDeviceFlow,
-  pollForToken,
-  DeviceFlowStart,
-} from "../utils/github-auth";
 
-import Locale, {
-  AllLangs,
-  ALL_LANG_OPTIONS,
-  changeLang,
-  getLang,
-} from "../locales";
-import { copyToClipboard } from "../utils";
-import { LOG_LEVELS, Path, SlotID } from "../constant";
-import { Prompt, SearchService, usePromptStore } from "../store/prompt";
-import { ErrorBoundary } from "./error";
+import Locale from "../locales";
 import { InputRange } from "./input-range";
+import { Path } from "../constant";
 import { useNavigate } from "react-router-dom";
-import { nanoid } from "nanoid";
-import { LogLevel } from "@mlc-ai/web-llm";
-import { WebLLMContext } from "../context";
-
-function EditPromptModal(props: { id: string; onClose: () => void }) {
-  const promptStore = usePromptStore();
-  const prompt = promptStore.get(props.id);
-
-  return prompt ? (
-    <div className="screen-model-container">
-      <Modal
-        title={Locale.Settings.Prompt.EditModal.Title}
-        onClose={props.onClose}
-        actions={[
-          <IconButton
-            key=""
-            onClick={props.onClose}
-            text={Locale.UI.Confirm}
-            bordered
-          />,
-        ]}
-      >
-        <div className={styles["edit-prompt-modal"]}>
-          <input
-            type="text"
-            value={prompt.title}
-            readOnly={!prompt.isUser}
-            className={styles["edit-prompt-title"]}
-            onInput={(e) =>
-              promptStore.updatePrompt(
-                props.id,
-                (prompt) => (prompt.title = e.currentTarget.value),
-              )
-            }
-          ></input>
-          <Input
-            value={prompt.content}
-            readOnly={!prompt.isUser}
-            className={styles["edit-prompt-content"]}
-            rows={10}
-            onInput={(e) =>
-              promptStore.updatePrompt(
-                props.id,
-                (prompt) => (prompt.content = e.currentTarget.value),
-              )
-            }
-          ></Input>
-        </div>
-      </Modal>
-    </div>
-  ) : null;
-}
-
-function UserPromptModal(props: { onClose?: () => void }) {
-  const promptStore = usePromptStore();
-  const userPrompts = promptStore.getUserPrompts();
-  const builtinPrompts = SearchService.builtinPrompts;
-  const allPrompts = userPrompts.concat(builtinPrompts);
-  const [searchInput, setSearchInput] = useState("");
-  const [searchPrompts, setSearchPrompts] = useState<Prompt[]>([]);
-  const prompts = searchInput.length > 0 ? searchPrompts : allPrompts;
-
-  const [editingPromptId, setEditingPromptId] = useState<string>();
-
-  useEffect(() => {
-    if (searchInput.length > 0) {
-      const searchResult = SearchService.search(searchInput);
-      setSearchPrompts(searchResult);
-    } else {
-      setSearchPrompts([]);
-    }
-  }, [searchInput]);
-
-  return (
-    <div className="screen-model-container">
-      <Modal
-        title={Locale.Settings.Prompt.Modal.Title}
-        onClose={() => props.onClose?.()}
-        actions={[
-          <IconButton
-            key="add"
-            onClick={() => {
-              const promptId = promptStore.add({
-                id: nanoid(),
-                createdAt: Date.now(),
-                title: "Empty Prompt",
-                content: "Empty Prompt Content",
-              });
-              setEditingPromptId(promptId);
-            }}
-            icon={<AddIcon />}
-            bordered
-            text={Locale.Settings.Prompt.Modal.Add}
-          />,
-        ]}
-      >
-        <div className={styles["user-prompt-modal"]}>
-          <input
-            type="text"
-            className={styles["user-prompt-search"]}
-            placeholder={Locale.Settings.Prompt.Modal.Search}
-            value={searchInput}
-            onInput={(e) => setSearchInput(e.currentTarget.value)}
-          ></input>
-
-          <div className={styles["user-prompt-list"]}>
-            {prompts.map((v, _) => (
-              <div className={styles["user-prompt-item"]} key={v.id ?? v.title}>
-                <div className={styles["user-prompt-header"]}>
-                  <div className={styles["user-prompt-title"]}>{v.title}</div>
-                  <div className={styles["user-prompt-content"] + " one-line"}>
-                    {v.content}
-                  </div>
-                </div>
-
-                <div className={styles["user-prompt-buttons"]}>
-                  {v.isUser && (
-                    <IconButton
-                      icon={<ClearIcon />}
-                      className={styles["user-prompt-button"]}
-                      onClick={() => promptStore.remove(v.id!)}
-                    />
-                  )}
-                  {v.isUser ? (
-                    <IconButton
-                      icon={<EditIcon />}
-                      className={styles["user-prompt-button"]}
-                      onClick={() => setEditingPromptId(v.id)}
-                    />
-                  ) : (
-                    <IconButton
-                      icon={<EyeIcon />}
-                      className={styles["user-prompt-button"]}
-                      onClick={() => setEditingPromptId(v.id)}
-                    />
-                  )}
-                  <IconButton
-                    icon={<CopyIcon />}
-                    className={styles["user-prompt-button"]}
-                    onClick={() => copyToClipboard(v.content)}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </Modal>
-
-      {editingPromptId !== undefined && (
-        <EditPromptModal
-          id={editingPromptId!}
-          onClose={() => setEditingPromptId(undefined)}
-        />
-      )}
-    </div>
-  );
-}
-
-function ConnectGithubModal(props: { onClose: () => void }) {
-  const githubStore = useGithubSyncStore();
-  const [state, setState] = useState<DeviceFlowStart | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    let cancelled = false;
-
-    startDeviceFlow()
-      .then((start) => {
-        if (cancelled) return;
-        setState(start);
-        return pollForToken(start, controller.signal);
-      })
-      .then((token) => {
-        if (cancelled || !token) return;
-        githubStore.setToken(token);
-        showToast("Connected to GitHub.");
-        props.onClose();
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setError(err?.message ?? "Failed to connect to GitHub.");
-      });
-
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  return (
-    <div className="screen-model-container">
-      <Modal title="Connect GitHub" onClose={props.onClose}>
-        <div style={{ padding: "0 20px 20px", lineHeight: 1.6 }}>
-          {error && <p style={{ color: "var(--red, #e53e3e)" }}>{error}</p>}
-          {!error && !state && <p>Requesting a device code from GitHub…</p>}
-          {!error && state && (
-            <>
-              <p>
-                Enter this code at{" "}
-                <a
-                  href={state.verification_uri}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {state.verification_uri}
-                </a>
-                :
-              </p>
-              <p style={{ fontSize: 28, fontWeight: 700, letterSpacing: 4 }}>
-                {state.user_code}
-              </p>
-              <p>Waiting for approval…</p>
-            </>
-          )}
-          <p style={{ fontSize: 12, opacity: 0.7 }}>
-            The resulting access token is stored only in this browser&apos;s
-            local storage.
-          </p>
-        </div>
-      </Modal>
-    </div>
-  );
-}
-
-function GithubSyncSection() {
-  const githubStore = useGithubSyncStore();
-  const [showConnectModal, setShowConnectModal] = useState(false);
-  const connected = githubStore.isConnected();
-
-  const statusText = !connected
-    ? "Not connected"
-    : githubStore.syncStatus === "error"
-      ? `Sync failed: ${githubStore.lastError}`
-      : githubStore.lastSyncTime
-        ? `Last synced ${new Date(githubStore.lastSyncTime).toLocaleString()}`
-        : "Connected — waiting for first sync";
-
-  return (
-    <List>
-      <ListItem
-        title="GitHub History Sync"
-        subTitle="Automatically back up chat history to a private GitHub repo via the eoWebLLM GitHub App"
-      >
-        {connected ? (
-          <IconButton
-            text="Disconnect"
-            onClick={async () => {
-              if (await showConfirm("Disconnect from GitHub?")) {
-                githubStore.disconnect();
-              }
-            }}
-          />
-        ) : (
-          <IconButton
-            text="Connect GitHub"
-            bordered
-            onClick={() => setShowConnectModal(true)}
-          />
-        )}
-      </ListItem>
-
-      {connected && (
-        <>
-          <ListItem
-            title="Repository owner"
-            subTitle="GitHub username or org that owns the target repo"
-          >
-            <input
-              type="text"
-              placeholder="e.g. clovenbradshaw-ctrl"
-              value={githubStore.owner}
-              onChange={(e) =>
-                githubStore.setRepo(e.currentTarget.value, githubStore.repo)
-              }
-            ></input>
-          </ListItem>
-          <ListItem
-            title="Repository name"
-            subTitle="Must be a private repo with the eoWebLLM App installed on it"
-          >
-            <input
-              type="text"
-              placeholder="e.g. eowebllm-history"
-              value={githubStore.repo}
-              onChange={(e) =>
-                githubStore.setRepo(githubStore.owner, e.currentTarget.value)
-              }
-            ></input>
-          </ListItem>
-          <ListItem title="Sync status" subTitle={statusText}>
-            {githubStore.syncStatus === "error" ? (
-              <IconButton
-                text="Retry"
-                onClick={() => {
-                  import("../utils/github-sync").then(({ pushHistory }) =>
-                    pushHistory(useChatStore.getState().sessions),
-                  );
-                }}
-              />
-            ) : undefined}
-          </ListItem>
-        </>
-      )}
-
-      {showConnectModal && (
-        <ConnectGithubModal onClose={() => setShowConnectModal(false)} />
-      )}
-    </List>
-  );
-}
 
 function DangerItems() {
   const chatStore = useChatStore();
@@ -402,12 +62,6 @@ export function Settings() {
   const navigate = useNavigate();
   const config = useAppConfig();
   const updateConfig = config.update;
-  const webllm = useContext(WebLLMContext);
-
-  const promptStore = usePromptStore();
-  const builtinCount = SearchService.count.builtin;
-  const customCount = promptStore.getUserPrompts().length ?? 0;
-  const [shouldShowPromptModal, setShowPromptModal] = useState(false);
 
   useEffect(() => {
     const keydownEvent = (e: KeyboardEvent) => {
@@ -423,111 +77,28 @@ export function Settings() {
   }, []);
 
   return (
-    <ErrorBoundary>
-      <div className="window-header">
-        <div className="window-header-title">
-          <div className="window-header-main-title">
-            {Locale.Settings.Title}
-          </div>
-          <div className="window-header-sub-title">
-            {Locale.Settings.SubTitle}
-          </div>
-        </div>
-        <div className="window-actions">
-          <div className="window-action-button"></div>
-          <div className="window-action-button"></div>
-          <div className="window-action-button">
-            <IconButton
-              icon={<CloseIcon />}
-              onClick={() => navigate(Path.Home)}
-              bordered
-            />
-          </div>
+    <div className="window-header">
+      <div className="window-header-title">
+        <div className="window-header-main-title">{Locale.Settings.Title}</div>
+        <div className="window-header-sub-title">
+          {Locale.Settings.SubTitle}
         </div>
       </div>
+      <div className="window-actions">
+        <div className="window-action-button"></div>
+        <div className="window-action-button"></div>
+        <div className="window-action-button">
+          <IconButton
+            icon={<CloseIcon />}
+            onClick={() => navigate(Path.Home)}
+            bordered
+          />
+        </div>
+      </div>
+
       <div className={styles["settings"]}>
         <List>
           <ModelConfigList />
-        </List>
-
-        <List>
-          <ListItem
-            title={Locale.Settings.InjectSystemPrompts.Title}
-            subTitle={Locale.Settings.InjectSystemPrompts.SubTitle}
-          >
-            <input
-              type="checkbox"
-              checked={config.enableInjectSystemPrompts}
-              onChange={(e) =>
-                config.update(
-                  (config) =>
-                    (config.enableInjectSystemPrompts =
-                      e.currentTarget.checked),
-                )
-              }
-            ></input>
-          </ListItem>
-          <ListItem
-            title={Locale.Settings.InputTemplate.Title}
-            subTitle={Locale.Settings.InputTemplate.SubTitle}
-          >
-            <input
-              type="text"
-              value={config.template}
-              onChange={(e) =>
-                config.update(
-                  (config) => (config.template = e.currentTarget.value),
-                )
-              }
-            ></input>
-          </ListItem>
-          <ListItem
-            title={Locale.Settings.HistoryCount.Title}
-            subTitle={Locale.Settings.HistoryCount.SubTitle}
-          >
-            <InputRange
-              title={config.historyMessageCount.toString()}
-              value={config.historyMessageCount}
-              min="0"
-              max="64"
-              step="1"
-              onChange={(e) =>
-                config.update(
-                  (config) =>
-                    (config.historyMessageCount = e.target.valueAsNumber),
-                )
-              }
-            ></InputRange>
-          </ListItem>
-          <ListItem
-            title={Locale.Settings.CompressThreshold.Title}
-            subTitle={Locale.Settings.CompressThreshold.SubTitle}
-          >
-            <input
-              type="number"
-              min={500}
-              max={4000}
-              value={config.compressMessageLengthThreshold}
-              onChange={(e) =>
-                config.update(
-                  (config) =>
-                    (config.compressMessageLengthThreshold =
-                      e.currentTarget.valueAsNumber),
-                )
-              }
-            ></input>
-          </ListItem>
-          <ListItem title={Locale.Memory.Title} subTitle={Locale.Memory.Send}>
-            <input
-              type="checkbox"
-              checked={config.sendMemory}
-              onChange={(e) =>
-                config.update(
-                  (config) => (config.sendMemory = e.currentTarget.checked),
-                )
-              }
-            ></input>
-          </ListItem>
         </List>
 
         <List>
@@ -566,21 +137,6 @@ export function Settings() {
             </Select>
           </ListItem>
 
-          <ListItem title={Locale.Settings.Lang.Name}>
-            <Select
-              value={getLang()}
-              onChange={(e) => {
-                changeLang(e.target.value as any);
-              }}
-            >
-              {AllLangs.map((lang) => (
-                <option value={lang} key={lang}>
-                  {ALL_LANG_OPTIONS[lang]}
-                </option>
-              ))}
-            </Select>
-          </ListItem>
-
           <ListItem
             title={Locale.Settings.FontSize.Title}
             subTitle={Locale.Settings.FontSize.SubTitle}
@@ -601,95 +157,42 @@ export function Settings() {
           </ListItem>
 
           <ListItem
-            title={Locale.Settings.AutoGenerateTitle.Title}
-            subTitle={Locale.Settings.AutoGenerateTitle.SubTitle}
+            title={Locale.Settings.HistoryCount.Title}
+            subTitle={Locale.Settings.HistoryCount.SubTitle}
           >
+            <InputRange
+              title={config.historyMessageCount.toString()}
+              value={config.historyMessageCount}
+              min="0"
+              max="64"
+              step="1"
+              onChange={(e) =>
+                config.update(
+                  (config) =>
+                    (config.historyMessageCount = e.target.valueAsNumber),
+                )
+              }
+            ></InputRange>
+          </ListItem>
+
+          <ListItem title={Locale.Memory.Title} subTitle={Locale.Memory.Send}>
             <input
               type="checkbox"
-              checked={config.enableAutoGenerateTitle}
+              checked={config.sendMemory}
               onChange={(e) =>
-                updateConfig(
-                  (config) =>
-                    (config.enableAutoGenerateTitle = e.currentTarget.checked),
+                config.update(
+                  (config) => (config.sendMemory = e.currentTarget.checked),
                 )
               }
             ></input>
           </ListItem>
 
-          <ListItem
-            title={Locale.Settings.SendPreviewBubble.Title}
-            subTitle={Locale.Settings.SendPreviewBubble.SubTitle}
-          >
-            <input
-              type="checkbox"
-              checked={config.sendPreviewBubble}
-              onChange={(e) =>
-                updateConfig(
-                  (config) =>
-                    (config.sendPreviewBubble = e.currentTarget.checked),
-                )
-              }
-            ></input>
-          </ListItem>
-        </List>
-
-        <List>
-          <ListItem
-            title={Locale.Settings.Template.Builtin.Title}
-            subTitle={Locale.Settings.Template.Builtin.SubTitle}
-          >
-            <input
-              type="checkbox"
-              checked={config.hideBuiltinTemplates}
-              onChange={(e) =>
-                updateConfig(
-                  (config) =>
-                    (config.hideBuiltinTemplates = e.currentTarget.checked),
-                )
-              }
-            ></input>
-          </ListItem>
-        </List>
-
-        <List>
-          <ListItem
-            title={Locale.Settings.Prompt.Disable.Title}
-            subTitle={Locale.Settings.Prompt.Disable.SubTitle}
-          >
-            <input
-              type="checkbox"
-              checked={config.disablePromptHint}
-              onChange={(e) =>
-                updateConfig(
-                  (config) =>
-                    (config.disablePromptHint = e.currentTarget.checked),
-                )
-              }
-            ></input>
-          </ListItem>
-
-          <ListItem
-            title={Locale.Settings.Prompt.List}
-            subTitle={Locale.Settings.Prompt.ListCount(
-              builtinCount,
-              customCount,
-            )}
-          >
-            <IconButton
-              icon={<EditIcon />}
-              text={Locale.Settings.Prompt.Edit}
-              onClick={() => setShowPromptModal(true)}
-            />
-          </ListItem>
-        </List>
-
-        <List id={SlotID.CustomModel}>
           <ListItem
             title={Locale.Settings.CacheType.Title}
             subTitle={Locale.Settings.CacheType.SubTitle}
           >
             <Select
-              value="cache"
+              value={config.cacheType}
               onChange={(e) => {
                 updateConfig(
                   (config) =>
@@ -706,37 +209,10 @@ export function Settings() {
               </option>
             </Select>
           </ListItem>
-          <ListItem
-            title={Locale.Settings.LogLevel.Title}
-            subTitle={Locale.Settings.LogLevel.SubTitle}
-          >
-            <InputRange
-              title={config.logLevel}
-              value={LOG_LEVELS[config.logLevel]}
-              min={`${Math.min(...Object.values(LOG_LEVELS))}`}
-              max={`${Math.max(...Object.values(LOG_LEVELS))}`}
-              step="1"
-              onChange={(e) => {
-                const logLevel = Object.entries(LOG_LEVELS).find(
-                  ([_, value]) => value === parseInt(e.target.value),
-                )?.[0] as LogLevel;
-
-                webllm?.webllm.engine.setLogLevel(logLevel);
-                log.setLevel(logLevel);
-                updateConfig((config) => (config.logLevel = logLevel));
-              }}
-            ></InputRange>
-          </ListItem>
         </List>
-
-        {shouldShowPromptModal && (
-          <UserPromptModal onClose={() => setShowPromptModal(false)} />
-        )}
-
-        <GithubSyncSection />
 
         <DangerItems />
       </div>
-    </ErrorBoundary>
+    </div>
   );
 }

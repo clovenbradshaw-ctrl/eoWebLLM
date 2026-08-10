@@ -3,7 +3,6 @@ import { useEffect, useRef, useMemo } from "react";
 import styles from "./home.module.scss";
 
 import { IconButton } from "./button";
-import MlcIcon from "../icons/mlc.svg";
 import {
   CaretLeft,
   CaretRight,
@@ -14,6 +13,7 @@ import {
   GlobeSimple,
   Moon,
   Plus,
+  Sparkle,
   Sun,
   Trash,
 } from "@phosphor-icons/react";
@@ -183,8 +183,8 @@ export function SideBar(props: { className?: string }) {
           <div className={styles["sidebar-title"]}>{Locale.Title}</div>
           <div className={styles["sidebar-sub-title"]}>{Locale.Subtitle}</div>
         </div>
-        <div className={styles["sidebar-logo"] + " no-dark mlc-icon"}>
-          <MlcIcon />
+        <div className={styles["sidebar-logo"] + " no-dark"}>
+          <Sparkle size={22} weight="fill" />
         </div>
       </div>
 

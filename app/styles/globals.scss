@@ -14,11 +14,10 @@
   --hover-color: #f2efe8;
   --bar-color: #e0dace;
   --theme-color: var(--gray);
-  --mlc-icon-color: #1f5a4c;
 
   /* shadow */
-  --shadow: 0 20px 60px -24px rgba(38, 36, 31, 0.25);
-  --card-shadow: 0 1px 2px rgba(38, 36, 31, 0.06);
+  --shadow: 0 1px 2px rgba(38, 36, 31, 0.06), 0 8px 20px -8px rgba(38, 36, 31, 0.16), 0 28px 64px -32px rgba(38, 36, 31, 0.35);
+  --card-shadow: 0 1px 2px rgba(38, 36, 31, 0.08), 0 4px 10px -4px rgba(38, 36, 31, 0.14);
 
   /* stroke */
   --border-in-light: 1px solid #e0dace;
@@ -36,7 +35,6 @@
   --primary: #78b9a8;
   --second: #302d27;
   --hover-color: #37332c;
-  --mlc-icon-color: #ffffff;
 
   --bar-color: #595348;
 
@@ -97,8 +95,8 @@
 html {
   height: var(--full-height);
 
-  font-family: "Noto Sans", "SF Pro SC", "SF Pro Text", "SF Pro Icons",
-    "PingFang SC", "Helvetica Neue", "Helvetica", "Arial", sans-serif;
+  font-family: var(--font-instrument), "PingFang SC", "Helvetica Neue",
+    Helvetica, Arial, sans-serif;
 }
 
 body {
@@ -114,6 +112,17 @@ body {
   user-select: none;
   touch-action: pan-x pan-y;
   overflow: hidden;
+
+  background-image: radial-gradient(
+      ellipse 120% 80% at 50% -20%,
+      rgba(31, 90, 76, 0.06),
+      transparent 60%
+    ),
+    radial-gradient(
+      ellipse 100% 60% at 50% 120%,
+      rgba(38, 36, 31, 0.05),
+      transparent 60%
+    );
 
   @media only screen and (max-width: 600px) {
     background-color: var(--second);
