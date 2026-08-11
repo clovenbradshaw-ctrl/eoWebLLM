@@ -12,22 +12,23 @@
 import { useEffect, useRef, useState } from "react";
 import styles from "./citey.module.scss";
 
-export type CiteyStateName =
-  "voice" | "turnstile" | "entails" | "asserted" | "context";
+export type CiteyStateName = "turnstile" | "entails" | "asserted" | "context";
 
 const CITEY_STATES: Record<
   CiteyStateName,
   { glyph: string; color: string; eyes: [string, string] }
 > = {
-  voice: { glyph: "⊩", color: "#5A6472", eyes: ["r0c0", "r0c1"] }, // ⊩ talking, neutral
-  turnstile: { glyph: "⊢", color: "#7C74DE", eyes: ["r1c0", "r1c1"] }, // ⊢ reasoning / code
+  // ⊢ "entails / follows from" — the default, resting shape. It's the
+  // simplest glyph in the set (one stem, one arm) and the most fitting one
+  // for a mascot named after citing: it's the logic symbol for "this is
+  // backed by that."
+  turnstile: { glyph: "⊢", color: "#7C74DE", eyes: ["r1c0", "r1c1"] },
   entails: { glyph: "⊨", color: "#1F9E76", eyes: ["r2c6", "r2c7"] }, // ⊨ a strong claim
   asserted: { glyph: "⊢", color: "#2E8B86", eyes: ["r0c6", "r0c7"] }, // a list / structure
   context: { glyph: "⊪", color: "#4D7EA8", eyes: ["r0c2", "r0c3"] }, // ⊪ a question back
 };
 
 const BODY_PATHS: Record<string, string> = {
-  "⊩": "M48 40 L48 152 M48 80 L118 80 M48 116 L118 116",
   "⊢": "M48 40 L48 152 M48 96 L118 96",
   "⊨": "M40 40 L40 152 M64 40 L64 152 M64 96 L122 96",
   "⊪": "M34 40 L34 152 M56 40 L56 152 M78 40 L78 152 M78 96 L122 96",
@@ -45,7 +46,7 @@ function pickState(text: string): CiteyStateName {
     /\b(always|never|must|proven|definitely)\b/i.test(tail)
   )
     return "entails";
-  return "voice";
+  return "turnstile";
 }
 
 const EYE_BASE = `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/citey-eyes/`;
@@ -55,7 +56,7 @@ const EYE_BASE = `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/citey-eyes/`;
 // change reads as a deliberate morph instead of a flicker.
 export function CiteySprite(props: { text: string; size?: number }) {
   const size = props.size ?? 48;
-  const [state, setState] = useState<CiteyStateName>("voice");
+  const [state, setState] = useState<CiteyStateName>("turnstile");
   const lastSample = useRef(0);
 
   useEffect(() => {
