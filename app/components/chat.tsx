@@ -871,7 +871,9 @@ export function ChatActions(props: {
 // warrant, ...), styled like Claude's extended-thinking display: a small
 // clock while the step is still running, a checkmark + "Done" once it has
 // resolved, and an italic muted-gray body so the trace reads as scratch
-// work rather than part of the answer.
+// work rather than part of the answer. Collapsed, this must stay a plain
+// line of text with no box around it (LAWS.md L1) — the border/indent live
+// only on the opened body in chat.module.scss's .trace-panel rules.
 function TracePanel(props: {
   label: React.ReactNode;
   running: boolean;
