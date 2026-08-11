@@ -1,0 +1,175 @@
+.project-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.project-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 16px 0;
+}
+
+.project-title {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.project-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-open-latest {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: var(--border-in-light);
+  border-radius: 8px;
+  background: var(--white);
+  color: var(--black);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.project-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 14px 16px 0;
+  border-bottom: var(--border-in-light);
+}
+
+.project-tab {
+  padding: 8px 14px;
+  border: none;
+  background: none;
+  color: var(--light-gray);
+  font-size: 13px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+
+  &.active {
+    color: var(--black);
+    border-bottom-color: var(--primary);
+    font-weight: 600;
+  }
+}
+
+.project-tab-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+// ── Chats tab ────────────────────────────────────────────────────────────
+.project-chats {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+}
+
+.project-chats-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.project-new-chat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: var(--border-in-light);
+  border-radius: 8px;
+  background: var(--second);
+  color: var(--black);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.project-chat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.project-chat-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px;
+  border: var(--border-in-light);
+  border-radius: 8px;
+  cursor: pointer;
+
+  &:hover { background: var(--second); }
+}
+
+.project-chat-item-title {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-chat-item-meta {
+  flex-shrink: 0;
+  color: var(--light-gray);
+  font-size: 10px;
+}
+
+.project-chats-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--light-gray);
+  font-size: 13px;
+  border: var(--border-in-light);
+  border-radius: 10px;
+}
+
+// ── Instructions tab ─────────────────────────────────────────────────────
+.project-instructions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  height: 100%;
+}
+
+.project-instructions-note {
+  color: var(--light-gray);
+  font-size: 12px;
+}
+
+.project-instructions-textarea {
+  flex: 1;
+  min-height: 260px;
+  resize: vertical;
+  padding: 12px;
+  border: var(--border-in-light);
+  border-radius: 8px;
+  font-family: var(--font-plex-mono), "SF Mono", "Fira Code", Consolas, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--white);
+  color: var(--black);
+}
+
+.project-instructions-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  color: var(--light-gray);
+  font-size: 11px;
+}
+
+.project-instructions-summary strong {
+  color: var(--black);
+}

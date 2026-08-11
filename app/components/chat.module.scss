@@ -306,6 +306,23 @@
   height: 100%;
 }
 
+// Wraps chat-body + chat-input-panel as one shrinkable column, with the
+// docked terrain panel as its flex sibling — so opening the panel visibly
+// narrows the whole chat column (messages AND the input bar together),
+// rather than floating over it the way .eot-panel/.source-panel do.
+.chat-main-row {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.chat-main-column {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
 .chat-body {
   flex: 1;
   overflow: auto;
@@ -315,6 +332,326 @@
   position: relative;
   overscroll-behavior: none;
 }
+
+// ── Terrain panel ─────────────────────────────────────────────────────────
+// Docked, resizable, light-theme — see docs/citey-structured-grounding.md.
+// Deliberately NOT .eot-panel's full-overlay dark terminal below: this is
+// the consumer-facing surface, .eot-panel stays the dev-only debug one.
+// Visual grammar (warn = tan/refusal-or-gap-state, callout = dashed-blue/
+// live-annotation) matches the low-fi wireframe pass this was built from.
+
+.terrain-panel-drag {
+  width: 6px;
+  flex: 0 0 auto;
+  cursor: col-resize;
+  &:hover {
+    background: var(--second);
+  }
+}
+
+.terrain-panel {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-left: var(--border-in-light);
+  background: var(--white);
+}
+
+.terrain-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 10px 6px;
+  border-bottom: var(--border-in-light);
+}
+
+.terrain-panel-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.terrain-panel-forward {
+  transform: scaleX(-1);
+}
+
+.terrain-panel-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 8px 10px;
+  border-bottom: var(--border-in-light);
+}
+
+.terrain-tab {
+  flex: 1 0 auto;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--black);
+  opacity: 0.6;
+  border: var(--border-in-light);
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: center;
+  white-space: nowrap;
+
+  &:hover {
+    opacity: 0.85;
+  }
+}
+
+.terrain-tab-active {
+  opacity: 1;
+  font-weight: 600;
+  background: var(--second);
+  border-color: var(--primary);
+}
+
+.terrain-tab-gap {
+  font-style: italic;
+}
+
+.terrain-panel-body {
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+}
+
+.terrain-panel-empty {
+  color: var(--black);
+  opacity: 0.6;
+  font-size: 12.5px;
+  padding: 6px 0;
+}
+
+.terrain-search {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+  border: var(--border-in-light);
+  border-radius: 6px;
+  background: var(--white);
+  color: var(--black);
+}
+
+.terrain-card {
+  font-size: 13px;
+}
+
+.terrain-card-head {
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: var(--border-in-light);
+}
+
+.terrain-card-title {
+  font-weight: 700;
+  font-size: 14px;
+  word-break: break-word;
+}
+
+.terrain-card-subhead {
+  font-weight: 600;
+  opacity: 0.7;
+  font-size: 12px;
+  margin: 8px 0 4px;
+}
+
+.terrain-kv-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12.5px;
+
+  span:first-child {
+    opacity: 0.6;
+  }
+}
+
+.terrain-divider {
+  border-top: var(--border-in-light);
+  margin: 10px 0;
+}
+
+// dashed-blue — a live/interactive annotation, not a warning
+.terrain-callout {
+  border: 1px dashed var(--primary);
+  background: var(--second);
+  color: var(--primary);
+  font-size: 11.5px;
+  line-height: 1.4;
+  padding: 6px 8px;
+  border-radius: 4px;
+  margin: 8px 0;
+}
+
+// tan — a refusal, gap, or "not authoritative" state, distinct from callout
+.terrain-warn {
+  border: 1px solid #b98b3e;
+  background: #f6efe0;
+  color: #8a6420;
+  font-size: 11.5px;
+  line-height: 1.4;
+  padding: 6px 8px;
+  border-radius: 4px;
+  margin: 8px 0;
+}
+
+.terrain-hint {
+  opacity: 0.55;
+  font-size: 10.5px;
+  cursor: help;
+}
+
+.terrain-edge-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.terrain-edge-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 6px;
+  font-size: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--second);
+  }
+}
+
+.terrain-edge-weight {
+  opacity: 0.55;
+  flex: 0 0 auto;
+}
+
+.terrain-graph-stats {
+  font-size: 11px;
+  opacity: 0.6;
+  margin-top: 6px;
+}
+
+.terrain-network-canvas {
+  width: 100%;
+  height: 220px;
+  border: var(--border-in-light);
+  border-radius: 6px;
+  background: var(--white);
+}
+
+.terrain-network-edge {
+  stroke: var(--border-color, #999);
+  stroke-width: 1;
+  opacity: 0.6;
+}
+
+.terrain-network-node {
+  cursor: pointer;
+
+  circle {
+    fill: var(--second);
+    stroke: var(--primary);
+    stroke-width: 1;
+  }
+  text {
+    font-size: 8px;
+    fill: var(--black);
+  }
+  &:hover circle {
+    fill: var(--primary);
+  }
+}
+
+.terrain-shift-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.terrain-shift {
+  font-size: 11.5px;
+  padding: 4px 0;
+  border-bottom: var(--border-in-light);
+}
+
+.terrain-shift-at {
+  font-weight: 600;
+}
+
+.terrain-shift-rezero {
+  color: var(--primary);
+}
+
+.terrain-shift-censored {
+  color: #8a6420;
+}
+
+.terrain-shift-forms {
+  opacity: 0.6;
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.terrain-link-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 13px;
+  text-align: center;
+}
+
+.terrain-link-node {
+  cursor: pointer;
+  font-weight: 600;
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
+.terrain-link-verb {
+  opacity: 0.6;
+  font-size: 11px;
+}
+
+.terrain-link-lens-cta {
+  text-align: center;
+  padding: 6px 8px;
+  font-size: 12px;
+  border-radius: 4px;
+  border: var(--border-in-light);
+  cursor: pointer;
+}
+
+.terrain-disabled-cta {
+  opacity: 0.55;
+}
+
+.terrain-field-span {
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 60vh;
+  overflow: auto;
+
+  mark {
+    background: var(--second);
+    color: var(--black);
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px var(--primary);
+  }
+}
+
+// ── EOT dev panel (unchanged below) ─────────────────────────────────────
 
 .eot-panel {
   position: absolute;

@@ -50,3 +50,8 @@ public/sw.js
 public/workbox-*.js
 public/workbox-*.js.map
 public/worker-*.js
+
+# local tool artifacts / working notes, not app code
+.claude/
+.next-stress/
+research/

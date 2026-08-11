@@ -104,3 +104,34 @@ export async function reReadSource(
   await persistSourceLedger(id, result.log);
   return { ...result, isFirstRead: existing === null };
 }
+
+/**
+ * A breakdown of the ledger's own contents, straight from log.events --
+ * the append-only record, not the folded projection. Every event type
+ * this pipeline mints (SEG.narrow/confirm/revise/refuse) is counted, so
+ * the source panel can show what the ledger actually holds rather than a
+ * single "revisions" number. Shared by eo-source-ingest.ts (first read)
+ * and chat.tsx's rereadSource (subsequent reads) so both compute it the
+ * same way.
+ */
+export function ledgerStats(log: { events: any[]; tick: number }): {
+  cursor: number;
+  narrowCount: number;
+  confirmCount: number;
+  revisionCount: number;
+  refuseCount: number;
+} {
+  const counts = {
+    narrowCount: 0,
+    confirmCount: 0,
+    revisionCount: 0,
+    refuseCount: 0,
+  };
+  for (const e of log.events) {
+    if (e.type === "SEG.narrow") counts.narrowCount++;
+    else if (e.type === "SEG.confirm") counts.confirmCount++;
+    else if (e.type === "SEG.revise") counts.revisionCount++;
+    else if (e.type === "SEG.refuse") counts.refuseCount++;
+  }
+  return { cursor: log.tick, ...counts };
+}

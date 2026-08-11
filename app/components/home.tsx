@@ -61,6 +61,13 @@ const TemplatePage = dynamic(
   },
 );
 
+const ProjectPage = dynamic(
+  async () => (await import("./project")).ProjectPage,
+  {
+    loading: () => <Loading noLogo />,
+  },
+);
+
 export function useSwitchTheme() {
   const config = useAppConfig();
 
@@ -149,6 +156,7 @@ function Screen() {
             <Route path={Path.Templates} element={<TemplatePage />} />
             <Route path={Path.Chat} element={<Chat />} />
             <Route path={Path.Settings} element={<Settings />} />
+            <Route path={Path.Project} element={<ProjectPage />} />
           </Routes>
         </div>
       </>

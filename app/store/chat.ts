@@ -32,6 +32,7 @@ import {
 } from "../client/eo-discourse";
 import { createInstructionGate, countTokens } from "../client/eo-gate";
 import { getInstructionFolds } from "../client/eo-instructions";
+import { compileProjectInstructionFolds } from "../client/eo-project-instructions";
 import {
   webSearch,
   formatWebSearchBlock,
@@ -59,14 +60,23 @@ import {
 } from "../client/eo-math-check";
 import {
   checkGrounding,
-  annotateVoids,
   snipCitations,
   splitSentences,
   countClaimAtoms,
   type CitationEntry,
   type GroundingReport,
+  type GroundingFinding,
   type Snippet,
 } from "../client/eo-citation-check";
+import {
+  buildGroundingSpans,
+  type GroundingSpan,
+} from "../client/eo-grounding-spans";
+import {
+  resolveSpans,
+  type ClaimVerdict,
+  type ClaimSpan,
+} from "../client/eo-revision";
 import {
   applyTurn,
   buildMemoryMessage,
@@ -74,6 +84,12 @@ import {
   isAcknowledgment,
   type ConversationMemory,
 } from "../client/eo-memory";
+import {
+  restoreConversationMind,
+  recordTurn as recordMindTurn,
+  recordGroundingFindings,
+  type ConversationMind,
+} from "../client/eo-conversation-mind";
 import {
   retrieveCorpus,
   retrieveCorpusDeliberate,
@@ -85,15 +101,16 @@ import {
   type EoSource,
 } from "../client/eo-corpus";
 import {
-  isHypergraphHydrated,
   ensureHypergraphHydrated,
   admitHypergraphTurn,
   navigateHypergraph,
   hasHypergraphSignal,
   describeHypergraphNavigation,
+  describeHypergraphMovement,
   draftHypergraphThought,
   buildHypergraphThoughtBlock,
   queryUserFacts,
+  hypergraphScopeId,
 } from "../client/eo-hypergraph";
 import { buildSelfFactsBlock } from "../client/eo-self-facts";
 import {
@@ -146,6 +163,19 @@ export type ChatMessage = RequestMessage & {
   // shown to the model, computed after generation, same seam as eochat's
   // checkGrounding.
   groundingReport?: GroundingReport;
+  // Citey's per-sentence grounding layer (see eo-grounding-spans.ts): one
+  // entry per sentence that carries a checkable claim, kept live during
+  // streaming and finalized/resolved after. Separate from groundingReport
+  // above (a whole-turn summary) — this is span-addressed, for a per-claim
+  // affordance rather than a single end-of-message verdict.
+  groundingSpans?: GroundingSpan[];
+  // The exact citations `groundingSpans` above was checked against —
+  // persisted so a "sourced" span's supportingCitationIndexes can resolve
+  // back to a real source_id (a corpus "name#start-end" ref, or a web URL)
+  // at render time, without re-deriving or re-searching anything. Set once,
+  // at the same point groundingSpans is finalized against the settled
+  // message (not the live per-chunk one) — see the onFinish call site.
+  groundingCitations?: CitationEntry[];
   // Per-result "snip" (see eo-citation-check.ts): the one clause of each
   // search result that actually overlaps the reply's own words, so the
   // panel can show the exact sentence that grounded the answer instead of
@@ -297,6 +327,15 @@ export interface ChatSession {
   // EO_HISTORY_TURNS and the PAST DISCOURSE fold has paraphrased it away.
   eoMemory?: ConversationMemory;
 
+  // The append-only cross-turn mind (see app/client/eo-conversation-mind.ts,
+  // ported from eochat's conversation-holon.js, wired onto the re-earned
+  // @eoreader/engine/holon/task-log). NOT eo-task-controller.ts's per-turn
+  // plan, which is created and discarded within one response — this is what
+  // persists: a claim this conversation could not settle at turn 3 is still
+  // owed at turn 20, held here rather than lost when it scrolls out of
+  // EO_HISTORY_TURNS the way eoMemory's desk cannot lose it either.
+  eoMind?: ConversationMind;
+
   // Which project (see Project below) this session belongs to, if any. A
   // session with no projectId behaves exactly as it always has -- projects
   // are purely additive grouping, never a required concept.
@@ -319,6 +358,20 @@ export interface Project {
   id: string;
   name: string;
   createdAt: number;
+  // Raw, verbatim, reader-authored standing instructions for this project.
+  // Segmented (never rewritten) into gate folds by
+  // eo-project-instructions.ts and surfaced per turn the same way the
+  // built-in instruction set is -- see eoBuildProjectInstructionBlock.
+  instructions?: string;
+  instructionsUpdatedAt?: number;
+
+  // The EOT log for every session sharing this project (see
+  // hypergraphScopeId, eo-hypergraph.ts): a project's chats share one
+  // hypergraph reading, so they share one admission/navigation log too --
+  // the same "shared knowledge base" principle projectSources already
+  // implements for source bytes, applied to the terminal. A session with
+  // no projectId keeps using its own ChatSession.eoLog, unchanged.
+  eoLog?: EoLogEntry[];
 }
 
 // The union of every source enabled anywhere in a project, deduped by
@@ -432,6 +485,76 @@ function eoRunBackground(
   });
 }
 
+// The judge for eo-revision.ts's post-display pass: given one flagged claim
+// and the top snippet a targeted search turned up for it, ask the model
+// whether the snippet actually disagrees with the claim (worth striking
+// through and correcting) or just doesn't speak to it (leave as a soft
+// gap, not an error). A model grading its own draft is not a check — this
+// grades the draft against outside text it did not write, the same
+// separation eo-citation-check.ts's own comments insist on.
+async function eoJudgeClaim(
+  llm: LLMApi,
+  modelConfig: ModelConfig,
+  atom: string,
+  sentence: string,
+  snippet: string,
+): Promise<{ verdict: ClaimVerdict; correction?: string }> {
+  const raw = await eoRunBackground(
+    llm,
+    [
+      createMessage({
+        role: "system",
+        content:
+          'You check ONE specific fact against one search snippet. Reply with ONLY compact JSON, no prose: {"verdict":"confirmed"|"contradicted"|"unrelated","correction":"..."}. The FACT is the only thing being judged — the SENTENCE is just surrounding context, do not judge other parts of it. Use "contradicted" ONLY when the snippet is clearly about that same fact and clearly gives a different number, date, or name for it — then set "correction" to the correct fact in one short sentence. Use "confirmed" when the snippet supports the fact. Use "unrelated" when the snippet does not address the fact either way (this is the default when unsure).',
+      }),
+      createMessage({
+        role: "user",
+        content: `FACT TO CHECK: ${atom}\n\nSENTENCE (context only): ${sentence}\n\nSNIPPET: ${snippet}`,
+      }),
+    ],
+    {
+      model: modelConfig.model,
+      cache: useAppConfig.getState().cacheType,
+      stream: false,
+      // Forced low regardless of the chat's own temperature/top_p — this is
+      // a yes/no classification against a fixed snippet, not open-ended
+      // generation. Verified live: at the chat's default temperature (1.0),
+      // a small local model occasionally invents a "contradicted" verdict
+      // with a fabricated correction over a claim the snippet actually
+      // confirms — sampling noise turning a correct answer into a wrong
+      // one, which is worse than never having checked at all. Ten replays
+      // of one real "1889" vs. a Wikipedia snippet at temperature 1.0
+      // produced "confirmed" nine times and one fabricated "contradicted
+      // ...1901" — reproduced from an actual run of this feature, not a
+      // hypothetical.
+      temperature: 0.1,
+      top_p: 0.1,
+    },
+    EO_ROUTER_TIMEOUT_MS,
+  );
+  try {
+    const parsed = JSON.parse(
+      raw
+        .trim()
+        .replace(/^```(?:json)?/i, "")
+        .replace(/```$/, "")
+        .trim(),
+    );
+    const verdict: ClaimVerdict = (
+      ["confirmed", "contradicted", "unrelated"] as const
+    ).includes(parsed?.verdict)
+      ? parsed.verdict
+      : "unrelated";
+    return {
+      verdict,
+      correction:
+        typeof parsed?.correction === "string" ? parsed.correction : undefined,
+    };
+  } catch {
+    return { verdict: "unrelated" };
+  }
+}
+
 // surf: build the RULES IN FORCE block for the current turn from the eochat
 // instruction set, keyword-surfaced against the question + recent history.
 // Returns the log line alongside the block so the EOT panel can show exactly
@@ -493,6 +616,92 @@ function eoBuildInstructionBlock(
     return {
       systemMessage: null,
       logText: `surf: instruction gate failed — ${(err as Error).message}`,
+      stats: NO_GATE,
+    };
+  }
+}
+
+// Compiling a project's instructions into folds re-segments the whole text
+// (heading split, signal derivation, the budget-fit loop) -- real work that
+// does not change between turns of the same conversation, only when the
+// reader actually edits the project's instructions. Cached per project id,
+// keyed also on the instructions' own length + a cheap content fingerprint
+// so an edit invalidates the cache without needing an explicit bust call.
+const projectFoldsCache = new Map<
+  string,
+  {
+    key: string;
+    folds: ReturnType<typeof compileProjectInstructionFolds>["folds"];
+  }
+>();
+
+function getProjectInstructionFolds(project: Project) {
+  const text = project.instructions ?? "";
+  const key = `${text.length}:${text.slice(0, 64)}`;
+  const cached = projectFoldsCache.get(project.id);
+  if (cached && cached.key === key) return cached.folds;
+  const { folds } = compileProjectInstructionFolds(text);
+  projectFoldsCache.set(project.id, { key, folds });
+  return folds;
+}
+
+// surf: the same mechanism as eoBuildInstructionBlock above, but over a
+// project's own reader-authored instructions (see eo-project-instructions.ts)
+// rather than the built-in rulebook. Unlike the built-in rules -- which are
+// deliberately withheld from the visible generation turn and only checked
+// against the finished draft in the System-2 pass (see withRulesInForce
+// below) -- a project's instructions are meant to shape the answer as it is
+// written, so this block is pushed into the primary turn itself (see
+// getMessagesWithMemory) rather than only logged.
+function eoBuildProjectInstructionBlock(
+  question: string,
+  session: ChatSession,
+  project: Project | undefined,
+  clearContextIndex: number,
+  opts: { mode?: ThinkingSystem; claims?: string[] } = {},
+): EoGateOutcome {
+  try {
+    if (!project || !project.instructions?.trim()) {
+      return { systemMessage: null, logText: null, stats: NO_GATE };
+    }
+    const folds = getProjectInstructionFolds(project);
+    if (!folds.length) {
+      return { systemMessage: null, logText: null, stats: NO_GATE };
+    }
+    const history = getRecentUserQuestions(session, clearContextIndex, 3);
+    const report = createInstructionGate(folds).gate({
+      question,
+      history,
+      mode: opts.mode,
+      claims: opts.claims,
+      label: "PROJECT INSTRUCTIONS THIS TURN",
+    });
+    const s = report.stats;
+    const logText =
+      `surf(project,${s.mode}): ${s.active} active fold(s) [${report.activeIds.join(", ")}], ` +
+      `${s.folded} folded, gap=${s.gap}, ` +
+      `${s.usedTokens}/${s.budget} tokens` +
+      (s.unfoldedIds.length
+        ? `, unfolded [${s.unfoldedIds.join(", ")}] against a ${s.ceiling} ceiling`
+        : "") +
+      (s.rejectedByBudget
+        ? `, ${s.rejectedByBudget} matched but did not fit [${s.crowdedOutIds.join(", ")}]`
+        : "");
+    return {
+      systemMessage: report.systemMessage || null,
+      logText,
+      stats: {
+        active: s.active,
+        folded: s.folded,
+        crowdedOut: s.rejectedByBudget,
+        gap: s.gap,
+      },
+    };
+  } catch (err) {
+    log.warn("[eo] project instruction gate failed:", err);
+    return {
+      systemMessage: null,
+      logText: `surf: project instruction gate failed — ${(err as Error).message}`,
       stats: NO_GATE,
     };
   }
@@ -1046,6 +1255,11 @@ const DEFAULT_CHAT_STATE = {
   sessions: [createEmptySession()],
   currentSessionIndex: 0,
   projects: [] as Project[],
+  // Which project the Project page (project.tsx) is showing, if any --
+  // this app has no per-entity URLs (Chat itself is just "whatever
+  // currentSessionIndex points at"), so this is the same store-driven
+  // navigation pattern applied to a project instead of a session.
+  currentProjectId: null as string | null,
 };
 
 export const useChatStore = createPersistStore(
@@ -1124,6 +1338,20 @@ export const useChatStore = createPersistStore(
         set((state) => ({
           projects: state.projects.map((p) =>
             p.id === id ? { ...p, name } : p,
+          ),
+        }));
+      },
+
+      setCurrentProjectId(id: string | null) {
+        set(() => ({ currentProjectId: id }));
+      },
+
+      updateProjectInstructions(id: string, text: string) {
+        set((state) => ({
+          projects: state.projects.map((p) =>
+            p.id === id
+              ? { ...p, instructions: text, instructionsUpdatedAt: Date.now() }
+              : p,
           ),
         }));
       },
@@ -1215,14 +1443,76 @@ export const useChatStore = createPersistStore(
       },
 
       pushEoLog(kind: EoLogKind, text: string) {
+        const entry: EoLogEntry = {
+          id: nanoid(),
+          ts: Date.now(),
+          kind,
+          text,
+        };
+        const session = get().sessions[get().currentSessionIndex];
+        // A project-scoped session shares its EOT log with every other
+        // session in the project (hypergraphScopeId's own reasoning,
+        // applied to the log, not only the graph/tiers) -- write to the
+        // PROJECT, not the session, so opening a sibling chat sees the same
+        // history rather than a silently different one.
+        if (session?.projectId) {
+          const projectId = session.projectId;
+          set((state) => ({
+            projects: state.projects.map((p) =>
+              p.id === projectId
+                ? {
+                    ...p,
+                    eoLog: [...(p.eoLog ?? []), entry].slice(-EO_LOG_MAX),
+                  }
+                : p,
+            ),
+          }));
+          return;
+        }
         get().updateCurrentSession((session) => {
-          const entry: EoLogEntry = {
-            id: nanoid(),
-            ts: Date.now(),
-            kind,
-            text,
-          };
           session.eoLog = [...(session.eoLog ?? []), entry].slice(-EO_LOG_MAX);
+        });
+      },
+
+      /** The EOT log a session should actually display -- the project's
+       *  shared log when it has one, else the session's own. Every reader
+       *  of eoLog (chat.tsx's terminal panel) should go through this, not
+       *  `session.eoLog` directly, or a project's chats read divergent
+       *  histories despite sharing one hypergraph. */
+      sessionEoLog(session: ChatSession): EoLogEntry[] {
+        if (session.projectId) {
+          const project = get().projects.find(
+            (p) => p.id === session.projectId,
+          );
+          return project?.eoLog ?? [];
+        }
+        return session.eoLog ?? [];
+      },
+
+      // See app/client/eo-conversation-mind.ts's own header: eoLog (above) is
+      // a human-readable audit trail — its warrant/hypergraph lines are
+      // STRINGS, a summary of a turn's structured state that does not survive
+      // the turn. This is the structured, foldable state itself: whether this
+      // turn continues an existing thread (shared source ids, existence-
+      // dependency), and any claim it made that none of its checked sources
+      // actually support, held as an open, addressable refusal rather than
+      // compressed into a line only a human re-reads.
+      recordEoMindTurn(messageId: string, sourceIds: string[]) {
+        get().updateCurrentSession((session) => {
+          let mind = restoreConversationMind(session.eoMind ?? null);
+          mind = recordMindTurn(mind, { messageId, sourceIds }).mind;
+          session.eoMind = mind;
+        });
+      },
+
+      recordEoMindGrounding(messageId: string, findings: GroundingFinding[]) {
+        if (!findings.length) return;
+        get().updateCurrentSession((session) => {
+          const mind = restoreConversationMind(session.eoMind ?? null);
+          session.eoMind = recordGroundingFindings(mind, {
+            messageId,
+            findings,
+          });
         });
       },
 
@@ -1300,6 +1590,22 @@ export const useChatStore = createPersistStore(
         });
       },
 
+      // Same as registerEoSource, but for callers that are not necessarily
+      // looking at the target session (e.g. the project document explorer,
+      // which registers an upload onto a project's latest session while the
+      // reader may be viewing a different session or no session at all).
+      registerEoSourceForSession(sessionId: string, source: EoSource) {
+        get().update((state) => {
+          const session = state.sessions.find((s) => s.id === sessionId);
+          if (!session) return;
+          const existing = session.eoSources ?? [];
+          session.eoSources = [
+            ...existing.filter((s) => s.id !== source.id),
+            source,
+          ];
+        });
+      },
+
       recordSourceLedger(sourceId: string, readLedger: EoSource["readLedger"]) {
         get().updateEoSource(sourceId, (s) => ({ ...s, readLedger }));
       },
@@ -1334,6 +1640,20 @@ export const useChatStore = createPersistStore(
         llm: LLMApi,
         attachImages?: ChatImage[],
       ) {
+        // Defense in depth, not the primary guard: chat.tsx's onSubmit is
+        // expected to keep a second call from ever reaching here (see its
+        // own isStreaming/isGenerating check), but this store method has no
+        // caller of its own to verify that — a future call site (a retry
+        // button, a keyboard shortcut, a test) could skip it. A turn already
+        // in flight, including its background live-check tail (see
+        // `session.isGenerating` held true there), must never be allowed to
+        // share mutable module state with a second one — a real run of the
+        // live fact-check feature corrupted a message exactly this way.
+        if (get().currentSession().isGenerating) {
+          log.warn("[User Input] dropped — a turn is already in flight");
+          return;
+        }
+
         const modelConfig = useAppConfig.getState().modelConfig;
 
         const userContent = fillTemplateWith(content, useAppConfig.getState());
@@ -1610,32 +1930,45 @@ export const useChatStore = createPersistStore(
         let hypergraphThoughtDrafted = false;
         if (userContent.trim()) {
           try {
-            if (!isHypergraphHydrated(session0.id)) {
-              const hydrateSources: { id: string; text: string }[] = [];
-              for (const s of sources.filter(
-                (s) => s.enabled && s.textReadable,
-              )) {
-                try {
-                  const text = new TextDecoder("utf-8", { fatal: true }).decode(
-                    await readRawSource(s.id),
-                  );
-                  hydrateSources.push({ id: s.id, text });
-                } catch {
-                  // A source that fails to decode is simply not hydrated —
-                  // the same fail-open discipline retrieveCorpus already uses.
-                }
+            // Always re-scan for anything not yet admitted — no longer
+            // gated on isHypergraphHydrated (see eo-hypergraph.ts's own
+            // note: that gate used to make a source uploaded after a
+            // chat's first message silently never reach the graph;
+            // admitOnce's own per-doc dedup already makes re-running this
+            // safe and cheap on repeat calls).
+            const hydrateSources: { id: string; text: string }[] = [];
+            for (const s of sources.filter(
+              (s) => s.enabled && s.textReadable,
+            )) {
+              try {
+                const text = new TextDecoder("utf-8", { fatal: true }).decode(
+                  await readRawSource(s.id),
+                );
+                hydrateSources.push({ id: s.id, text });
+              } catch {
+                // A source that fails to decode is simply not hydrated —
+                // the same fail-open discipline retrieveCorpus already uses.
               }
-              const hydrateTurns = session0.messages
-                .filter((m) => !m.isError && !m.streaming)
-                .map((m) => ({ id: m.id, content: getMessageTextContent(m) }));
-              ensureHypergraphHydrated(
-                session0.id,
-                hydrateSources,
-                hydrateTurns,
-              );
+            }
+            const hydrateTurns = session0.messages
+              .filter((m) => !m.isError && !m.streaming)
+              .map((m) => ({ id: m.id, content: getMessageTextContent(m) }));
+            const movements = ensureHypergraphHydrated(
+              hypergraphScopeId(session0),
+              hydrateSources,
+              hydrateTurns,
+            );
+            // EOT log, per admission — Amendment XXVI (eoreader6/SEED.md):
+            // say which terrain a reading actually reached, honestly, not
+            // only report on it at query time via navigateHypergraph below.
+            for (const m of movements) {
+              get().pushEoLog("hypergraph", describeHypergraphMovement(m));
             }
 
-            const nav = navigateHypergraph(session0.id, userContent.trim());
+            const nav = navigateHypergraph(
+              hypergraphScopeId(session0),
+              userContent.trim(),
+            );
             if (nav) {
               get().pushEoLog("hypergraph", describeHypergraphNavigation(nav));
               hypergraphEdgesConsidered = nav.relevantEdges.length;
@@ -1800,11 +2133,12 @@ export const useChatStore = createPersistStore(
         // question is checked against never includes the question's own
         // words as if they were prior context.
         if (userContent.trim()) {
-          admitHypergraphTurn(
-            session0.id,
+          const m = admitHypergraphTurn(
+            hypergraphScopeId(session0),
             { id: userMessage.id, content: userContent },
             turnIndex,
           );
+          if (m) get().pushEoLog("hypergraph", describeHypergraphMovement(m));
         }
 
         // Every message this turn emits shares a turn id. The first one is the
@@ -1940,6 +2274,27 @@ export const useChatStore = createPersistStore(
 
         log.debug("Messages: ", sendMessages);
 
+        // Citey's grounding layer needs to know what this turn already
+        // gathered (web/corpus) to tell "sourced" from "owned" — and needs
+        // to know it live, while the draft is still streaming, not only
+        // once onFinish runs. Everything it depends on (turnWebResults,
+        // turnWebQuery, corpusPassages) was already produced by the
+        // pre-generation search/surf above, so it can be built once, here,
+        // before the first token arrives.
+        const liveCitations: CitationEntry[] = turnWebQuery
+          ? turnWebResults.map((r, i) => ({
+              index: i + 1,
+              source_id: r.url,
+              text: r.snippet,
+            }))
+          : [];
+        liveCitations.push(
+          ...corpusCitations(corpusPassages).map((c, i) => ({
+            ...c,
+            index: liveCitations.length + i + 1,
+          })),
+        );
+
         // save the bot's placeholder — the user's message was already admitted
         // at the top of onUserInput so it renders the instant the reader hits
         // send
@@ -1973,6 +2328,15 @@ export const useChatStore = createPersistStore(
             botMessage.streaming = true;
             if (message) {
               botMessage.content = message;
+              // Recomputed from scratch on every chunk rather than
+              // incrementally diffed — buildGroundingSpans is cheap regex
+              // work, not a model call, so there's no perf reason to do
+              // anything cleverer, and recomputing avoids any drift between
+              // an incremental pass and the finished text.
+              botMessage.groundingSpans = buildGroundingSpans(message, {
+                citations: liveCitations,
+                question: userContent.trim(),
+              });
             }
             get().updateCurrentSession((session) => {
               session.modelLoadProgress = null;
@@ -1992,11 +2356,16 @@ export const useChatStore = createPersistStore(
               // the graph accumulates entities and relations discussed in
               // either direction of the conversation, not only in what the
               // reader typed or uploaded.
-              admitHypergraphTurn(
-                session0.id,
+              const botMovement = admitHypergraphTurn(
+                hypergraphScopeId(session0),
                 { id: botMessage.id, content: message },
                 turnIndex,
               );
+              if (botMovement)
+                get().pushEoLog(
+                  "hypergraph",
+                  describeHypergraphMovement(botMovement),
+                );
 
               // System 2: DEFINE now, against the System-1 draft that
               // already exists — unconditional, every turn, no mechanical
@@ -2212,7 +2581,10 @@ export const useChatStore = createPersistStore(
                   question: userContent.trim(),
                   channels: checkedChannels,
                 });
-                message = annotateVoids(message, groundingReport);
+                // No longer annotated into the text itself (see
+                // eo-grounding-spans.ts) — Citey's per-sentence badges now
+                // carry this, computed fresh below from the finished
+                // message rather than inline void markers baked into it.
                 botMessage.groundingReport = groundingReport;
                 // Snipping (see eo-citation-check.ts, ported from
                 // eochat's citation-check.js bestClause): show the one
@@ -2233,7 +2605,20 @@ export const useChatStore = createPersistStore(
                     ? `grounding: clean against ${checkedChannels.join(" + ")} (${groundingReport.atomsChecked} claim(s) checked)`
                     : `grounding: ${groundingReport.findings.length} unsupported claim(s) of ${groundingReport.atomsChecked} checked against ${checkedChannels.join(" + ")}${groundingReport.truncated ? ` (${groundingReport.truncated.dropped} more truncated)` : ""}`,
                 );
+                get().recordEoMindGrounding(
+                  botMessage.id,
+                  groundingReport.findings,
+                );
               }
+
+              // Every turn is proposed into the mind regardless of whether it
+              // cited anything — an uncited turn cannot be found dependent on
+              // a prior one, which is the honest answer, not a guess (see
+              // eo-conversation-mind.ts's recordTurn).
+              get().recordEoMindTurn(
+                botMessage.id,
+                allCitations.map((c) => c.source_id),
+              );
 
               // ── System 2 ──────────────────────────────────────────────
               //
@@ -2371,8 +2756,117 @@ export const useChatStore = createPersistStore(
                 });
               });
 
+              // ── Citey's grounding layer, finalized ─────────────────────
+              //
+              // The live per-chunk spans from onUpdate were built against a
+              // still-growing string; recompute once against the finished
+              // `message` so offsets and sentence boundaries are final, then
+              // commit the message immediately — the reader is never made
+              // to wait on a network round trip to see the answer.
+              botMessage.groundingSpans = buildGroundingSpans(message, {
+                citations: allCitations,
+                question: userContent.trim(),
+              });
+              botMessage.groundingCitations = allCitations;
               botMessage.content = message;
-              get().onNewMessage(botMessage, llm);
+
+              // Spans eligible for the async resolve pass: numbers marked
+              // "checking" (nothing gathered this turn to check them
+              // against yet), and names marked "owned" (searched anyway,
+              // for the verbatim-clause affordance, but never given an
+              // asserted verdict — see eo-revision.ts's module header for
+              // why a name never earns "checking" in the first place).
+              const toResolve = botMessage.groundingSpans.filter(
+                (s) => s.state === "checking" || s.atomKind === "name",
+              );
+              if (toResolve.length && !eoEngineBusy) {
+                // Held true for the whole background pass, not just the
+                // visible token stream — chat.tsx's onSubmit guard (and the
+                // store-level re-entrancy check in onUserInput) both key off
+                // this. A real run of the string-splicing predecessor of
+                // this pass proved the gap: once the visible text looks
+                // finished, a reader can reasonably send a follow-up right
+                // then, and without this flag staying up a second turn was
+                // free to start while this one's background judge calls
+                // were still in flight.
+                botMessage.streaming = true;
+                get().onNewMessage(botMessage, llm);
+                const msgId = botMessage.id;
+                const finalContent = message;
+                const spans: ClaimSpan[] = toResolve.map((s) => ({
+                  text: s.text,
+                  start: s.start,
+                  end: s.end,
+                  atomKind: s.atomKind,
+                }));
+                void (async () => {
+                  try {
+                    const { checks, truncated } = await resolveSpans(
+                      finalContent,
+                      spans,
+                      (atom, sentence, snippet) =>
+                        eoJudgeClaim(llm, modelConfig, atom, sentence, snippet),
+                      webSearch,
+                    );
+                    const contradicted = checks.filter(
+                      (c) => c.verdict === "contradicted",
+                    ).length;
+                    get().updateCurrentSession((session) => {
+                      const target = session.messages.find(
+                        (m) => m.id === msgId,
+                      );
+                      if (!target?.groundingSpans) return;
+                      // Update each resolved span IN PLACE, matched by
+                      // offset — never touching `target.content`. This is
+                      // the whole point of the redesign: no shared string
+                      // for two resolutions to collide on.
+                      for (const c of checks) {
+                        const span = target.groundingSpans.find(
+                          (s) =>
+                            s.start === c.span.start && s.end === c.span.end,
+                        );
+                        if (!span) continue;
+                        span.clause = c.clause;
+                        span.sourceTitle = c.source?.title;
+                        span.sourceUrl = c.source?.url;
+                        if (c.judged) {
+                          span.state =
+                            c.verdict === "contradicted"
+                              ? "contradicted"
+                              : c.verdict === "confirmed"
+                                ? "sourced"
+                                : "owned";
+                          span.correction = c.correction;
+                        } else if (span.state === "checking") {
+                          span.state = "owned";
+                        }
+                      }
+                    });
+                    get().pushEoLog(
+                      "warrant",
+                      `grounding: ${checks.length} span(s) resolved, ${contradicted} contradicted` +
+                        (truncated
+                          ? ` (${truncated.dropped} more left unresolved)`
+                          : ""),
+                    );
+                  } catch (err) {
+                    get().pushEoLog(
+                      "error",
+                      `grounding resolve failed — ${(err as Error).message}`,
+                    );
+                  } finally {
+                    botMessage.streaming = false;
+                    get().updateCurrentSession((session) => {
+                      session.isGenerating = false;
+                      session.modelLoadProgress = null;
+                      session.messages = session.messages.concat();
+                    });
+                  }
+                })();
+                return;
+              } else {
+                get().onNewMessage(botMessage, llm);
+              }
             }
             get().updateCurrentSession((session) => {
               session.isGenerating = false;
@@ -2420,6 +2914,35 @@ export const useChatStore = createPersistStore(
         );
         if (gate.logText) {
           get().pushEoLog("surf", gate.logText);
+        }
+
+        // 0b. A project's own standing instructions, unlike the built-in
+        // rulebook above, are meant to shape the answer as it is generated
+        // rather than only check it afterward -- so this block, when the
+        // gate produces one, actually joins the prompt (tagged DESK: more
+        // durable than this-turn situational context, below the protected
+        // warrant/self-facts tier). See eoBuildProjectInstructionBlock.
+        const project = session.projectId
+          ? get().projects.find((p) => p.id === session.projectId)
+          : undefined;
+        const projectGate = eoBuildProjectInstructionBlock(
+          nextQuestion?.trim() ?? "",
+          session,
+          project,
+          clearContextIndex,
+          { mode: "system1" },
+        );
+        if (projectGate.logText) {
+          get().pushEoLog("surf", projectGate.logText);
+        }
+        if (projectGate.systemMessage) {
+          out.push(
+            createMessage({
+              role: "system",
+              content: projectGate.systemMessage,
+              eoPriority: EO_BLOCK_PRIORITY.DESK,
+            }),
+          );
         }
 
         // 1. pre-defined in-context prompts (reader-defined template context)

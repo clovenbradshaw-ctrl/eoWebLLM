@@ -4,6 +4,7 @@ import {
   DEFAULT_INPUT_TEMPLATE,
   DEFAULT_MODELS,
   DEFAULT_SIDEBAR_WIDTH,
+  DEFAULT_TERRAIN_PANEL_WIDTH,
   StoreKey,
 } from "../constant";
 import { createPersistStore } from "../utils/store";
@@ -59,6 +60,7 @@ export type ConfigType = {
   tightBorder: boolean;
   enableAutoGenerateTitle: boolean;
   sidebarWidth: number;
+  terrainPanelWidth: number;
 
   disablePromptHint: boolean;
   hideBuiltinTemplates: boolean;
@@ -109,6 +111,7 @@ export const DEFAULT_CONFIG: ConfigType = {
   tightBorder: false,
   enableAutoGenerateTitle: true,
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
+  terrainPanelWidth: DEFAULT_TERRAIN_PANEL_WIDTH,
 
   disablePromptHint: false,
   hideBuiltinTemplates: false, // dont add builtin masks

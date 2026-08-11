@@ -354,7 +354,10 @@ export function corpusCitations(
 const CONTRAST_TERMS =
   "however but except unless limitation exception counterexample contradiction alternative instead although despite";
 const DELIBERATE_MAX_PASSAGES = 8;
-const UNFOLD_WIDEN_BYTES = 1200;
+// Exported for terrain/field-card.tsx's span viewer, which widens a cited
+// byte range the same way this file's own unfoldPassage does — one shared
+// constant, not two guesses at the same "enough surrounding context" width.
+export const UNFOLD_WIDEN_BYTES = 1200;
 
 /** Widen one passage back out to its surrounding bytes in the original source. */
 async function unfoldPassage(
