@@ -101,105 +101,35 @@ import {
   ClipboardText,
   Clock,
   Check,
+  ShareNetwork,
 } from "@phosphor-icons/react";
-import {
-  findBinaryStructure,
-  formatBinaryStructureBlock,
-} from "../client/eo-binary-structure";
-import { tryExtractText } from "../client/eo-file-extract";
-import {
-  createModifierGraph,
-  enrichModifierGraphFromText,
-  formatModifierGraphBlock,
-} from "../client/eo-modifier-graph";
-import { buildReading, toEOTReader, reReadSource } from "../client/eo-reading";
-import {
-  isReadableUtf8,
-  persistRawSource,
-  persistSourceLedger,
-  readRawSource,
-  readSourceLedger,
-} from "../client/eo-corpus";
+import { ingestFile } from "../client/eo-source-ingest";
+import { toEOTReader, reReadSource, ledgerStats } from "../client/eo-reading";
+import { persistRawSource, readRawSource } from "../client/eo-corpus";
 import {
   hypergraphSnapshot,
   foldGraphOnEntity,
   hypergraphTiersSnapshot,
+  hypergraphScopeId,
   type GraphTerrainSnapshot,
   type TierTerrainSnapshot,
 } from "../client/eo-hypergraph";
-import type { EoSource, EventLog } from "../client/eo-corpus";
+import type { EoSource } from "../client/eo-corpus";
 import {
   readAtCursors,
   diffLinkViews,
 } from "../client/eo-binary/reading-diff.js";
 import { MODIFIER_SCOPE_CURRENT_LENS } from "../client/eo-binary/modifier-order-lens.js";
-import { readDocument } from "../client/eo-binary/reading.js";
-import { isGap } from "../client/eo-binary/nul.js";
-import { nanoid } from "nanoid";
+import {
+  useSourceReader,
+  SourceReaderTrigger,
+  SourceReaderPanel,
+} from "./source-reader";
 import type { WebSearchResult } from "../client/eo-websearch";
 import type { GroundingReport, Snippet } from "../client/eo-citation-check";
-
-// A breakdown of the ledger's own contents, straight from log.events --
-// the append-only record, not the folded projection. Every event type
-// this pipeline mints (SEG.narrow/confirm/revise/refuse) is counted, so
-// the source panel can show what the ledger actually holds rather than a
-// single "revisions" number.
-function ledgerStats(log: {
-  events: any[];
-  tick: number;
-}): EoSource["readLedger"] {
-  const counts = {
-    narrowCount: 0,
-    confirmCount: 0,
-    revisionCount: 0,
-    refuseCount: 0,
-  };
-  for (const e of log.events) {
-    if (e.type === "SEG.narrow") counts.narrowCount++;
-    else if (e.type === "SEG.confirm") counts.confirmCount++;
-    else if (e.type === "SEG.revise") counts.revisionCount++;
-    else if (e.type === "SEG.refuse") counts.refuseCount++;
-  }
-  return { cursor: log.tick, ...counts };
-}
-
-// "Event mode": one line per raw ledger tick, in order -- the append-only
-// record itself, nothing folded or hidden. supersedes/confirms are shown
-// against the TICK of the event they point to (event_ids are content
-// hashes, not something a human reads), so the correction chain is
-// legible without leaving the ledger's own vocabulary.
-function formatLedgerEventLine(e: any, idToTick: Map<string, number>): string {
-  const base = `tick ${e.tick}  ${e.type}`;
-  if (e.type === "SEG.refuse") {
-    return `${base}  head="${e.head}"  gap=${e.gap}${
-      e.reason ? ` (${e.reason})` : ""
-    }  [${e.source}]`;
-  }
-  const edge = `${e.subject} -> ${e.object}  class="${e.class}"`;
-  if (e.type === "SEG.revise") {
-    return `${base}  ${edge}  -- supersedes tick ${idToTick.get(
-      e.supersedes,
-    )} (was "${e.priorClass}")`;
-  }
-  if (e.type === "SEG.confirm") {
-    return `${base}  ${edge}  -- confirms tick ${idToTick.get(e.confirms)}`;
-  }
-  return `${base}  ${edge}`;
-}
-
-// "Fold mode": the ledger's append-only trail projected through
-// MODIFIER_SCOPE_CURRENT_LENS (latest tick per node) and formatted as an
-// EOT reader surface -- the clean, current reading a projection is for,
-// as opposed to event mode's raw, unfolded history.
-function renderFoldedEOT(log: EventLog, roomName: string): string {
-  const reading = readDocument(
-    log,
-    [{ lensDef: MODIFIER_SCOPE_CURRENT_LENS, terrain: "Link" }],
-    log.tick,
-  );
-  if (isGap(reading)) return `# reading refused: ${reading.gap}`;
-  return toEOTReader({ reading, refused: [] } as any, { roomName });
-}
+import type { CitationEntry } from "../client/eo-citation-check";
+import { TerrainPanel } from "./terrain-panel";
+import type { TerrainCardRef } from "./terrain/types";
 
 const eotDot = (id: string) => id.replace(/\s+/g, "_").replace(/::/g, ".");
 
@@ -1247,6 +1177,66 @@ export function DeleteImageButton(props: { deleteImage: () => void }) {
   );
 }
 
+// One row in the session's source panel: the checkbox/name/enable row plus
+// its View/Re-read actions and (when expanded) the Fold/Events/Raw reader
+// panel. A real component, not an inline .map() callback, because
+// useSourceReader is a hook -- calling it per array item from inside the
+// parent's own render would violate the rules of hooks (the hook-call count
+// would vary with session.eoSources.length instead of staying fixed for
+// ChatInner itself).
+function SourceRow(props: {
+  source: EoSource;
+  rereading: boolean;
+  onToggleEnabled: () => void;
+  onReread: () => void;
+}) {
+  const { source } = props;
+  const reader = useSourceReader(source);
+  return (
+    <div className={styles["source-item"]}>
+      <label className={styles["source-row"]}>
+        <input
+          type="checkbox"
+          checked={source.enabled}
+          onChange={props.onToggleEnabled}
+        />
+        <span className={styles["source-row-body"]}>
+          <strong title={source.name}>{source.name}</strong>
+          <small>
+            {(source.byteLength / 1024).toLocaleString(undefined, {
+              maximumFractionDigits: 1,
+            })}{" "}
+            KB · {source.textReadable ? "text searchable" : "binary retained"}
+            {source.structure
+              ? ` · ${source.structure.clearings} ${source.structure.clearings === 1 ? "boundary" : "boundaries"}`
+              : ""}
+            {source.readLedger?.revisionCount
+              ? ` · ${source.readLedger.revisionCount} revision${source.readLedger.revisionCount === 1 ? "" : "s"}`
+              : ""}
+          </small>
+        </span>
+        <SourceReaderTrigger state={reader} />
+        {source.textReadable && (
+          <button
+            type="button"
+            className={styles["source-reread"]}
+            title="Re-read this source against its ledger"
+            disabled={props.rereading}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              props.onReread();
+            }}
+          >
+            {props.rereading ? "Re-reading…" : "Re-read"}
+          </button>
+        )}
+      </label>
+      <SourceReaderPanel source={source} state={reader} />
+    </div>
+  );
+}
+
 function ChatInner() {
   type RenderMessage = ChatMessage & { preview?: boolean };
 
@@ -1275,6 +1265,44 @@ function ChatInner() {
   const [eotLogSearch, setEotLogSearch] = useState("");
   const [showSources, setShowSources] = useState(false);
 
+  // The terrain panel's own nav history — every card opened this session
+  // (a citation chip click, or a cross-link inside an already-open card)
+  // pushes here through openTerrainCard, the single entry point both
+  // trigger sites share (docs/citey-structured-grounding.md). `terrainPanelOpen`
+  // is deliberately separate from the history/index below: closing the
+  // panel is not the same as forgetting where it was, so reopening resumes
+  // the same card instead of always restarting fresh.
+  const [terrainHistory, setTerrainHistory] = useState<TerrainCardRef[]>([]);
+  const [terrainHistoryIndex, setTerrainHistoryIndex] = useState(-1);
+  const [terrainPanelOpen, setTerrainPanelOpen] = useState(false);
+  const showTerrainPanel = terrainPanelOpen && terrainHistoryIndex >= 0;
+  const activeTerrainCard =
+    terrainHistoryIndex >= 0 ? terrainHistory[terrainHistoryIndex] : null;
+
+  // openTerrainCard is called from deep inside card components (via
+  // onNavigate) where a stale closure over terrainHistoryIndex would
+  // truncate history to the wrong point — this ref always holds the
+  // current index for that one splice, without making openTerrainCard's
+  // own identity depend on it (which would re-thread a new callback into
+  // every card on every navigation).
+  const terrainHistoryIndexRef = useRef(terrainHistoryIndex);
+  terrainHistoryIndexRef.current = terrainHistoryIndex;
+
+  const openTerrainCard = useCallback((ref: TerrainCardRef) => {
+    setTerrainHistory((h) => [
+      ...h.slice(0, terrainHistoryIndexRef.current + 1),
+      ref,
+    ]);
+    setTerrainHistoryIndex((i) => i + 1);
+    setTerrainPanelOpen(true);
+    setShowEoLog(false);
+  }, []);
+
+  const terrainBack = () => setTerrainHistoryIndex((i) => Math.max(0, i - 1));
+  const terrainForward = () =>
+    setTerrainHistoryIndex((i) => Math.min(terrainHistory.length - 1, i + 1));
+  const closeTerrainPanel = () => setTerrainPanelOpen(false);
+
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [userInput, setUserInput] = useState("");
   const { submitKey, shouldSubmit } = useSubmitHandler();
@@ -1298,27 +1326,6 @@ function ChatInner() {
   const [rereadingSourceId, setRereadingSourceId] = useState<string | null>(
     null,
   );
-  // The source panel's ledger viewer: which source is expanded, which of
-  // its two modes is showing (the raw append-only event log, or the
-  // folded/projected current reading), and the full ledger loaded back
-  // from OPFS for whichever source is expanded (the panel row itself only
-  // carries the summary counts in readLedger, not the full event list).
-  const [expandedSourceId, setExpandedSourceId] = useState<string | null>(null);
-  const [sourceViewMode, setSourceViewMode] = useState<
-    "event" | "fold" | "raw"
-  >("fold");
-  const [expandedLedger, setExpandedLedger] = useState<EventLog | null>(null);
-  const [expandedLedgerLoading, setExpandedLedgerLoading] = useState(false);
-  // The source's actual bytes, decoded on demand for the "Raw" tab -- the
-  // Fold/Event tabs above only ever show the *derived* EOT reading or
-  // ledger, never the file a reader actually uploaded. Loaded lazily (not
-  // alongside the ledger) since most views into a source never need it.
-  const [rawSource, setRawSource] = useState<
-    | { sourceId: string; kind: "text"; text: string }
-    | { sourceId: string; kind: "image"; url: string }
-    | null
-  >(null);
-  const [rawSourceLoading, setRawSourceLoading] = useState(false);
   const [showEditPromptModal, setShowEditPromptModal] = useState(false);
   const webllm = useContext(WebLLMContext)!;
   const mlcllm = useContext(MLCLLMContext)!;
@@ -1760,19 +1767,11 @@ function ChatInner() {
   // Above this many raw bytes, skip the CPU-heavy passes (UTF-8 decode,
   // modifier tagging, PDF/XLSX extraction) and keep only the lossless OPFS
   // write plus the O(byteLength) entropy scan (already block-capped by
-  // findBinaryStructure's own chooseBlockSize) — a large file is still
-  // "uploaded" in full, it just isn't analyzed on the main thread.
-  const MAX_ANALYSIS_BYTES = 50 * 1024 * 1024;
-  // Above this many decoded characters, skip modifier-graph/EOT reading
-  // specifically (the two regex-based taggers over the whole document) —
-  // the source still registers as textReadable and stays fully surfable by
-  // eo-corpus.ts's retrieveCorpus, it just doesn't also get a reading.
-  const MAX_READING_CHARS = 2_000_000;
-
   // Arbitrary file upload — any type, not just images. Original bytes are
   // retained losslessly in OPFS; no prefix is sent as if it were the entire
-  // source. The eoreader6 boundary pass is source metadata; PDF/XLSX bytes
-  // get a best-effort text extraction (eo-file-extract.ts) and, once
+  // source. The eoreader6 boundary pass is source metadata; PDF/XLSX/DOCX/
+  // PPTX/ODF/EPUB/RTF bytes get a best-effort text extraction
+  // (eo-file-extract.ts, via eo-source-ingest.ts's ingestFile) and, once
   // extracted, are treated exactly like any other text file from here on —
   // same modifier-graph/EOT pipeline, same textReadable: true, same
   // eligibility for eo-corpus.ts's turn-time corpus surf. What actually
@@ -1797,129 +1796,10 @@ function ChatInner() {
     try {
       for (const file of files) {
         try {
-          const buffer = new Uint8Array(await file.arrayBuffer());
-          const id = nanoid();
-          await persistRawSource(id, buffer);
-
-          const withinAnalysisBudget = buffer.length <= MAX_ANALYSIS_BYTES;
-          const structure = withinAnalysisBudget
-            ? findBinaryStructure(buffer)
-            : {
-                byteLength: buffer.length,
-                blockSize: 0,
-                blockCount: 0,
-                clearings: [],
-                gap: "too_large_for_analysis",
-              };
-
-          // A decoded string this function can treat as the source's text:
-          // either it's already valid UTF-8, or a format-specific extractor
-          // (PDF/XLSX) pulled text out of a container that isn't.
-          let decoded: string | null = null;
-          let textReadable = false;
-          if (withinAnalysisBudget) {
-            if (isReadableUtf8(buffer)) {
-              try {
-                decoded = new TextDecoder("utf-8", { fatal: true }).decode(
-                  buffer,
-                );
-                textReadable = true;
-              } catch {
-                // Coarser isReadableUtf8 sample passed but the full decode
-                // didn't; falls through to the binary path below.
-              }
-            } else {
-              decoded = await tryExtractText(buffer, file.name);
-              textReadable = decoded !== null;
-            }
-          }
-
-          // Modifier-order graph enrichment + EOT reading: only for text
-          // that decoded cleanly (whether native UTF-8 or extracted), and
-          // only ever the disclosed-scope English demo tagger (see
-          // eo-modifier-graph.ts) — a non-English document simply yields
-          // zero stacks, never a guess. Skipped above MAX_READING_CHARS: the
-          // source is still textReadable and still fully corpus-surfable,
-          // it just doesn't also carry a reading.
-          let modifierGraphSummary:
-            | { applied: number; refusedCount: number; entityNodes: string[] }
-            | undefined;
-          let readerEOT: string | undefined;
-          let readLedger: EoSource["readLedger"] | undefined;
-          if (decoded && decoded.length <= MAX_READING_CHARS) {
-            try {
-              const graph = createModifierGraph();
-              const report = enrichModifierGraphFromText(graph, decoded);
-              modifierGraphSummary = {
-                applied: report.applied,
-                refusedCount: report.refused.length,
-                entityNodes: report.entityNodes,
-              };
-              if (report.applied > 0) {
-                chatStore.pushEoLog(
-                  "file",
-                  formatModifierGraphBlock(file.name, report),
-                );
-              }
-              const readingResult = buildReading(decoded);
-              const eotText = toEOTReader(readingResult, {
-                roomName: `source_${id}`,
-              });
-              if (readingResult.reading && !("gap" in readingResult.reading)) {
-                readerEOT = eotText;
-                chatStore.pushEoLog(
-                  "file",
-                  `file: "${file.name}" — read as EOT: a room + ${
-                    readingResult.reading.lenses?.find(
-                      (l: any) => l.terrain === "Link",
-                    )?.view?.length ?? 0
-                  } narrowing link(s), cursor ${readingResult.reading.cursor}`,
-                );
-              }
-              // Persist the ledger itself, not just the rendered EOT text —
-              // every source gets a real read log from first upload, so a
-              // later "Re-read" always has something to resolve against.
-              await persistSourceLedger(id, readingResult.log);
-              readLedger = ledgerStats(readingResult.log);
-            } catch {
-              // A reading failure just means no modifier-graph enrichment
-              // for this file, not a broken upload.
-            }
-          }
-
-          // A source's structureSummary is the ONLY material
-          // eo-binary-structure.ts's turn-time surf can later score and
-          // show for it — computed once, here, never re-derived per turn.
-          // Only non-text sources carry one: a text source's real content
-          // is what gets surfaced, not a structural summary of it.
-          const structureSummary = textReadable
-            ? undefined
-            : formatBinaryStructureBlock(file.name, structure);
-
-          chatStore.registerEoSource({
-            id,
-            name: file.name || "(unnamed file)",
-            byteLength: buffer.length,
-            mimeType: file.type || "application/octet-stream",
-            textReadable,
-            enabled: true,
-            addedAt: Date.now(),
-            structure: {
-              clearings: structure.clearings.length,
-              blockCount: structure.blockCount,
-            },
-            structureSummary,
-            modifierGraph: modifierGraphSummary,
-            readerEOT,
-            readLedger,
-          });
-          chatStore.pushEoLog(
-            "file",
-            `file: ingested "${file.name}" — ${buffer.length} raw byte(s) in OPFS, ` +
-              `${structure.clearings.length} clearing(s), ` +
-              `${textReadable ? "UTF-8 corpus" : "binary corpus"}` +
-              (withinAnalysisBudget ? "" : " (too large for analysis)"),
-          );
+          const { source, logLines } = await ingestFile(file);
+          chatStore.registerEoSource(source);
+          for (const line of logLines)
+            chatStore.pushEoLog(line.channel, line.text);
           succeeded++;
           lastSucceededName = file.name;
         } catch (err) {
@@ -2046,73 +1926,6 @@ function ChatInner() {
     }
   }
 
-  // Opens (or closes, on a second click) the ledger viewer for one
-  // source, loading its full persisted event log back from OPFS -- the
-  // summary counts on EoSource.readLedger are enough for the row's badge,
-  // but "event mode" needs every tick, and "fold mode" needs the whole
-  // log to project through MODIFIER_SCOPE_CURRENT_LENS.
-  async function toggleSourceView(source: EoSource) {
-    if (expandedSourceId === source.id) {
-      setExpandedSourceId(null);
-      setExpandedLedger(null);
-      setRawSource((current) => {
-        if (current?.kind === "image") URL.revokeObjectURL(current.url);
-        return null;
-      });
-      return;
-    }
-    setExpandedSourceId(source.id);
-    setExpandedLedger(null);
-    setRawSource((current) => {
-      if (current?.kind === "image") URL.revokeObjectURL(current.url);
-      return null;
-    });
-    // Sources with no ledger (images, other binaries) never had a Fold/
-    // Event tab to land on -- Raw is the only tab they have.
-    setSourceViewMode(source.readLedger ? "fold" : "raw");
-    setExpandedLedgerLoading(true);
-    try {
-      const ledger = await readSourceLedger(source.id);
-      setExpandedLedger(ledger);
-    } finally {
-      setExpandedLedgerLoading(false);
-    }
-  }
-
-  // Decodes a source's actual bytes for the "Raw" tab -- text is decoded
-  // straight through (the same decode retrieveCorpus already does), images
-  // become an object URL. Cached in rawSource so switching tabs back and
-  // forth doesn't re-read OPFS every time.
-  async function loadRawSource(source: EoSource) {
-    setSourceViewMode("raw");
-    if (rawSource?.sourceId === source.id) return;
-    setRawSourceLoading(true);
-    try {
-      const bytes = await readRawSource(source.id);
-      if (source.mimeType.startsWith("image/")) {
-        const url = URL.createObjectURL(
-          // readRawSource's Uint8Array is backed by a real ArrayBuffer
-          // (arrayBuffer() below), but TS's DOM lib types Uint8Array's
-          // buffer as ArrayBufferLike (which also admits SharedArrayBuffer),
-          // so it doesn't structurally satisfy Blob's BlobPart.
-          new Blob([bytes as unknown as BlobPart], { type: source.mimeType }),
-        );
-        setRawSource({ sourceId: source.id, kind: "image", url });
-      } else {
-        const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
-        setRawSource({ sourceId: source.id, kind: "text", text });
-      }
-    } catch {
-      setRawSource({
-        sourceId: source.id,
-        kind: "text",
-        text: "(couldn't read this source's raw bytes)",
-      });
-    } finally {
-      setRawSourceLoading(false);
-    }
-  }
-
   return (
     <div className={styles.chat} key={session.id}>
       <div className="window-header">
@@ -2182,6 +1995,24 @@ function ChatInner() {
           </div>
           <div className="window-action-button">
             <IconButton
+              icon={<ShareNetwork size={16} />}
+              title="Terrain — entities, relations, and their sources"
+              onClick={() => {
+                if (showTerrainPanel) {
+                  closeTerrainPanel();
+                } else if (activeTerrainCard) {
+                  // Resume wherever this session's panel was last left --
+                  // history/index persist across a close.
+                  setTerrainPanelOpen(true);
+                  setShowEoLog(false);
+                } else {
+                  openTerrainCard({ kind: "network", params: {} });
+                }
+              }}
+            />
+          </div>
+          <div className="window-action-button">
+            <IconButton
               icon={<Paperclip size={16} />}
               title="Sources — this chat's local corpus"
               onClick={() => setShowSources((v) => !v)}
@@ -2191,7 +2022,12 @@ function ChatInner() {
             <IconButton
               icon={<TerminalWindow size={17} />}
               title="EOT — system log"
-              onClick={() => setShowEoLog((v) => !v)}
+              onClick={() =>
+                setShowEoLog((v) => {
+                  if (!v) closeTerrainPanel();
+                  return !v;
+                })
+              }
             />
           </div>
           {showMaxIcon && (
@@ -2217,7 +2053,11 @@ function ChatInner() {
           // session's own ring buffer, not this render); folding on an
           // entity only narrows which of them are shown, never drops them
           // from the underlying log.
-          const orderedEoLog = [...(session.eoLog ?? [])].reverse();
+          // A project-scoped session's EOT log is the PROJECT's shared log
+          // (hypergraphScopeId's own reasoning, applied to the log) -- go
+          // through the selector rather than session.eoLog directly, or a
+          // project's chats would each read a different, diverging history.
+          const orderedEoLog = [...chatStore.sessionEoLog(session)].reverse();
           const logQuery = eotFoldEntity || eotLogSearch.trim() || null;
           const eotEntries = logQuery
             ? orderedEoLog.filter((entry) =>
@@ -2231,11 +2071,11 @@ function ChatInner() {
           const graphQuery = eotFoldEntity || eotGraphSearch.trim() || null;
           const graphSnap: GraphTerrainSnapshot | null =
             eotTerminalTab === "graph"
-              ? foldGraphOnEntity(session.id, graphQuery)
+              ? foldGraphOnEntity(hypergraphScopeId(session), graphQuery)
               : null;
           const tiersSnap: TierTerrainSnapshot | null =
             eotTerminalTab === "graph"
-              ? hypergraphTiersSnapshot(session.id)
+              ? hypergraphTiersSnapshot(hypergraphScopeId(session))
               : null;
 
           return (
@@ -2445,576 +2285,460 @@ function ChatInner() {
               </div>
             ) : (
               session.eoSources.map((source) => (
-                <div key={source.id} className={styles["source-item"]}>
-                  <label className={styles["source-row"]}>
-                    <input
-                      type="checkbox"
-                      checked={source.enabled}
-                      onChange={() =>
-                        chatStore.updateCurrentSession((current) => {
-                          current.eoSources = (current.eoSources ?? []).map(
-                            (s) =>
-                              s.id === source.id
-                                ? { ...s, enabled: !s.enabled }
-                                : s,
-                          );
-                        })
-                      }
-                    />
-                    <span className={styles["source-row-body"]}>
-                      <strong title={source.name}>{source.name}</strong>
-                      <small>
-                        {(source.byteLength / 1024).toLocaleString(undefined, {
-                          maximumFractionDigits: 1,
-                        })}{" "}
-                        KB ·{" "}
-                        {source.textReadable
-                          ? "text searchable"
-                          : "binary retained"}
-                        {source.structure
-                          ? ` · ${source.structure.clearings} ${source.structure.clearings === 1 ? "boundary" : "boundaries"}`
-                          : ""}
-                        {source.readLedger?.revisionCount
-                          ? ` · ${source.readLedger.revisionCount} revision${source.readLedger.revisionCount === 1 ? "" : "s"}`
-                          : ""}
-                      </small>
-                    </span>
-                    {(source.readLedger ||
-                      source.textReadable ||
-                      source.mimeType.startsWith("image/")) && (
-                      <button
-                        type="button"
-                        className={styles["source-view"]}
-                        title="View this source's actual content, its ledger, or the folded reading"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          toggleSourceView(source);
-                        }}
-                      >
-                        {expandedSourceId === source.id ? "Hide" : "View"}
-                      </button>
-                    )}
-                    {source.textReadable && (
-                      <button
-                        type="button"
-                        className={styles["source-reread"]}
-                        title="Re-read this source against its ledger"
-                        disabled={rereadingSourceId === source.id}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          rereadSource(source);
-                        }}
-                      >
-                        {rereadingSourceId === source.id
-                          ? "Re-reading…"
-                          : "Re-read"}
-                      </button>
-                    )}
-                  </label>
-
-                  {expandedSourceId === source.id && (
-                    <div className={styles["source-reading"]}>
-                      <div className={styles["source-reading-tabs"]}>
-                        {source.readLedger && (
-                          <>
-                            <button
-                              type="button"
-                              className={
-                                styles["source-reading-tab"] +
-                                (sourceViewMode === "fold"
-                                  ? " " + styles["active"]
-                                  : "")
-                              }
-                              onClick={() => setSourceViewMode("fold")}
-                            >
-                              Fold — current reading
-                            </button>
-                            <button
-                              type="button"
-                              className={
-                                styles["source-reading-tab"] +
-                                (sourceViewMode === "event"
-                                  ? " " + styles["active"]
-                                  : "")
-                              }
-                              onClick={() => setSourceViewMode("event")}
-                            >
-                              Events — raw ledger
-                            </button>
-                          </>
-                        )}
-                        {(source.textReadable ||
-                          source.mimeType.startsWith("image/")) && (
-                          <button
-                            type="button"
-                            className={
-                              styles["source-reading-tab"] +
-                              (sourceViewMode === "raw"
-                                ? " " + styles["active"]
-                                : "")
-                            }
-                            onClick={() => loadRawSource(source)}
-                          >
-                            Raw — the actual file
-                          </button>
-                        )}
-                        {source.readLedger && (
-                          <span className={styles["source-reading-stats"]}>
-                            cursor {source.readLedger.cursor} ·{" "}
-                            {source.readLedger.narrowCount} narrow ·{" "}
-                            {source.readLedger.confirmCount} confirmed ·{" "}
-                            {source.readLedger.revisionCount} revised ·{" "}
-                            {source.readLedger.refuseCount} refused
-                          </span>
-                        )}
-                      </div>
-                      {sourceViewMode === "raw" ? (
-                        rawSourceLoading ? (
-                          <div className={styles["source-reading-body"]}>
-                            Reading the source&apos;s raw bytes…
-                          </div>
-                        ) : rawSource?.sourceId !== source.id ? (
-                          <div className={styles["source-reading-body"]}>
-                            &nbsp;
-                          </div>
-                        ) : rawSource.kind === "image" ? (
-                          <div className={styles["source-reading-body"]}>
-                            <img
-                              src={rawSource.url}
-                              alt={source.name}
-                              className={styles["source-reading-image"]}
-                            />
-                          </div>
-                        ) : (
-                          <pre className={styles["source-reading-body"]}>
-                            {rawSource.text}
-                          </pre>
-                        )
-                      ) : expandedLedgerLoading ? (
-                        <div className={styles["source-reading-body"]}>
-                          Loading ledger…
-                        </div>
-                      ) : !expandedLedger ? (
-                        <div className={styles["source-reading-body"]}>
-                          No persisted ledger for this source yet.
-                        </div>
-                      ) : sourceViewMode === "fold" ? (
-                        <pre className={styles["source-reading-body"]}>
-                          {renderFoldedEOT(
-                            expandedLedger,
-                            `source_${source.id}`,
-                          )}
-                        </pre>
-                      ) : (
-                        <pre className={styles["source-reading-body"]}>
-                          {(() => {
-                            const idToTick = new Map(
-                              expandedLedger.events.map((e: any) => [
-                                e.event_id,
-                                e.tick,
-                              ]),
-                            );
-                            return expandedLedger.events
-                              .map((e: any) =>
-                                formatLedgerEventLine(e, idToTick),
-                              )
-                              .join("\n");
-                          })()}
-                        </pre>
-                      )}
-                    </div>
-                  )}
-                </div>
+                <SourceRow
+                  key={source.id}
+                  source={source}
+                  rereading={rereadingSourceId === source.id}
+                  onToggleEnabled={() =>
+                    chatStore.updateCurrentSession((current) => {
+                      current.eoSources = (current.eoSources ?? []).map((s) =>
+                        s.id === source.id ? { ...s, enabled: !s.enabled } : s,
+                      );
+                    })
+                  }
+                  onReread={() => rereadSource(source)}
+                />
               ))
             )}
           </div>
         </aside>
       )}
 
-      <div
-        className={styles["chat-body"]}
-        ref={scrollRef}
-        onScroll={(e) => onChatBodyScroll(e.currentTarget)}
-        onMouseDown={() => inputRef.current?.blur()}
-        onTouchStart={() => {
-          inputRef.current?.blur();
-          setAutoScroll(false);
-        }}
-      >
-        <div className={styles["chat-action-context"]}>
-          <ChatAction
-            text={Locale.Chat.Actions.EditConversation}
-            icon={<EditIcon />}
-            onClick={() => setShowEditPromptModal(true)}
-            fullWidth
-          />
-        </div>
-        {session.modelLoadProgress && (
-          <div className={styles["model-load-progress"]}>
-            <div className={styles["model-load-progress-header"]}>
-              <span className={styles["model-load-progress-title"]}>
-                <span className={styles["model-load-spinner"]} />
-                {Locale.Chat.ModelLoading.Title}
-              </span>
-              <span>
-                {Math.round(session.modelLoadProgress.progress * 100)}%
-              </span>
-            </div>
-            <div className={styles["model-load-progress-track"]}>
-              <div
-                className={styles["model-load-progress-bar"]}
-                style={{
-                  width: `${Math.round(
-                    session.modelLoadProgress.progress * 100,
-                  )}%`,
-                }}
+      <div className={styles["chat-main-row"]}>
+        <div className={styles["chat-main-column"]}>
+          <div
+            className={styles["chat-body"]}
+            ref={scrollRef}
+            onScroll={(e) => onChatBodyScroll(e.currentTarget)}
+            onMouseDown={() => inputRef.current?.blur()}
+            onTouchStart={() => {
+              inputRef.current?.blur();
+              setAutoScroll(false);
+            }}
+          >
+            <div className={styles["chat-action-context"]}>
+              <ChatAction
+                text={Locale.Chat.Actions.EditConversation}
+                icon={<EditIcon />}
+                onClick={() => setShowEditPromptModal(true)}
+                fullWidth
               />
             </div>
-            <div className={styles["model-load-progress-text"]}>
-              {session.modelLoadProgress.text}
-            </div>
-            <div className={styles["model-load-progress-note"]}>
-              {Locale.Chat.ModelLoading.Note}
-            </div>
-          </div>
-        )}
-        {messages.map((message, i) => {
-          const isUser = message.role === "user";
-          const isContext = i < context.length;
-          const showActions =
-            i > 0 &&
-            !(message.preview || message.content.length === 0) &&
-            !isContext;
-          const showTyping = message.preview || message.streaming;
-
-          const shouldShowClearContextDivider = i === clearContextIndex - 1;
-
-          return (
-            <Fragment key={`${i}/${message.id}`}>
-              <div
-                className={
-                  isUser ? styles["chat-message-user"] : styles["chat-message"]
-                }
-              >
-                <div className={styles["chat-message-container"]}>
-                  <div className={styles["chat-message-header"]}>
-                    <div className={styles["chat-message-avatar"]}>
-                      {!isUser && (
-                        <>
-                          {["system"].includes(message.role) ? (
-                            <Avatar avatar="2699-fe0f" /> // Gear icon
-                          ) : (
-                            <TemplateAvatar
-                              avatar={session.template.avatar}
-                              model={message.model || config.modelConfig.model}
-                              streamedText={getMessageTextContent(message)}
-                            />
-                          )}
-                        </>
-                      )}
-                    </div>
-                    <div className={styles["chat-message-role-name-container"]}>
-                      {message.role === "system" && (
-                        <div
-                          className={`${styles["chat-message-role-name"]} ${styles["no-hide"]}`}
-                        >
-                          {Locale.Chat.Roles.System}
-                        </div>
-                      )}
-                      {showActions && (
-                        <div className={styles["chat-message-actions"]}>
-                          <div className={styles["chat-input-actions"]}>
-                            <ChatAction
-                              text={Locale.Chat.Actions.Edit}
-                              icon={<EditIcon />}
-                              onClick={async () => {
-                                const newMessage = await showPrompt(
-                                  Locale.Chat.Actions.Edit,
-                                  getMessageTextContent(message),
-                                  10,
-                                );
-                                let newContent: string | MultimodalContent[] =
-                                  newMessage;
-                                const images = getMessageImages(message);
-                                if (images.length > 0) {
-                                  newContent = [
-                                    { type: "text", text: newMessage },
-                                  ];
-                                  for (let i = 0; i < images.length; i++) {
-                                    newContent.push({
-                                      type: "image_url",
-                                      image_url: {
-                                        url: images[i].url,
-                                      },
-                                      dimension: {
-                                        width: images[i].width,
-                                        height: images[i].height,
-                                      },
-                                    });
-                                  }
-                                }
-                                chatStore.updateCurrentSession((session) => {
-                                  const m = session.template.context
-                                    .concat(session.messages)
-                                    .find((m) => m.id === message.id);
-                                  if (m) {
-                                    m.content = newContent;
-                                  }
-                                });
-                              }}
-                            />
-                            {message.streaming ? (
-                              <ChatAction
-                                text={Locale.Chat.Actions.Stop}
-                                icon={<StopIcon />}
-                                onClick={() => onUserStop()}
-                              />
-                            ) : (
-                              <>
-                                <ChatAction
-                                  text={Locale.Chat.Actions.Retry}
-                                  icon={<ResetIcon />}
-                                  onClick={() => onResend(message)}
-                                />
-
-                                <ChatAction
-                                  text={Locale.Chat.Actions.Delete}
-                                  icon={<DeleteIcon />}
-                                  onClick={() => onDelete(message.id ?? i)}
-                                />
-
-                                <ChatAction
-                                  text={Locale.Chat.Actions.Copy}
-                                  icon={<CopyIcon />}
-                                  onClick={() =>
-                                    copyToClipboard(
-                                      getMessageTextContent(message),
-                                    )
-                                  }
-                                />
-                              </>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  {showTyping && (
-                    <div className={styles["chat-message-status"]}>
-                      {Locale.Chat.Typing}
-                    </div>
-                  )}
-                  <div className={styles["chat-message-item"]}>
-                    {(() => {
-                      const { thinking, rest, open } = !isUser
-                        ? splitThinking(getMessageTextContent(message))
-                        : {
-                            thinking: null as string | null,
-                            rest: getMessageTextContent(message),
-                            open: false,
-                          };
-                      return (
-                        <>
-                          {thinking && (
-                            <ThinkingPanel
-                              thinking={thinking}
-                              open={open && !!message.streaming}
-                            />
-                          )}
-                          {!isUser && message.responseKind && (
-                            <div
-                              style={{
-                                marginBottom: 8,
-                                fontSize: "12px",
-                                opacity: 0.65,
-                                textTransform: "uppercase",
-                                letterSpacing: "0.06em",
-                              }}
-                            >
-                              {`\u{2696} System 2 · ${message.responseKind.replace(/-/g, " ")}`}
-                            </div>
-                          )}
-                          {!isUser && message.warrantTrace && (
-                            <WarrantPanel trace={message.warrantTrace} />
-                          )}
-                          {!isUser && message.planTrace && (
-                            <PlanPanel trace={message.planTrace} />
-                          )}
-                          {!isUser && message.sourceCitations?.length ? (
-                            <SourceCitationsPanel
-                              citations={message.sourceCitations}
-                            />
-                          ) : null}
-                          {!isUser && message.webResults !== undefined && (
-                            <WebSearchPanel
-                              results={message.webResults}
-                              query={message.webQuery}
-                              groundingReport={message.groundingReport}
-                              snippets={message.webSnippets}
-                            />
-                          )}
-                          <Markdown
-                            content={rest}
-                            loading={
-                              (message.preview || message.streaming) &&
-                              message.content.length === 0 &&
-                              !isUser
-                            }
-                            onContextMenu={(e) => onRightClick(e, message)}
-                            onDoubleClickCapture={() => {
-                              if (!isMobileScreen) return;
-                              setUserInput(getMessageTextContent(message));
-                            }}
-                            fontSize={fontSize}
-                            parentRef={scrollRef}
-                            defaultShow={i >= messages.length - 6}
-                          />
-                        </>
-                      );
-                    })()}
-                    {getMessageImages(message).length == 1 && (
-                      <Image
-                        className={styles["chat-message-item-image"]}
-                        src={getMessageImages(message)[0].url}
-                        width={getMessageImages(message)[0].width}
-                        height={getMessageImages(message)[0].height}
-                        alt=""
-                      />
-                    )}
-                    {getMessageImages(message).length > 1 && (
-                      <div
-                        className={styles["chat-message-item-images"]}
-                        style={
-                          {
-                            "--image-count": getMessageImages(message).length,
-                          } as React.CSSProperties
-                        }
-                      >
-                        {getMessageImages(message).map((image, index) => {
-                          return (
-                            <Image
-                              className={
-                                styles["chat-message-item-image-multi"]
-                              }
-                              key={index}
-                              src={image.url}
-                              width={image.width}
-                              height={image.height}
-                              alt=""
-                            />
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                  <div className={styles["chat-message-action-date"]}>
-                    <div>
-                      {isContext
-                        ? Locale.Chat.IsContext
-                        : message.date.toLocaleString()}
-                    </div>
-                  </div>
+            {session.modelLoadProgress && (
+              <div className={styles["model-load-progress"]}>
+                <div className={styles["model-load-progress-header"]}>
+                  <span className={styles["model-load-progress-title"]}>
+                    <span className={styles["model-load-spinner"]} />
+                    {Locale.Chat.ModelLoading.Title}
+                  </span>
+                  <span>
+                    {Math.round(session.modelLoadProgress.progress * 100)}%
+                  </span>
+                </div>
+                <div className={styles["model-load-progress-track"]}>
+                  <div
+                    className={styles["model-load-progress-bar"]}
+                    style={{
+                      width: `${Math.round(
+                        session.modelLoadProgress.progress * 100,
+                      )}%`,
+                    }}
+                  />
+                </div>
+                <div className={styles["model-load-progress-text"]}>
+                  {session.modelLoadProgress.text}
+                </div>
+                <div className={styles["model-load-progress-note"]}>
+                  {Locale.Chat.ModelLoading.Note}
                 </div>
               </div>
-              {shouldShowClearContextDivider && <ClearContextDivider />}
-            </Fragment>
-          );
-        })}
-      </div>
-      <div className={styles["chat-input-panel"]}>
-        <ScrollDownToast onclick={scrollToBottom} show={!hitBottom} />
-        <PromptHints prompts={promptHints} onPromptSelect={onPromptSelect} />
+            )}
+            {messages.map((message, i) => {
+              const isUser = message.role === "user";
+              const isContext = i < context.length;
+              const showActions =
+                i > 0 &&
+                !(message.preview || message.content.length === 0) &&
+                !isContext;
+              const showTyping = message.preview || message.streaming;
 
-        <ChatActions
-          uploadImage={uploadImage}
-          uploadFile={uploadFile}
-          setAttachImages={setAttachImages}
-          setUploading={setUploading}
-          scrollToBottom={scrollToBottom}
-          hitBottom={hitBottom}
-          uploading={uploading}
-          uploadingFile={uploadingFile}
-          showPromptSetting={() => setShowEditPromptModal(true)}
-          showPromptHints={() => {
-            // Click again to close
-            if (promptHints.length > 0) {
-              setPromptHints([]);
-              return;
-            }
+              const shouldShowClearContextDivider = i === clearContextIndex - 1;
 
-            inputRef.current?.focus();
-            setUserInput("/");
-            onSearch("");
-          }}
-        />
-        <label
-          className={`${styles["chat-input-panel-inner"]} ${
-            attachImages.length != 0
-              ? styles["chat-input-panel-inner-attach"]
-              : ""
-          }`}
-          htmlFor="chat-input"
-        >
-          <textarea
-            id="chat-input"
-            ref={inputRef}
-            className={styles["chat-input"]}
-            placeholder={Locale.Chat.Input(submitKey)}
-            onInput={(e) => onInput(e.currentTarget.value)}
-            value={userInput}
-            onKeyDown={onInputKeyDown}
-            onFocus={scrollToBottom}
-            onClick={scrollToBottom}
-            onPaste={handlePaste}
-            rows={inputRows}
-            autoFocus={autoFocus}
-            style={{
-              fontSize: config.fontSize,
-            }}
-          />
-          {attachImages.length != 0 && (
-            <div className={styles["attach-images"]}>
-              {attachImages.map((image, index) => {
-                return (
+              return (
+                <Fragment key={`${i}/${message.id}`}>
                   <div
-                    key={index}
-                    className={styles["attach-image"]}
-                    style={{ backgroundImage: `url("${image.url}")` }}
+                    className={
+                      isUser
+                        ? styles["chat-message-user"]
+                        : styles["chat-message"]
+                    }
                   >
-                    <div className={styles["attach-image-template"]}>
-                      <DeleteImageButton
-                        deleteImage={() => {
-                          setAttachImages(
-                            attachImages.filter((_, i) => i !== index),
+                    <div className={styles["chat-message-container"]}>
+                      <div className={styles["chat-message-header"]}>
+                        <div className={styles["chat-message-avatar"]}>
+                          {!isUser && (
+                            <>
+                              {["system"].includes(message.role) ? (
+                                <Avatar avatar="2699-fe0f" /> // Gear icon
+                              ) : (
+                                <TemplateAvatar
+                                  avatar={session.template.avatar}
+                                  model={
+                                    message.model || config.modelConfig.model
+                                  }
+                                  streamedText={getMessageTextContent(message)}
+                                />
+                              )}
+                            </>
+                          )}
+                        </div>
+                        <div
+                          className={styles["chat-message-role-name-container"]}
+                        >
+                          {message.role === "system" && (
+                            <div
+                              className={`${styles["chat-message-role-name"]} ${styles["no-hide"]}`}
+                            >
+                              {Locale.Chat.Roles.System}
+                            </div>
+                          )}
+                          {showActions && (
+                            <div className={styles["chat-message-actions"]}>
+                              <div className={styles["chat-input-actions"]}>
+                                <ChatAction
+                                  text={Locale.Chat.Actions.Edit}
+                                  icon={<EditIcon />}
+                                  onClick={async () => {
+                                    const newMessage = await showPrompt(
+                                      Locale.Chat.Actions.Edit,
+                                      getMessageTextContent(message),
+                                      10,
+                                    );
+                                    let newContent:
+                                      string | MultimodalContent[] = newMessage;
+                                    const images = getMessageImages(message);
+                                    if (images.length > 0) {
+                                      newContent = [
+                                        { type: "text", text: newMessage },
+                                      ];
+                                      for (let i = 0; i < images.length; i++) {
+                                        newContent.push({
+                                          type: "image_url",
+                                          image_url: {
+                                            url: images[i].url,
+                                          },
+                                          dimension: {
+                                            width: images[i].width,
+                                            height: images[i].height,
+                                          },
+                                        });
+                                      }
+                                    }
+                                    chatStore.updateCurrentSession(
+                                      (session) => {
+                                        const m = session.template.context
+                                          .concat(session.messages)
+                                          .find((m) => m.id === message.id);
+                                        if (m) {
+                                          m.content = newContent;
+                                        }
+                                      },
+                                    );
+                                  }}
+                                />
+                                {message.streaming ? (
+                                  <ChatAction
+                                    text={Locale.Chat.Actions.Stop}
+                                    icon={<StopIcon />}
+                                    onClick={() => onUserStop()}
+                                  />
+                                ) : (
+                                  <>
+                                    <ChatAction
+                                      text={Locale.Chat.Actions.Retry}
+                                      icon={<ResetIcon />}
+                                      onClick={() => onResend(message)}
+                                    />
+
+                                    <ChatAction
+                                      text={Locale.Chat.Actions.Delete}
+                                      icon={<DeleteIcon />}
+                                      onClick={() => onDelete(message.id ?? i)}
+                                    />
+
+                                    <ChatAction
+                                      text={Locale.Chat.Actions.Copy}
+                                      icon={<CopyIcon />}
+                                      onClick={() =>
+                                        copyToClipboard(
+                                          getMessageTextContent(message),
+                                        )
+                                      }
+                                    />
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      {showTyping && (
+                        <div className={styles["chat-message-status"]}>
+                          {Locale.Chat.Typing}
+                        </div>
+                      )}
+                      <div className={styles["chat-message-item"]}>
+                        {(() => {
+                          const fullText = getMessageTextContent(message);
+                          const { thinking, rest, open } = !isUser
+                            ? splitThinking(fullText)
+                            : {
+                                thinking: null as string | null,
+                                rest: fullText,
+                                open: false,
+                              };
+                          // groundingSpans' [start,end) are offsets into the
+                          // FULL text chat.ts ran buildGroundingSpans against
+                          // (fullText above), not `rest` — splitThinking only
+                          // ever removes a PREFIX (the <think> block, plus
+                          // leading whitespace), so `rest` is always an exact
+                          // suffix of fullText, and this length difference is
+                          // the exact shift, with no need to re-derive
+                          // splitThinking's own <think>-close-tag arithmetic.
+                          const spanShift = fullText.length - rest.length;
+                          const shiftedGroundingSpans =
+                            !isUser && message.groundingSpans && spanShift >= 0
+                              ? message.groundingSpans
+                                  .map((s) => ({
+                                    ...s,
+                                    start: s.start - spanShift,
+                                    end: s.end - spanShift,
+                                  }))
+                                  .filter(
+                                    (s) => s.start >= 0 && s.end <= rest.length,
+                                  )
+                              : undefined;
+                          return (
+                            <>
+                              {thinking && (
+                                <ThinkingPanel
+                                  thinking={thinking}
+                                  open={open && !!message.streaming}
+                                />
+                              )}
+                              {!isUser && message.responseKind && (
+                                <div
+                                  style={{
+                                    marginBottom: 8,
+                                    fontSize: "12px",
+                                    opacity: 0.65,
+                                    textTransform: "uppercase",
+                                    letterSpacing: "0.06em",
+                                  }}
+                                >
+                                  {`\u{2696} System 2 · ${message.responseKind.replace(/-/g, " ")}`}
+                                </div>
+                              )}
+                              {!isUser && message.warrantTrace && (
+                                <WarrantPanel trace={message.warrantTrace} />
+                              )}
+                              {!isUser && message.planTrace && (
+                                <PlanPanel trace={message.planTrace} />
+                              )}
+                              {!isUser && message.sourceCitations?.length ? (
+                                <SourceCitationsPanel
+                                  citations={message.sourceCitations}
+                                />
+                              ) : null}
+                              {!isUser && message.webResults !== undefined && (
+                                <WebSearchPanel
+                                  results={message.webResults}
+                                  query={message.webQuery}
+                                  groundingReport={message.groundingReport}
+                                  snippets={message.webSnippets}
+                                />
+                              )}
+                              <Markdown
+                                content={rest}
+                                loading={
+                                  (message.preview || message.streaming) &&
+                                  message.content.length === 0 &&
+                                  !isUser
+                                }
+                                onContextMenu={(e) => onRightClick(e, message)}
+                                onDoubleClickCapture={() => {
+                                  if (!isMobileScreen) return;
+                                  setUserInput(getMessageTextContent(message));
+                                }}
+                                fontSize={fontSize}
+                                parentRef={scrollRef}
+                                defaultShow={i >= messages.length - 6}
+                                groundingSpans={shiftedGroundingSpans}
+                                groundingCitations={message.groundingCitations}
+                                onNavigateTerrain={openTerrainCard}
+                              />
+                            </>
                           );
-                        }}
-                      />
+                        })()}
+                        {getMessageImages(message).length == 1 && (
+                          <Image
+                            className={styles["chat-message-item-image"]}
+                            src={getMessageImages(message)[0].url}
+                            width={getMessageImages(message)[0].width}
+                            height={getMessageImages(message)[0].height}
+                            alt=""
+                          />
+                        )}
+                        {getMessageImages(message).length > 1 && (
+                          <div
+                            className={styles["chat-message-item-images"]}
+                            style={
+                              {
+                                "--image-count":
+                                  getMessageImages(message).length,
+                              } as React.CSSProperties
+                            }
+                          >
+                            {getMessageImages(message).map((image, index) => {
+                              return (
+                                <Image
+                                  className={
+                                    styles["chat-message-item-image-multi"]
+                                  }
+                                  key={index}
+                                  src={image.url}
+                                  width={image.width}
+                                  height={image.height}
+                                  alt=""
+                                />
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                      <div className={styles["chat-message-action-date"]}>
+                        <div>
+                          {isContext
+                            ? Locale.Chat.IsContext
+                            : message.date.toLocaleString()}
+                        </div>
+                      </div>
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          )}
-          {isStreaming ? (
-            <IconButton
-              icon={<StopIcon />}
-              text={Locale.Chat.InputActions.Stop}
-              className={styles["chat-input-send"]}
-              type="primary"
-              onClick={() => onUserStop()}
+                  {shouldShowClearContextDivider && <ClearContextDivider />}
+                </Fragment>
+              );
+            })}
+          </div>
+          <div className={styles["chat-input-panel"]}>
+            <ScrollDownToast onclick={scrollToBottom} show={!hitBottom} />
+            <PromptHints
+              prompts={promptHints}
+              onPromptSelect={onPromptSelect}
             />
-          ) : (
-            <IconButton
-              icon={<SendWhiteIcon />}
-              text={Locale.Chat.Send}
-              className={styles["chat-input-send"]}
-              type="primary"
-              onClick={() => onSubmit(userInput)}
+
+            <ChatActions
+              uploadImage={uploadImage}
+              uploadFile={uploadFile}
+              setAttachImages={setAttachImages}
+              setUploading={setUploading}
+              scrollToBottom={scrollToBottom}
+              hitBottom={hitBottom}
+              uploading={uploading}
+              uploadingFile={uploadingFile}
+              showPromptSetting={() => setShowEditPromptModal(true)}
+              showPromptHints={() => {
+                // Click again to close
+                if (promptHints.length > 0) {
+                  setPromptHints([]);
+                  return;
+                }
+
+                inputRef.current?.focus();
+                setUserInput("/");
+                onSearch("");
+              }}
             />
-          )}
-        </label>
+            <label
+              className={`${styles["chat-input-panel-inner"]} ${
+                attachImages.length != 0
+                  ? styles["chat-input-panel-inner-attach"]
+                  : ""
+              }`}
+              htmlFor="chat-input"
+            >
+              <textarea
+                id="chat-input"
+                ref={inputRef}
+                className={styles["chat-input"]}
+                placeholder={Locale.Chat.Input(submitKey)}
+                onInput={(e) => onInput(e.currentTarget.value)}
+                value={userInput}
+                onKeyDown={onInputKeyDown}
+                onFocus={scrollToBottom}
+                onClick={scrollToBottom}
+                onPaste={handlePaste}
+                rows={inputRows}
+                autoFocus={autoFocus}
+                style={{
+                  fontSize: config.fontSize,
+                }}
+              />
+              {attachImages.length != 0 && (
+                <div className={styles["attach-images"]}>
+                  {attachImages.map((image, index) => {
+                    return (
+                      <div
+                        key={index}
+                        className={styles["attach-image"]}
+                        style={{ backgroundImage: `url("${image.url}")` }}
+                      >
+                        <div className={styles["attach-image-template"]}>
+                          <DeleteImageButton
+                            deleteImage={() => {
+                              setAttachImages(
+                                attachImages.filter((_, i) => i !== index),
+                              );
+                            }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {isStreaming ? (
+                <IconButton
+                  icon={<StopIcon />}
+                  text={Locale.Chat.InputActions.Stop}
+                  className={styles["chat-input-send"]}
+                  type="primary"
+                  onClick={() => onUserStop()}
+                />
+              ) : (
+                <IconButton
+                  icon={<SendWhiteIcon />}
+                  text={Locale.Chat.Send}
+                  className={styles["chat-input-send"]}
+                  type="primary"
+                  onClick={() => onSubmit(userInput)}
+                />
+              )}
+            </label>
+          </div>
+        </div>
+        {showTerrainPanel && (
+          <TerrainPanel
+            session={session}
+            active={activeTerrainCard}
+            canBack={terrainHistoryIndex > 0}
+            canForward={terrainHistoryIndex < terrainHistory.length - 1}
+            onBack={terrainBack}
+            onForward={terrainForward}
+            onNavigate={openTerrainCard}
+            onClose={closeTerrainPanel}
+          />
+        )}
       </div>
 
       {showExport && (

@@ -278,7 +278,7 @@ const CLAIM_STOPWORDS = new Set([
   "response",
 ]);
 
-function wordSet(s: string): Set<string> {
+export function wordSet(s: string): Set<string> {
   const set = new Set<string>();
   for (const w of String(s || "")
     .toLowerCase()
@@ -289,7 +289,7 @@ function wordSet(s: string): Set<string> {
 }
 
 const NUM_IN_TEXT_RE = /\d[\d,]*(?:\.\d+)?/g;
-function numberSet(s: string): Set<string> {
+export function numberSet(s: string): Set<string> {
   const set = new Set<string>();
   const src = String(s || "");
   NUM_IN_TEXT_RE.lastIndex = 0;
@@ -301,7 +301,7 @@ function numberSet(s: string): Set<string> {
 }
 
 const MIN_STEM = 4;
-function hasWord(words: Set<string>, word: string): boolean {
+export function hasWord(words: Set<string>, word: string): boolean {
   const w = word.toLowerCase();
   if (words.has(w)) return true;
   if (w.length < MIN_STEM) return false;
@@ -312,16 +312,16 @@ function hasWord(words: Set<string>, word: string): boolean {
   return false;
 }
 
-function hasNumber(numbers: Set<string>, token: string): boolean {
+export function hasNumber(numbers: Set<string>, token: string): boolean {
   return numbers.has(String(token).replace(/,/g, ""));
 }
 
-interface Index {
+export interface Index {
   words: Set<string>;
   numbers: Set<string>;
 }
 
-function buildUnionIndex(citations: CitationEntry[]): Index {
+export function buildUnionIndex(citations: CitationEntry[]): Index {
   const words = new Set<string>();
   const numbers = new Set<string>();
   for (const c of citations) {
@@ -359,7 +359,7 @@ const NUMBER_RE = /\b\d[\d,]*(?:\.\d+)?%?\b/g;
 const PROPER_RE =
   /\p{Lu}[\p{L}]*(?:['’][\p{L}]+)?(?:[ -](?:of|the|de|von|van|del|la|le)?[ ]?\p{Lu}[\p{L}]*(?:['’][\p{L}]+)?)*/gu;
 
-interface Atom {
+export interface Atom {
   kind: "number" | "name";
   text: string;
   tokens: string[];
@@ -367,7 +367,7 @@ interface Atom {
   end: number;
 }
 
-function extractAtoms(sentence: string, absoluteStart: number): Atom[] {
+export function extractAtoms(sentence: string, absoluteStart: number): Atom[] {
   const atoms: Atom[] = [];
 
   NUMBER_RE.lastIndex = 0;
@@ -427,6 +427,44 @@ export function countClaimAtoms(content: string): number {
   for (const s of splitSentences(String(content || "")))
     n += extractAtoms(s.text, s.start).length;
   return n;
+}
+
+export interface ClaimAtom {
+  atomKind: "number" | "name";
+  text: string;
+  start: number;
+  end: number;
+  echoesQuestion: boolean;
+}
+
+/**
+ * The same atoms checkGrounding looks for, but standalone — for the turn
+ * that never searched or read a source at all, so there is no citation set
+ * to check them against yet. This is what eo-revision.ts's post-display
+ * pass targets: not "unsupported by evidence already gathered" (there is
+ * none) but "specific enough to be worth going and looking up now".
+ *
+ * `question` is threaded through for the same reason checkGrounding takes
+ * one: a figure the reader supplied themselves ("was it built in 1887?" →
+ * "yes, in 1887") isn't a claim the model is asserting on its own account,
+ * and searching to "fact-check" the reader's own words back at them is
+ * both wasted work and a strange thing to show them.
+ */
+export function extractClaimAtoms(content: string, question = ""): ClaimAtom[] {
+  const questionWords = wordSet(question);
+  const out: ClaimAtom[] = [];
+  for (const s of splitSentences(String(content || "")))
+    for (const a of extractAtoms(s.text, s.start))
+      out.push({
+        atomKind: a.kind,
+        text: a.text,
+        start: a.start,
+        end: a.end,
+        echoesQuestion: a.tokens.every((t) =>
+          questionWords.has(t.toLowerCase()),
+        ),
+      });
+  return out;
 }
 
 /**
@@ -555,7 +593,7 @@ const SNIP_MIN_SIGNIFICANT_WORDS = 3;
 const SNIP_MAX_CHARS = 160;
 const SNIP_MIN_SOURCE_CHARS = 20;
 
-function significantWords(s: string): Set<string> {
+export function significantWords(s: string): Set<string> {
   const set = new Set<string>();
   for (const w of String(s || "")
     .toLowerCase()

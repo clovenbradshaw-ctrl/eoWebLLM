@@ -1,6 +1,12 @@
 import styles from "./home.module.scss";
 import { showConfirm, showPrompt } from "./ui-lib";
-import { FolderSimple, PencilSimple, Plus, X } from "@phosphor-icons/react";
+import {
+  FolderSimple,
+  PencilSimple,
+  Plus,
+  X,
+  ChatCircle,
+} from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { Path } from "../constant";
 import { useChatStore, projectSources, type Project } from "../store";
@@ -26,10 +32,19 @@ export function ProjectsPanel(props: { narrow?: boolean }) {
     openProject(project.id);
   }
 
+  // Opens the project page (project.tsx) -- its Chats/Documents/
+  // Instructions tabs, not straight into a chat. openLatestChat below is
+  // the fast one-click-into-chat shortcut for the reader who just wants to
+  // keep talking.
+  function openProject(projectId: string) {
+    chatStore.setCurrentProjectId(projectId);
+    navigate(Path.Project);
+  }
+
   // Opens a project's most recently active session, or starts a fresh one
   // stamped with this project's id if it has none yet -- the same
   // auto-create-a-first-conversation move eochat's switchProject makes.
-  function openProject(projectId: string) {
+  function openLatestChat(projectId: string) {
     let latestIndex = -1;
     let latestUpdate = -1;
     sessions.forEach((s, i) => {
@@ -101,13 +116,28 @@ export function ProjectsPanel(props: { narrow?: boolean }) {
               </div>
               <div className={styles["projects-panel-item-actions"]}>
                 <span
-                  onClick={() => renameProject(project)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openLatestChat(project.id);
+                  }}
+                  title="Open latest chat"
+                >
+                  <ChatCircle size={12} />
+                </span>
+                <span
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    renameProject(project);
+                  }}
                   title="Rename project"
                 >
                   <PencilSimple size={12} />
                 </span>
                 <span
-                  onClick={() => deleteProject(project)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteProject(project);
+                  }}
                   title="Delete project"
                 >
                   <X size={12} />

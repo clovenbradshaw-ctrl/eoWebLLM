@@ -1128,3 +1128,40 @@
 #dmermaid {
   display: none;
 }
+
+// Citey's grounding chips — inline over message text, one per checkable
+// atom (see app/client/eo-grounding-spans.ts, app/components/terrain/
+// grounding-chip.tsx). Underline style carries the state; only "sourced"
+// (with a resolvable corpus citation) is actually clickable, into the
+// terrain panel's Field card.
+.eo-chip {
+  border-bottom: 1.5px solid transparent;
+  border-radius: 2px;
+}
+
+.eo-chip-sourced {
+  border-bottom-color: var(--primary);
+}
+
+.eo-chip-clickable {
+  cursor: pointer;
+  &:hover {
+    background: var(--second);
+  }
+}
+
+.eo-chip-owned {
+  border-bottom: 1.5px dotted var(--black);
+  opacity: 0.85;
+}
+
+.eo-chip-checking {
+  border-bottom: 1.5px dashed #8a8a8a;
+  opacity: 0.75;
+}
+
+.eo-chip-contradicted {
+  border-bottom: 1.5px solid #b3261e;
+  text-decoration: line-through;
+  text-decoration-color: #b3261e;
+}

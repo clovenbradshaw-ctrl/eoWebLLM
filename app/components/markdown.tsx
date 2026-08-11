@@ -14,6 +14,14 @@ import React from "react";
 import { useDebouncedCallback } from "use-debounce";
 import { showImageModal } from "./ui-lib";
 import { PluggableList } from "unified";
+import type { GroundingSpan } from "../client/eo-grounding-spans";
+import type { CitationEntry } from "../client/eo-citation-check";
+import {
+  wrapGroundingSpans,
+  remarkGroundingChips,
+  GroundingChip,
+} from "./terrain/grounding-chip";
+import type { OnNavigate } from "./terrain/types";
 
 export function Mermaid(props: { code: string }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -135,14 +143,40 @@ function escapeBrackets(text: string) {
   );
 }
 
-function MarkDownContent(props: { content: string }) {
+function MarkDownContent(props: {
+  content: string;
+  groundingSpans?: GroundingSpan[];
+  groundingCitations?: CitationEntry[];
+  onNavigateTerrain?: OnNavigate;
+}) {
   const escapedContent = useMemo(() => {
-    return escapeBrackets(escapeDollarNumber(props.content));
-  }, [props.content]);
+    // Sentinel-wrap FIRST, against the raw content the spans' own [start,end)
+    // offsets were computed against in chat.ts — then escape. escapeDollarNumber
+    // /escapeBrackets are insertion-only and only touch `$<digit>`/`\[...\]`/
+    // `\(...\)` patterns, which the sentinel markers don't produce, so this
+    // ordering needs no offset translation between raw and escaped coordinates.
+    return escapeBrackets(
+      escapeDollarNumber(
+        wrapGroundingSpans(props.content, props.groundingSpans),
+      ),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.content, props.groundingSpans]);
+
+  const remarkPlugins = useMemo(
+    () =>
+      [
+        RemarkMath,
+        RemarkGfm,
+        RemarkBreaks,
+        remarkGroundingChips,
+      ] as PluggableList,
+    [],
+  );
 
   return (
     <ReactMarkdown
-      remarkPlugins={[RemarkMath, RemarkGfm, RemarkBreaks] as PluggableList}
+      remarkPlugins={remarkPlugins}
       rehypePlugins={
         [
           RehypeKatex,
@@ -155,16 +189,31 @@ function MarkDownContent(props: { content: string }) {
           ],
         ] as PluggableList
       }
-      components={{
-        pre: PreCode as any,
-        p: (pProps) => <p {...pProps} dir="auto" />,
-        a: (aProps) => {
-          const href = aProps.href || "";
-          const isInternal = /^\/#/i.test(href);
-          const target = isInternal ? "_self" : (aProps.target ?? "_blank");
-          return <a {...aProps} target={target} />;
-        },
-      }}
+      components={
+        {
+          pre: PreCode as any,
+          p: (pProps: any) => <p {...pProps} dir="auto" />,
+          a: (aProps: any) => {
+            const href = aProps.href || "";
+            const isInternal = /^\/#/i.test(href);
+            const target = isInternal ? "_self" : (aProps.target ?? "_blank");
+            return <a {...aProps} target={target} />;
+          },
+          // Not a real HTML tag — the synthetic element remarkGroundingChips
+          // (above) mints via mdast-util-to-hast's data.hName escape hatch.
+          "eo-chip": (chipProps: any) =>
+            props.groundingSpans ? (
+              <GroundingChip
+                {...chipProps}
+                spans={props.groundingSpans}
+                citations={props.groundingCitations}
+                onNavigate={props.onNavigateTerrain}
+              />
+            ) : (
+              <>{chipProps.children}</>
+            ),
+        } as any
+      }
     >
       {escapedContent}
     </ReactMarkdown>
@@ -180,6 +229,9 @@ export function Markdown(
     fontSize?: number;
     parentRef?: RefObject<HTMLDivElement>;
     defaultShow?: boolean;
+    groundingSpans?: GroundingSpan[];
+    groundingCitations?: CitationEntry[];
+    onNavigateTerrain?: OnNavigate;
   } & React.DOMAttributes<HTMLDivElement>,
 ) {
   const mdRef = useRef<HTMLDivElement>(null);
@@ -198,7 +250,12 @@ export function Markdown(
       {props.loading ? (
         <LoadingIcon />
       ) : (
-        <MarkdownContent content={props.content} />
+        <MarkdownContent
+          content={props.content}
+          groundingSpans={props.groundingSpans}
+          groundingCitations={props.groundingCitations}
+          onNavigateTerrain={props.onNavigateTerrain}
+        />
       )}
     </div>
   );

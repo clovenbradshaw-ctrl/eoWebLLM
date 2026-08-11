@@ -42,9 +42,26 @@ const eoreader: any = eoreaderHost;
 import { extractSelfFacts } from "./eo-self-facts";
 
 export interface HypergraphMovement {
+  /** The docId this admission was for (`source:<id>` or `turn:<id>`) — so a
+   *  caller logging several movements at once can say which is which. */
+  docId: string;
   newEdges: number;
   newNodes: number;
   stated: number;
+  /** Which Interpretation-tier terrains this admission's own evidence
+   *  climbed, in order (e.g. ["atmosphere"], or ["atmosphere","lens",
+   *  "paradigm"] on an admission whose surprise survived all the way up) —
+   *  emergence/tiers.js::foldThrough's own `results`/`reached`/`top`,
+   *  never invented here. Empty when nothing folded (no relations stated).
+   */
+  reached: string[];
+  /** The highest terrain this admission's evidence reached, or null. */
+  top: string | null;
+  /** Whether that top terrain's own gate passed — i.e. this admission
+   *  registered as a genuine SHIFT at its highest reached terrain, not
+   *  merely an observation that arrived and was absorbed without moving
+   *  anything. */
+  shiftedAtTop: boolean;
 }
 
 export interface HypergraphNavigation {
@@ -67,6 +84,32 @@ interface HypergraphWrapper {
   hydrated: boolean;
   /** verb|object (lowercased object) -> turns this self-fact was (re)stated on. */
   selfFactTurns: Map<string, { firstTurn: number; lastTurn: number }>;
+  /** graph.tick (as it stood immediately after that tick's own admission) ->
+   *  the docId admitted at that tick. admitGraph's readTriples advances
+   *  graph.tick by exactly one per admitOnce call, so this is a plain,
+   *  exact index — not a heuristic — from a node's own firstSeen/lastSeen
+   *  tick (emergence/graph.js) back to which source or turn was admitted
+   *  then. Populated in admitOnce, nowhere else. */
+  tickToDocId: Map<number, string>;
+}
+
+/**
+ * Which key a session's hypergraph reading lives under. Sources are already
+ * project-scoped (`projectSources`, eo-corpus.ts's own sharing model — a
+ * file uploaded in one session of a project is answerable from any other
+ * session in the same project); the reading built FROM those sources — the
+ * graph, the tier stack, the EOT admission log — now follows the same rule:
+ * every session in a project shares ONE hypergraph, not one each. A session
+ * with no `projectId` keeps exactly its own, as it always has. Every caller
+ * below MUST go through this rather than reading `session.id` directly, or
+ * a project's chats silently diverge into separate readings of what the
+ * reader sees as one shared corpus.
+ */
+export function hypergraphScopeId(session: {
+  id: string;
+  projectId?: string;
+}): string {
+  return session.projectId ?? session.id;
 }
 
 const wrappers = new Map<string, HypergraphWrapper>();
@@ -79,6 +122,7 @@ function wrapperFor(chatSessionId: string): HypergraphWrapper {
       admitted: new Set(),
       hydrated: false,
       selfFactTurns: new Map(),
+      tickToDocId: new Map(),
     };
     wrappers.set(chatSessionId, w);
   }
@@ -111,12 +155,33 @@ function admitOnce(
   eoreader.admitChunked(w.session, { text, sourceId: docId });
   eoreader.attachTiers(w.session, { seed: TIER_SEED });
   const { admitted } = eoreader.admitTiers(w.session, { sourceId: docId });
-  const result = admitted[0]?.admitted;
+  const one = admitted[0];
+  const result = one?.admitted;
   if (!result) return null;
+  // one.folded is emergence/tiers.js::foldThrough's own return shape
+  // ({results, reached, top}) when this admission's evidence moved the
+  // graph at all, or null when nothing was stated to fold (packages/host/
+  // tiers.js::admitTiers, "folded: arrival.size > 0 ? foldThrough(...) :
+  // null"). Read straight from it — never re-derived, never guessed —
+  // so Amendment XXVI's "say which terrain, honestly" has something real
+  // to report.
+  const folded = one?.folded ?? null;
+  const results: { tier: string; passed: boolean }[] = folded?.results ?? [];
+  // graph.tick has already advanced past the tick this admission was
+  // recorded at (admitGraph's readTriples increments once, after stamping
+  // firstSeen/lastSeen on the nodes it touched) — so the tick this docId
+  // owns is one behind wherever the counter now sits.
+  const graphTick = w.session?.graph?.tick;
+  if (typeof graphTick === "number") w.tickToDocId.set(graphTick - 1, docId);
   return {
+    docId,
     newEdges: result.newEdges ?? 0,
     newNodes: result.newNodes ?? 0,
     stated: result.stated ?? 0,
+    reached: results.map((r) => r.tier),
+    top: folded?.top ?? null,
+    shiftedAtTop:
+      results.length > 0 ? results[results.length - 1]?.passed === true : false,
   };
 }
 
@@ -286,6 +351,118 @@ export function foldGraphOnEntity(
   return { ...snap, nodes, edges };
 }
 
+export interface EntityDetail {
+  id: string;
+  mentions: number;
+  firstSeenDocId: string | null;
+  lastSeenDocId: string | null;
+  /** Every edge touching this node — unlike hypergraphSnapshot/foldGraphOnEntity, not capped for a terminal render. */
+  edges: { edge: string; weight: number }[];
+}
+
+/**
+ * One entity's own detail — mentions, first/last-admitted docId, every edge
+ * that names it. Reads emergence/graph.js's live nodes/edges Maps directly
+ * (the same Maps queryUserFacts already reads), not the capped/flattened
+ * hypergraphSnapshot, since a terrain card wants the whole neighbourhood,
+ * not a terminal-sized slice of it.
+ */
+export function entityDetail(
+  chatSessionId: string,
+  entity: string,
+): EntityDetail | null {
+  const w = wrappers.get(chatSessionId);
+  const graph = w?.session?.graph;
+  if (!graph?.nodes) return null;
+  const id = entity.toLowerCase();
+  const node = graph.nodes.get(id);
+  if (!node) return null;
+  const edges: { edge: string; weight: number }[] = [];
+  for (const [key, weight] of graph.edges as Map<string, number>) {
+    const parts = String(key).split("|");
+    if (parts.length === 3 && (parts[0] === id || parts[2] === id))
+      edges.push({ edge: key, weight });
+  }
+  return {
+    id: node.id,
+    mentions: node.mentions,
+    firstSeenDocId: w!.tickToDocId.get(node.firstSeen) ?? null,
+    lastSeenDocId: w!.tickToDocId.get(node.lastSeen) ?? null,
+    edges,
+  };
+}
+
+export interface LinkDetail {
+  edge: string;
+  subject: string;
+  verb: string;
+  object: string;
+  weight: number;
+  /** DERIVED bound (min/max over the two endpoint nodes' own firstSeen/
+   *  lastSeen ticks), NOT an authoritative per-edge timestamp — readTriples
+   *  (emergence/graph.js) never timestamps an edge itself, only the nodes
+   *  it touches. Render as "seen between X and Y", never "stated on X". */
+  firstSeenDocId: string | null;
+  lastSeenDocId: string | null;
+}
+
+/**
+ * One link's own detail. `edgeOrKey` accepts either the flattened
+ * "subject|verb|object" edge string GraphTerrainSnapshot already hands out
+ * (verb may carry a leading "!" for negative polarity, per graph.js's
+ * edgeKey) or a bare "subject|verb|object" the caller assembled itself —
+ * both are the same lookup key into graph.edges.
+ */
+export function linkDetail(
+  chatSessionId: string,
+  edgeOrKey: string,
+): LinkDetail | null {
+  const w = wrappers.get(chatSessionId);
+  const graph = w?.session?.graph;
+  if (!graph?.edges) return null;
+  const weight = (graph.edges as Map<string, number>).get(edgeOrKey);
+  if (weight === undefined) return null;
+  const parts = edgeOrKey.split("|");
+  if (parts.length !== 3) return null;
+  const [subject, verb, object] = parts;
+  const subjectNode = graph.nodes.get(subject);
+  const objectNode = graph.nodes.get(object);
+  const firstSeenTick =
+    subjectNode && objectNode
+      ? Math.min(subjectNode.firstSeen, objectNode.firstSeen)
+      : (subjectNode ?? objectNode)?.firstSeen;
+  const lastSeenTick =
+    subjectNode && objectNode
+      ? Math.max(subjectNode.lastSeen, objectNode.lastSeen)
+      : (subjectNode ?? objectNode)?.lastSeen;
+  return {
+    edge: edgeOrKey,
+    subject,
+    verb,
+    object,
+    weight,
+    firstSeenDocId:
+      typeof firstSeenTick === "number"
+        ? (w!.tickToDocId.get(firstSeenTick) ?? null)
+        : null,
+    lastSeenDocId:
+      typeof lastSeenTick === "number"
+        ? (w!.tickToDocId.get(lastSeenTick) ?? null)
+        : null,
+  };
+}
+
+/** Pure string parsing — a docId is always "turn:<id>" or "source:<id>" (admitOnce's own docId shapes), never anything else. */
+export function resolveDocId(
+  docId: string,
+): { kind: "turn" | "source"; id: string } | null {
+  const i = docId.indexOf(":");
+  if (i < 0) return null;
+  const kind = docId.slice(0, i);
+  if (kind !== "turn" && kind !== "source") return null;
+  return { kind, id: docId.slice(i + 1) };
+}
+
 export interface TierShiftRecord {
   at: number;
   tier: string;
@@ -320,11 +497,23 @@ export function hypergraphTiersSnapshot(
 }
 
 /**
- * Backfill a resumed chat session's graph from what it already has on first
- * use this page-load — its registered sources and its past messages — so
- * the graph is not empty every time the app reloads. A no-op past the first
- * call (tracked on the wrapper), since every source/turn id is admitted at
- * most once regardless.
+ * Backfill a chat session's graph from whatever it hasn't admitted yet —
+ * its registered sources and its past messages — so the graph is never
+ * missing something the reader can already see attached to this chat.
+ *
+ * FIXED, same session as this comment: this used to short-circuit after
+ * its first call (`if (w.hydrated) return`), which meant a source uploaded
+ * AFTER a chat's first message was silently never admitted — the outer
+ * `hydrated` flag was a stale optimization on top of a check (`admitOnce`'s
+ * own `w.admitted.has(docId)`) that already makes re-running this loop
+ * cheap and correct. Removed; every call now re-scans and admits only what
+ * is genuinely new, which is exactly what admitOnce already guarantees.
+ *
+ * Returns the real per-admission movement for each newly-admitted source or
+ * turn (Amendment XXVI, eoreader6/SEED.md — "a host must say which terrain
+ * it is reporting from, not silently pretend to a depth it has not
+ * earned") — callers push these to the EOT log themselves, since only the
+ * caller knows the right session to log against.
  */
 export function isHypergraphHydrated(chatSessionId: string): boolean {
   return !!wrappers.get(chatSessionId)?.hydrated;
@@ -334,12 +523,19 @@ export function ensureHypergraphHydrated(
   chatSessionId: string,
   sources: { id: string; text: string }[],
   turns: { id: string; content: string }[],
-): void {
+): HypergraphMovement[] {
   const w = wrapperFor(chatSessionId);
-  if (w.hydrated) return;
   w.hydrated = true;
-  for (const s of sources) admitOnce(w, `source:${s.id}`, s.text);
-  for (const t of turns) admitOnce(w, `turn:${t.id}`, t.content);
+  const movements: HypergraphMovement[] = [];
+  for (const s of sources) {
+    const m = admitOnce(w, `source:${s.id}`, s.text);
+    if (m) movements.push(m);
+  }
+  for (const t of turns) {
+    const m = admitOnce(w, `turn:${t.id}`, t.content);
+    if (m) movements.push(m);
+  }
+  return movements;
 }
 
 const tokenize = (s: string): string[] => [
@@ -433,6 +629,21 @@ export function describeHypergraphNavigation(
   if (!nav.relevantNodes.length && !nav.relevantEdges.length)
     parts.push("no relation in the graph touches this turn's own words");
   return parts.join(" · ");
+}
+
+/**
+ * One EOT log line for a single admission — Amendment XXVI (eoreader6/
+ * SEED.md): say which terrain a reading actually reached, honestly, every
+ * time, not only in aggregate at query time (describeHypergraphNavigation,
+ * above). Shared by every call site that admits something, so an admission
+ * is never logged two different ways depending on which path it came in
+ * through (a source at hydration time, a turn admitted mid-conversation).
+ */
+export function describeHypergraphMovement(m: HypergraphMovement): string {
+  const climb = m.reached.length
+    ? `climbed to ${m.top}${m.shiftedAtTop ? " (shifted)" : " (observed, no shift)"} via ${m.reached.join("->")}`
+    : "no relations stated — nothing to fold";
+  return `admitted ${m.docId}: ${m.newNodes} new node(s), ${m.newEdges} new edge(s), ${m.stated} relation(s) stated — ${climb}`;
 }
 
 // ── Stage 2 — the targeted background call ──────────────────────────────

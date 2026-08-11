@@ -13,6 +13,7 @@ export enum Path {
   Chat = "/chat",
   Settings = "/settings",
   Templates = "/templates",
+  Project = "/project",
 }
 
 export enum ApiPath {
@@ -58,6 +59,11 @@ export const MIN_SIDEBAR_WIDTH = 260;
 // EOChat's collapsed left rail is a compact navigation strip, not a second
 // narrow content column.
 export const NARROW_SIDEBAR_WIDTH = 56;
+
+// Right-docked terrain panel (Entity/Link/Network/Atmosphere/... cards).
+export const DEFAULT_TERRAIN_PANEL_WIDTH = 380;
+export const MAX_TERRAIN_PANEL_WIDTH = 640;
+export const MIN_TERRAIN_PANEL_WIDTH = 320;
 
 export const ACCESS_CODE_PREFIX = "nk-";
 
