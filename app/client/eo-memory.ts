@@ -436,9 +436,27 @@ export function updateStatedFacts(
 export function buildMemoryMessage({
   hot = [],
   facts = [],
-}: { hot?: HotTerm[]; facts?: StatedFact[] } = {}): string | null {
+  oldestVerbatimTurn = 0,
+}: {
+  hot?: HotTerm[];
+  facts?: StatedFact[];
+  /**
+   * The oldest user-turn number still verbatim in this turn's recency
+   * window (see EO_HISTORY_TURNS in chat.ts). A fact whose most recent
+   * restatement (lastTurn) falls on or after this boundary is already
+   * visible raw in the prompt, so it's skipped here — the desk exists to
+   * survive a fact falling OUT of that window, not to duplicate what's
+   * already in it. 0 (default) disables the filter, the safe fallback
+   * when a caller has no window to supply.
+   */
+  oldestVerbatimTurn?: number;
+} = {}): string | null {
+  const deskFacts =
+    oldestVerbatimTurn > 0
+      ? facts.filter((f) => f.lastTurn < oldestVerbatimTurn)
+      : facts;
   const parts: string[] = [];
-  if (facts.length) {
+  if (deskFacts.length) {
     const lines: string[] = [];
     lines.push(
       "CONVERSATION WORKING MEMORY — verbatim statements made in this conversation.",
@@ -446,7 +464,7 @@ export function buildMemoryMessage({
     lines.push(
       "This record is authoritative for what was said HERE. Never deny or say 'not discussed' about any fact listed below. Anything NOT listed was not stated in this conversation.",
     );
-    facts.forEach((f, i) => {
+    deskFacts.forEach((f, i) => {
       lines.push(
         `${i + 1}. [${f.confirmed ? "acknowledged" : "stated"}] ${f.text}`,
       );

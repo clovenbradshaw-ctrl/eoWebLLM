@@ -1,10 +1,10 @@
 .icon-button {
   background-color: var(--white);
-  border-radius: 10px;
+  border-radius: 7px;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 10px;
+  padding: 8px;
 
   cursor: pointer;
   transition: all 0.3s ease;
@@ -46,6 +46,10 @@
   &:hover,
   &:focus {
     border-color: var(--primary);
+  }
+
+  &:not(.primary):not(.danger):hover {
+    background-color: var(--hover-color);
   }
 }
 

@@ -22,8 +22,8 @@ import {
 import CopyIcon from "../icons/copy.svg";
 import LoadingIcon from "../icons/three-dots.svg";
 import ShareIcon from "../icons/share.svg";
-import MlcIcon from "../icons/mlc.svg";
-import MlcIconPng from "../icons/mlc.png";
+
+import { Robot, Sparkle } from "@phosphor-icons/react";
 
 import DownloadIcon from "../icons/download.svg";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -302,7 +302,7 @@ function ExportAvatar(props: { avatar: string }) {
   if (props.avatar === DEFAULT_TEMPLATE_AVATAR) {
     return (
       <div className="bot-avatar no-dark">
-        <MlcIcon />
+        <Robot size={18} weight="fill" />
       </div>
     );
   }
@@ -391,7 +391,7 @@ export function ImagePreviewer(props: {
       >
         <div className={styles["chat-info"]}>
           <div className={styles["logo"] + " no-dark"}>
-            <MlcIcon />
+            <Sparkle size={26} weight="fill" />
           </div>
 
           <div>

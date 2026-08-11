@@ -45,16 +45,21 @@ const nextConfig = {
 
     config.resolve.fallback = {
       child_process: false,
-      // pdfjs-dist (app/client/eo-file-extract.ts) has an optional,
-      // conditionally-executed `require("canvas")` for a page-rendering
-      // path this app never takes (only getTextContent() is used, for
-      // text extraction) — but webpack still tries to statically resolve
-      // it. No such runtime exists in a browser tab, so this stays
-      // unresolved rather than pulling in a native dependency the project
-      // doesn't otherwise need. Needed for both the client and server
-      // compilation passes: chat.tsx (which imports eo-file-extract.ts) is
-      // bundled for SSR too, even though uploadFile only ever runs
-      // client-side.
+    };
+
+    // pdfjs-dist (app/client/eo-file-extract.ts) has an optional,
+    // conditionally-executed `require("canvas")` for a page-rendering path
+    // this app never takes (only getTextContent() is used, for text
+    // extraction). `resolve.fallback` only substitutes a module that fails
+    // to resolve; `canvas` is an installed package with a compiled native
+    // `.node` binary, so it resolves successfully and webpack then chokes
+    // trying to parse that binary as a module. `resolve.alias` forces the
+    // stub unconditionally, regardless of whether the real package is
+    // present. Needed for both the client and server compilation passes:
+    // chat.tsx (which imports eo-file-extract.ts) is bundled for SSR too,
+    // even though uploadFile only ever runs client-side.
+    config.resolve.alias = {
+      ...config.resolve.alias,
       canvas: false,
     };
 
@@ -128,4 +133,11 @@ if (mode !== "export") {
 export default withSerwistInit({
   swSrc: "app/worker/service-worker.ts",
   swDest: "public/sw.js",
+  // The default auto-injected registration calls `.register()` with no
+  // `.catch()` -- in storage-partitioned/sandboxed contexts (private
+  // browsing, embedded previews) that promise rejects and surfaces as an
+  // uncaught rejection with no way to handle it from app code, since it
+  // runs before any of our own effects mount. Registering it ourselves in
+  // app/components/home.tsx (with a real .catch()) instead.
+  register: false,
 })(nextConfig);

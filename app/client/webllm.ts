@@ -39,6 +39,17 @@ export class WebLLMApi implements LLMApi {
   private initializing?: Promise<void>;
   webllm: WebLLMHandler;
 
+  // Monotonic progress across the download + load phases of a single model
+  // reload: reported progress is never allowed to go backwards, so the UI
+  // shows one continuous bar instead of resetting between phases.
+  private lastProgress = 0;
+  private progressText = "";
+
+  /** Current download/load progress, monotonic within a single reload. */
+  get currentProgress() {
+    return { progress: this.lastProgress, text: this.progressText };
+  }
+
   constructor(
     type: "serviceWorker" | "webWorker",
     logLevel: LogLevel = "WARN",
@@ -78,10 +89,16 @@ export class WebLLMApi implements LLMApi {
       throw Error("llmConfig is undefined");
     }
     if (!this.initializing) {
+      // A fresh reload means a fresh download/load run — reset the monotonic
+      // floor so a model switch shows real progress again.
+      this.lastProgress = 0;
+      this.progressText = "";
       this.initializing = (async () => {
         this.webllm.engine.setInitProgressCallback(
           (report: InitProgressReport) => {
-            onProgress?.(report.progress, report.text);
+            this.lastProgress = Math.max(this.lastProgress, report.progress);
+            if (report.text) this.progressText = report.text;
+            onProgress?.(this.lastProgress, this.progressText);
           },
         );
         await this.webllm.engine.reload(this.llmConfig!.model, this.llmConfig!);

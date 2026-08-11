@@ -57,15 +57,14 @@
 
   .chat-input-action {
     display: inline-flex;
-    border-radius: 20px;
+    border-radius: 7px;
     font-size: 12px;
-    background-color: var(--white);
-    color: var(--black);
-    border: var(--border-in-light);
+    background-color: transparent;
+    color: var(--light-gray);
+    border: none;
     padding: 4px 10px;
     animation: slide-in ease 0.3s;
-    box-shadow: var(--card-shadow);
-    transition: width ease 0.3s;
+    transition: width ease 0.3s, background-color ease 0.2s, color ease 0.2s;
     align-items: center;
     height: 16px;
     width: var(--icon-width);
@@ -73,6 +72,7 @@
 
     &.selected {
       background-color: var(--second);
+      color: var(--black);
     }
 
     &:not(:last-child) {
@@ -101,6 +101,8 @@
       --delay: 0.5s;
       width: var(--full-width);
       transition-delay: var(--delay);
+      background-color: var(--hover-color);
+      color: var(--black);
 
       .text {
         transition-delay: var(--delay);
@@ -137,7 +139,7 @@
     border: var(--border-in-light);
     box-shadow: var(--card-shadow);
     padding: 10px 20px;
-    border-radius: 100px;
+    border-radius: 10px;
 
     animation: slide-in-from-top ease 0.3s;
 
@@ -338,19 +340,37 @@
 // position:absolute overlay with its own scroll, so the header's toggle
 // button that opened it can end up scrolled out of view with no other way
 // back to the app.
-.eot-panel-close {
+// Close + tabs used to be two independently `position: sticky` elements (a
+// floated close button hand-offset with `margin: -16px`, and a tabs row
+// pinned to a hardcoded `top: 34px` guessed to clear it) -- floats don't
+// participate in flow the way sticky positioning assumes, so the close
+// button's real height never reliably matched that guess and it ended up
+// overlapping the tabs and whatever text sat just below them. Replaced with
+// a single sticky header row that lays both out with flexbox, so there's no
+// offset to keep in sync.
+.eot-panel-header {
   position: sticky;
   top: 0;
-  float: right;
-  margin: -16px -20px 12px 12px;
-  padding: 8px 14px;
+  z-index: 11;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: -16px -20px 12px;
+  padding: 8px 12px 8px 20px;
+  background: #0b0f0c;
+  border-bottom: 1px solid #2d3b30;
+}
+
+.eot-panel-close {
+  flex-shrink: 0;
+  padding: 5px 12px;
   background: #161b17;
   color: #7ee787;
   border: 1px solid #2d3b30;
-  border-radius: 0 0 0 8px;
+  border-radius: 6px;
   cursor: pointer;
   font-size: 12.5px;
-  z-index: 11;
 
   &:hover {
     background: #21281f;
@@ -411,7 +431,6 @@
 }
 
 .eot-panel-fold {
-  clear: both;
   margin: 0 0 12px;
   padding: 6px 10px;
   border: 1px solid #2d3b30;
@@ -432,17 +451,13 @@
   }
 }
 
-// The terminal's own tabs (Log / Graph): a fixed header row inside the
-// panel's sticky top, alongside eot-panel-close, so switching tabs never
-// requires scrolling back up.
+// The terminal's own tabs (Log / Graph), laid out inside .eot-panel-header
+// alongside the close button -- see the comment there for why this used to
+// be a second independently-sticky element.
 .eot-panel-tabs {
-  position: sticky;
-  top: 34px;
-  z-index: 11;
   display: flex;
   gap: 2px;
-  margin: 0 0 12px;
-  background: #0b0f0c;
+  min-width: 0;
 }
 
 .eot-panel-tab {
@@ -505,6 +520,21 @@ input.eot-graph-search {
   margin-bottom: 10px;
   color: #4d6b52;
   font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+// The current tick, pulled out of the inline stats line into its own badge
+// -- "where am I" used to be a number buried in a sentence, easy to miss.
+.eot-graph-cursor {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #1a2119;
+  border: 1px solid #3a4d3e;
+  color: #7ee787;
+  font-weight: 600;
 }
 
 .eot-graph-edge {
@@ -565,16 +595,21 @@ input.eot-graph-search {
 
   .chat-input-action {
     display: inline-flex;
-    border-radius: 20px;
+    border-radius: 7px;
     font-size: 12px;
-    background-color: var(--white);
-    color: var(--black);
-    border: var(--border-in-light);
+    background-color: transparent;
+    color: var(--light-gray);
+    border: none;
     padding: 4px 10px;
-    box-shadow: var(--card-shadow);
     align-items: center;
     height: 16px;
     overflow: hidden;
+    transition: background-color ease 0.2s, color ease 0.2s;
+
+    &:hover {
+      background-color: var(--hover-color);
+      color: var(--black);
+    }
 
     .text {
       padding-left: 5px;
@@ -786,6 +821,80 @@ input.eot-graph-search {
   grid-gap: 10px;
   grid-template-columns: repeat(var(--image-count), auto);
   margin-top: 10px;
+}
+
+// Shared shell for every collapsible reasoning trace (Thinking/Plan/Warrant
+// panels, see TracePanel in chat.tsx), styled like Claude's extended-
+// thinking display. A real class (not inline styles) so the summary row can
+// truncate its label instead of letting `word-break: break-word` (inherited
+// from .chat-message-item above) shrink a flex child down to one letter per
+// line -- the bug that used to make the "Done" badge wrap vertically.
+.trace-panel {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-in-light);
+  background: var(--gray);
+  font-size: 13px;
+}
+
+.trace-panel-summary {
+  cursor: pointer;
+  color: var(--black);
+  opacity: 0.6;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+
+  &::-webkit-details-marker {
+    flex-shrink: 0;
+  }
+}
+
+.trace-panel-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.trace-panel-icon-running {
+  animation: eo-trace-tick 1.4s linear infinite;
+}
+
+@keyframes eo-trace-tick {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  50% {
+    transform: rotate(20deg);
+  }
+}
+
+.trace-panel-glyph {
+  flex-shrink: 0;
+  margin-right: 2px;
+  vertical-align: -2px;
+}
+
+.trace-panel-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-panel-body {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-style: italic;
+  color: var(--black);
+  opacity: 0.65;
+  word-break: break-word;
+  white-space: normal;
 }
 
 .chat-message-item-image-multi {
@@ -1069,6 +1178,13 @@ input.eot-graph-search {
   word-break: break-word;
 }
 
+.source-reading-image {
+  display: block;
+  max-width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+}
+
 @mixin single-line {
   white-space: nowrap;
   overflow: hidden;
@@ -1207,7 +1323,7 @@ input.eot-graph-search {
     border: var(--border-in-light);
     color: var(--black);
     padding: 10px 10px;
-    border-radius: 20px;
+    border-radius: 10px;
     margin-bottom: 20px;
     display: flex;
     align-items: center;

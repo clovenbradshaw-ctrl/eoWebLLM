@@ -18,7 +18,6 @@ import ReturnIcon from "../icons/return.svg";
 import CopyIcon from "../icons/copy.svg";
 import LoadingIcon from "../icons/three-dots.svg";
 import LoadingButtonIcon from "../icons/loading.svg";
-import PromptIcon from "../icons/prompt.svg";
 import MaxIcon from "../icons/max.svg";
 import MinIcon from "../icons/min.svg";
 import ResetIcon from "../icons/reload.svg";
@@ -26,7 +25,6 @@ import BreakIcon from "../icons/break.svg";
 import DeleteIcon from "../icons/clear.svg";
 import EditIcon from "../icons/rename.svg";
 import ConfirmIcon from "../icons/confirm.svg";
-import ImageIcon from "../icons/image.svg";
 import BrainIcon from "../icons/brain.svg";
 
 import BottomIcon from "../icons/bottom.svg";
@@ -95,7 +93,15 @@ import Image from "next/image";
 import { MLCLLMContext, WebLLMContext } from "../context";
 import { ChatImage } from "../typing";
 import ModelSelect from "./model-select";
-import { Globe, Paperclip, TerminalWindow } from "@phosphor-icons/react";
+import {
+  Globe,
+  Paperclip,
+  TerminalWindow,
+  Scales,
+  ClipboardText,
+  Clock,
+  Check,
+} from "@phosphor-icons/react";
 import {
   findBinaryStructure,
   formatBinaryStructureBlock,
@@ -800,13 +806,6 @@ export function ChatActions(props: {
 
   return (
     <div className={styles["chat-input-actions"]}>
-      {showUploadImage && (
-        <ChatAction
-          onClick={props.uploadImage}
-          text={Locale.Chat.InputActions.UploadImage}
-          icon={props.uploading ? <LoadingButtonIcon /> : <ImageIcon />}
-        />
-      )}
       <ChatAction
         onClick={() => chatStore.toggleWebSearch()}
         text="Web Search"
@@ -819,16 +818,6 @@ export function ChatActions(props: {
         icon={
           props.uploadingFile ? <LoadingButtonIcon /> : <Paperclip size={16} />
         }
-      />
-      <ChatAction
-        onClick={props.showPromptSetting}
-        text={Locale.Chat.Actions.EditConversation}
-        icon={<EditIcon />}
-      />
-      <ChatAction
-        onClick={props.showPromptHints}
-        text={Locale.Chat.InputActions.QuickPrompt}
-        icon={<PromptIcon />}
       />
       <ChatAction
         text={Locale.Chat.InputActions.Clear}
@@ -884,7 +873,7 @@ export function ChatActions(props: {
 // resolved, and an italic muted-gray body so the trace reads as scratch
 // work rather than part of the answer.
 function TracePanel(props: {
-  label: string;
+  label: React.ReactNode;
   running: boolean;
   defaultOpen?: boolean;
   children: React.ReactNode;
@@ -892,64 +881,21 @@ function TracePanel(props: {
   return (
     <details
       open={props.defaultOpen ?? props.running}
-      style={{
-        margin: "0 0 10px",
-        padding: "8px 12px",
-        borderRadius: 8,
-        border: "1px solid var(--border-in-light)",
-        background: "var(--gray)",
-        fontSize: "13px",
-      }}
+      className={styles["trace-panel"]}
     >
-      <summary
-        style={{
-          cursor: "pointer",
-          color: "var(--black)",
-          opacity: 0.6,
-          userSelect: "none",
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-        }}
-      >
+      <summary className={styles["trace-panel-summary"]}>
         <span
           aria-hidden
-          style={{
-            display: "inline-flex",
-            animation: props.running
-              ? "eo-trace-tick 1.4s linear infinite"
-              : undefined,
-          }}
+          className={
+            styles["trace-panel-icon"] +
+            (props.running ? ` ${styles["trace-panel-icon-running"]}` : "")
+          }
         >
-          {props.running ? "\u{1F550}" : "\u{2713}"}
+          {props.running ? <Clock size={13} /> : <Check size={13} />}
         </span>
-        <span>{props.label}</span>
-        {!props.running && <span style={{ opacity: 0.7 }}>· Done</span>}
+        <span className={styles["trace-panel-label"]}>{props.label}</span>
       </summary>
-      <div
-        style={{
-          marginTop: 8,
-          display: "flex",
-          flexDirection: "column",
-          gap: 6,
-          fontStyle: "italic",
-          color: "var(--black)",
-          opacity: 0.65,
-        }}
-      >
-        {props.children}
-      </div>
-      <style jsx>{`
-        @keyframes eo-trace-tick {
-          0%,
-          100% {
-            transform: rotate(0deg);
-          }
-          50% {
-            transform: rotate(20deg);
-          }
-        }
-      `}</style>
+      <div className={styles["trace-panel-body"]}>{props.children}</div>
     </details>
   );
 }
@@ -993,7 +939,12 @@ function PlanPanel(props: { trace: PlanTrace }) {
       : "flagged, not revised";
   return (
     <TracePanel
-      label={`\u{1F4CB} Plan — ${t.kind} · ${t.delivery} · ${status}`}
+      label={
+        <>
+          <ClipboardText size={13} className={styles["trace-panel-glyph"]} />
+          Plan — {t.kind} · {t.delivery} · {status}
+        </>
+      }
       running={false}
     >
       {t.reason && <div>Why: {t.reason}</div>}
@@ -1047,7 +998,13 @@ function WarrantPanel(props: { trace: WarrantTrace }) {
       : "answered from general knowledge";
   return (
     <TracePanel
-      label={`\u{2696} Warrant — ${t.system === "system2" ? "System 2" : "System 1"} · ${headline}`}
+      label={
+        <>
+          <Scales size={13} className={styles["trace-panel-glyph"]} />
+          Warrant — {t.system === "system2" ? "System 2" : "System 1"} ·{" "}
+          {headline}
+        </>
+      }
       running={false}
     >
       <div>
@@ -1311,6 +1268,9 @@ function ChatInner() {
   // Manual surf/fold over the graph terrain: the same substring fold a
   // click on a node already performs, driven by typing instead.
   const [eotGraphSearch, setEotGraphSearch] = useState("");
+  // Same free-text fold, for the Log tab -- typing narrows the event feed
+  // the same way clicking a quoted entity in a log line already does.
+  const [eotLogSearch, setEotLogSearch] = useState("");
   const [showSources, setShowSources] = useState(false);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -1342,11 +1302,21 @@ function ChatInner() {
   // from OPFS for whichever source is expanded (the panel row itself only
   // carries the summary counts in readLedger, not the full event list).
   const [expandedSourceId, setExpandedSourceId] = useState<string | null>(null);
-  const [sourceViewMode, setSourceViewMode] = useState<"event" | "fold">(
-    "fold",
-  );
+  const [sourceViewMode, setSourceViewMode] = useState<
+    "event" | "fold" | "raw"
+  >("fold");
   const [expandedLedger, setExpandedLedger] = useState<EventLog | null>(null);
   const [expandedLedgerLoading, setExpandedLedgerLoading] = useState(false);
+  // The source's actual bytes, decoded on demand for the "Raw" tab -- the
+  // Fold/Event tabs above only ever show the *derived* EOT reading or
+  // ledger, never the file a reader actually uploaded. Loaded lazily (not
+  // alongside the ledger) since most views into a source never need it.
+  const [rawSource, setRawSource] = useState<
+    | { sourceId: string; kind: "text"; text: string }
+    | { sourceId: string; kind: "image"; url: string }
+    | null
+  >(null);
+  const [rawSourceLoading, setRawSourceLoading] = useState(false);
   const [showEditPromptModal, setShowEditPromptModal] = useState(false);
   const webllm = useContext(WebLLMContext)!;
   const mlcllm = useContext(MLCLLMContext)!;
@@ -2076,16 +2046,61 @@ function ChatInner() {
     if (expandedSourceId === source.id) {
       setExpandedSourceId(null);
       setExpandedLedger(null);
+      setRawSource((current) => {
+        if (current?.kind === "image") URL.revokeObjectURL(current.url);
+        return null;
+      });
       return;
     }
     setExpandedSourceId(source.id);
     setExpandedLedger(null);
+    setRawSource((current) => {
+      if (current?.kind === "image") URL.revokeObjectURL(current.url);
+      return null;
+    });
+    // Sources with no ledger (images, other binaries) never had a Fold/
+    // Event tab to land on -- Raw is the only tab they have.
+    setSourceViewMode(source.readLedger ? "fold" : "raw");
     setExpandedLedgerLoading(true);
     try {
       const ledger = await readSourceLedger(source.id);
       setExpandedLedger(ledger);
     } finally {
       setExpandedLedgerLoading(false);
+    }
+  }
+
+  // Decodes a source's actual bytes for the "Raw" tab -- text is decoded
+  // straight through (the same decode retrieveCorpus already does), images
+  // become an object URL. Cached in rawSource so switching tabs back and
+  // forth doesn't re-read OPFS every time.
+  async function loadRawSource(source: EoSource) {
+    setSourceViewMode("raw");
+    if (rawSource?.sourceId === source.id) return;
+    setRawSourceLoading(true);
+    try {
+      const bytes = await readRawSource(source.id);
+      if (source.mimeType.startsWith("image/")) {
+        const url = URL.createObjectURL(
+          // readRawSource's Uint8Array is backed by a real ArrayBuffer
+          // (arrayBuffer() below), but TS's DOM lib types Uint8Array's
+          // buffer as ArrayBufferLike (which also admits SharedArrayBuffer),
+          // so it doesn't structurally satisfy Blob's BlobPart.
+          new Blob([bytes as unknown as BlobPart], { type: source.mimeType }),
+        );
+        setRawSource({ sourceId: source.id, kind: "image", url });
+      } else {
+        const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+        setRawSource({ sourceId: source.id, kind: "text", text });
+      }
+    } catch {
+      setRawSource({
+        sourceId: source.id,
+        kind: "text",
+        text: "(couldn't read this source's raw bytes)",
+      });
+    } finally {
+      setRawSourceLoading(false);
     }
   }
 
@@ -2097,7 +2112,6 @@ function ChatInner() {
             <div className={"window-action-button"}>
               <IconButton
                 icon={<ReturnIcon />}
-                bordered
                 title={Locale.Chat.Actions.ChatList}
                 onClick={() => navigate(Path.Home)}
               />
@@ -2121,7 +2135,6 @@ function ChatInner() {
             <div className="window-action-button">
               <IconButton
                 icon={<RenameIcon />}
-                bordered
                 onClick={() => setShowEditPromptModal(true)}
               />
             </div>
@@ -2129,7 +2142,6 @@ function ChatInner() {
           <div className="window-action-button">
             <IconButton
               icon={<ShareIcon />}
-              bordered
               title={Locale.Chat.Actions.Share}
               onClick={() => {
                 const params = new URLSearchParams({
@@ -2153,7 +2165,6 @@ function ChatInner() {
           <div className="window-action-button">
             <IconButton
               icon={<ExportIcon />}
-              bordered
               title={Locale.Chat.Actions.Export}
               onClick={() => {
                 setShowExport(true);
@@ -2163,7 +2174,6 @@ function ChatInner() {
           <div className="window-action-button">
             <IconButton
               icon={<Paperclip size={16} />}
-              bordered
               title="Sources — this chat's local corpus"
               onClick={() => setShowSources((v) => !v)}
             />
@@ -2171,7 +2181,6 @@ function ChatInner() {
           <div className="window-action-button">
             <IconButton
               icon={<TerminalWindow size={17} />}
-              bordered
               title="EOT — system log"
               onClick={() => setShowEoLog((v) => !v)}
             />
@@ -2180,7 +2189,6 @@ function ChatInner() {
             <div className="window-action-button">
               <IconButton
                 icon={config.tightBorder ? <MinIcon /> : <MaxIcon />}
-                bordered
                 onClick={() => {
                   config.update(
                     (config) => (config.tightBorder = !config.tightBorder),
@@ -2201,8 +2209,11 @@ function ChatInner() {
           // entity only narrows which of them are shown, never drops them
           // from the underlying log.
           const orderedEoLog = [...(session.eoLog ?? [])].reverse();
-          const eotEntries = eotFoldEntity
-            ? orderedEoLog.filter((entry) => entry.text.includes(eotFoldEntity))
+          const logQuery = eotFoldEntity || eotLogSearch.trim() || null;
+          const eotEntries = logQuery
+            ? orderedEoLog.filter((entry) =>
+                entry.text.toLowerCase().includes(logQuery.toLowerCase()),
+              )
             : orderedEoLog;
 
           // Graph terrain: the same click-to-fold entity, OR a typed
@@ -2220,49 +2231,61 @@ function ChatInner() {
 
           return (
             <div className={styles["eot-panel"]}>
-              <div
-                className={styles["eot-panel-close"]}
-                onClick={() => setShowEoLog(false)}
-                title="Close system log"
-              >
-                ✕ Close
-              </div>
-              <div className={styles["eot-panel-tabs"]}>
-                <div
-                  className={
-                    styles["eot-panel-tab"] +
-                    (eotTerminalTab === "log"
-                      ? ` ${styles["eot-panel-tab-active"]}`
-                      : "")
-                  }
-                  onClick={() => setEotTerminalTab("log")}
-                >
-                  Log
+              <div className={styles["eot-panel-header"]}>
+                <div className={styles["eot-panel-tabs"]}>
+                  <div
+                    className={
+                      styles["eot-panel-tab"] +
+                      (eotTerminalTab === "log"
+                        ? ` ${styles["eot-panel-tab-active"]}`
+                        : "")
+                    }
+                    onClick={() => setEotTerminalTab("log")}
+                  >
+                    Log
+                  </div>
+                  <div
+                    className={
+                      styles["eot-panel-tab"] +
+                      (eotTerminalTab === "graph"
+                        ? ` ${styles["eot-panel-tab-active"]}`
+                        : "")
+                    }
+                    onClick={() => setEotTerminalTab("graph")}
+                    title="The belief graph and tier stack this session has read so far"
+                  >
+                    Graph
+                  </div>
                 </div>
                 <div
-                  className={
-                    styles["eot-panel-tab"] +
-                    (eotTerminalTab === "graph"
-                      ? ` ${styles["eot-panel-tab-active"]}`
-                      : "")
-                  }
-                  onClick={() => setEotTerminalTab("graph")}
-                  title="The belief graph and tier stack this session has read so far"
+                  className={styles["eot-panel-close"]}
+                  onClick={() => setShowEoLog(false)}
+                  title="Close system log"
                 >
-                  Graph
+                  ✕ Close
                 </div>
               </div>
 
               {eotTerminalTab === "log" && (
                 <>
-                  {eotFoldEntity && (
+                  <input
+                    className={styles["eot-graph-search"]}
+                    type="text"
+                    placeholder="Search / fold the log — a name, a kind…"
+                    value={eotLogSearch}
+                    onChange={(e) => setEotLogSearch(e.target.value)}
+                  />
+                  {logQuery && (
                     <div className={styles["eot-panel-fold"]}>
-                      Folded on &quot;{eotFoldEntity}&quot; — showing{" "}
+                      Folded on &quot;{logQuery}&quot; — showing{" "}
                       {eotEntries.length} of {orderedEoLog.length} event
                       {orderedEoLog.length === 1 ? "" : "s"}
                       <span
                         className={styles["eot-panel-fold-clear"]}
-                        onClick={() => setEotFoldEntity(null)}
+                        onClick={() => {
+                          setEotFoldEntity(null);
+                          setEotLogSearch("");
+                        }}
                       >
                         Clear
                       </span>
@@ -2277,7 +2300,7 @@ function ChatInner() {
                     </div>
                   ) : !eotEntries.length ? (
                     <div className={styles["eot-panel-empty"]}>
-                      No events mention &quot;{eotFoldEntity}&quot;.
+                      No events mention &quot;{logQuery}&quot;.
                     </div>
                   ) : (
                     eotEntries.map((entry) => (
@@ -2323,7 +2346,10 @@ function ChatInner() {
                   ) : (
                     <>
                       <div className={styles["eot-graph-stats"]}>
-                        cursor {graphSnap.cursor} · {graphSnap.nodeCount} node
+                        <span className={styles["eot-graph-cursor"]}>
+                          cursor {graphSnap.cursor}
+                        </span>
+                        {graphSnap.nodeCount} node
                         {graphSnap.nodeCount === 1 ? "" : "s"} total ·{" "}
                         {graphSnap.edgeCount} edge
                         {graphSnap.edgeCount === 1 ? "" : "s"} total
@@ -2444,11 +2470,13 @@ function ChatInner() {
                           : ""}
                       </small>
                     </span>
-                    {source.textReadable && source.readLedger && (
+                    {(source.readLedger ||
+                      source.textReadable ||
+                      source.mimeType.startsWith("image/")) && (
                       <button
                         type="button"
                         className={styles["source-view"]}
-                        title="View this source's ledger (raw events, or the folded reading)"
+                        title="View this source's actual content, its ledger, or the folded reading"
                         onClick={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
@@ -2480,30 +2508,49 @@ function ChatInner() {
                   {expandedSourceId === source.id && (
                     <div className={styles["source-reading"]}>
                       <div className={styles["source-reading-tabs"]}>
-                        <button
-                          type="button"
-                          className={
-                            styles["source-reading-tab"] +
-                            (sourceViewMode === "fold"
-                              ? " " + styles["active"]
-                              : "")
-                          }
-                          onClick={() => setSourceViewMode("fold")}
-                        >
-                          Fold — current reading
-                        </button>
-                        <button
-                          type="button"
-                          className={
-                            styles["source-reading-tab"] +
-                            (sourceViewMode === "event"
-                              ? " " + styles["active"]
-                              : "")
-                          }
-                          onClick={() => setSourceViewMode("event")}
-                        >
-                          Events — raw ledger
-                        </button>
+                        {source.readLedger && (
+                          <>
+                            <button
+                              type="button"
+                              className={
+                                styles["source-reading-tab"] +
+                                (sourceViewMode === "fold"
+                                  ? " " + styles["active"]
+                                  : "")
+                              }
+                              onClick={() => setSourceViewMode("fold")}
+                            >
+                              Fold — current reading
+                            </button>
+                            <button
+                              type="button"
+                              className={
+                                styles["source-reading-tab"] +
+                                (sourceViewMode === "event"
+                                  ? " " + styles["active"]
+                                  : "")
+                              }
+                              onClick={() => setSourceViewMode("event")}
+                            >
+                              Events — raw ledger
+                            </button>
+                          </>
+                        )}
+                        {(source.textReadable ||
+                          source.mimeType.startsWith("image/")) && (
+                          <button
+                            type="button"
+                            className={
+                              styles["source-reading-tab"] +
+                              (sourceViewMode === "raw"
+                                ? " " + styles["active"]
+                                : "")
+                            }
+                            onClick={() => loadRawSource(source)}
+                          >
+                            Raw — the actual file
+                          </button>
+                        )}
                         {source.readLedger && (
                           <span className={styles["source-reading-stats"]}>
                             cursor {source.readLedger.cursor} ·{" "}
@@ -2514,7 +2561,29 @@ function ChatInner() {
                           </span>
                         )}
                       </div>
-                      {expandedLedgerLoading ? (
+                      {sourceViewMode === "raw" ? (
+                        rawSourceLoading ? (
+                          <div className={styles["source-reading-body"]}>
+                            Reading the source&apos;s raw bytes…
+                          </div>
+                        ) : rawSource?.sourceId !== source.id ? (
+                          <div className={styles["source-reading-body"]}>
+                            &nbsp;
+                          </div>
+                        ) : rawSource.kind === "image" ? (
+                          <div className={styles["source-reading-body"]}>
+                            <img
+                              src={rawSource.url}
+                              alt={source.name}
+                              className={styles["source-reading-image"]}
+                            />
+                          </div>
+                        ) : (
+                          <pre className={styles["source-reading-body"]}>
+                            {rawSource.text}
+                          </pre>
+                        )
+                      ) : expandedLedgerLoading ? (
                         <div className={styles["source-reading-body"]}>
                           Loading ledger…
                         </div>

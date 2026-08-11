@@ -3,7 +3,7 @@ import { SubmitKey } from "../store/config";
 // if you are adding a new translation, please use PartialLocaleType instead of LocaleType
 
 const en = {
-  Title: "eoWebLLM",
+  Title: "Elinor",
   Subtitle: "AI Models Running in Browser",
   WIP: "Coming Soon...",
   ChatItem: {
@@ -24,6 +24,8 @@ const en = {
       Export: "Export All Messages as Markdown",
       Copy: "Copy",
       Stop: "Stop",
+      Speak: "Play",
+      StopSpeak: "Stop",
       Share: "Share",
       Retry: "Retry",
       Delete: "Delete",
@@ -66,6 +68,9 @@ const en = {
       var inputHints = `${submitKey} to send`;
       if (submitKey === String(SubmitKey.Enter)) {
         inputHints += ", Shift + Enter to wrap";
+      }
+      if (submitKey === String(SubmitKey.MetaEnter)) {
+        inputHints = "Enter to wrap, Meta + Enter to send";
       }
       return inputHints + ", / to search prompts, : to use commands";
     },

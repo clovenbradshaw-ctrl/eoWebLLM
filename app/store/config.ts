@@ -57,7 +57,6 @@ export type ConfigType = {
   fontSize: number;
   theme: Theme;
   tightBorder: boolean;
-  sendPreviewBubble: boolean;
   enableAutoGenerateTitle: boolean;
   sidebarWidth: number;
 
@@ -103,12 +102,11 @@ const DEFAULT_MODEL_CONFIG: ModelConfig = {
 export const DEFAULT_CONFIG: ConfigType = {
   lastUpdate: Date.now(), // timestamp, to merge state
 
-  submitKey: SubmitKey.Enter,
+  submitKey: SubmitKey.MetaEnter,
   avatar: "1f603",
   fontSize: 14,
   theme: Theme.Auto,
   tightBorder: false,
-  sendPreviewBubble: true,
   enableAutoGenerateTitle: true,
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
 
@@ -219,12 +217,13 @@ export const useAppConfig = createPersistStore(
   }),
   {
     name: StoreKey.Config,
-    version: 0.64,
+    version: 0.65,
     migrate: (persistedState, version) => {
-      if (version < 0.64) {
+      if (version < 0.65) {
         return {
           ...DEFAULT_CONFIG,
           ...(persistedState as any),
+          submitKey: SubmitKey.MetaEnter,
           models: DEFAULT_MODELS as any as ModelRecord[],
         };
       }
