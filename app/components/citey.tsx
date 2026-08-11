@@ -95,25 +95,29 @@ function Accessory(props: { kind: Accessory; color: string }) {
   };
   switch (props.kind) {
     case "reading-glasses":
+      // Lenses sized/spaced to match where the eye images actually sit
+      // (each eye renders at ~44% of the sprite's width with a 7px gap,
+      // which is wider than it looks from the viewBox alone) — verified
+      // against the real rendered eye positions, not just eyeballed.
       return (
-        <svg viewBox="0 0 120 40" className={styles["citey-glasses"]}>
+        <svg viewBox="0 0 120 32" className={styles["citey-glasses"]}>
           <g fill="none" {...stroke}>
-            <rect x="6" y="6" width="40" height="28" rx="9" />
-            <rect x="74" y="6" width="40" height="28" rx="9" />
-            <path d="M46 18 Q60 10 74 18" />
+            <rect x="2" y="2" width="50" height="26" rx="10" />
+            <rect x="68" y="2" width="50" height="26" rx="10" />
+            <path d="M52 14 Q60 6 68 14" />
           </g>
         </svg>
       );
     case "laurel": {
       // A Roman laurel crown — two branches of leaves meeting at a center
-      // berry. Generated from a simple angle/radius sweep rather than
-      // hand-plotted, so both branches stay symmetric.
+      // berry. Three bold leaves per side (not five small ones) so the
+      // wreath still reads as a wreath at avatar size.
       const gold = "#C9A227";
       const branch = (dir: 1 | -1) =>
-        Array.from({ length: 5 }, (_, i) => {
-          const t = i / 4;
-          const angle = dir * (20 + t * 65);
-          const radius = 14 + t * 30;
+        Array.from({ length: 3 }, (_, i) => {
+          const t = i / 2;
+          const angle = dir * (18 + t * 62);
+          const radius = 16 + t * 26;
           const rad = (angle * Math.PI) / 180;
           const cx = 60 + Math.sin(rad) * radius;
           const cy = 41 - Math.cos(rad) * radius * 0.85;
@@ -122,12 +126,12 @@ function Accessory(props: { kind: Accessory; color: string }) {
               key={`${dir}-${i}`}
               cx={cx}
               cy={cy}
-              rx={7 - t * 1.5}
-              ry={3}
+              rx={11 - t * 1.5}
+              ry={5}
               transform={`rotate(${angle} ${cx} ${cy})`}
               fill={gold}
               stroke={INK}
-              strokeWidth={2.5}
+              strokeWidth={3}
             />
           );
         });
