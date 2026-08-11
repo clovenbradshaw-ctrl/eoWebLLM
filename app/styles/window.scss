@@ -27,14 +27,13 @@
   }
 }
 
+// A row of toolbar controls, macOS-style: no card behind the group, no box
+// behind each icon at rest — .icon-button's own hover state (button.module
+// .scss) is the only chrome that ever shows, and only on interaction.
 .window-actions {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  padding: 3px;
-  border-radius: 11px;
-  border: var(--border-in-light);
-  background: var(--white);
 }
 
 .window-action-button {

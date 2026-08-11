@@ -71,11 +71,16 @@ export function TemplateAvatar(props: {
   avatar: string;
   model?: Model;
   streamedText?: string;
+  name?: string;
 }) {
   return props.avatar !== DEFAULT_TEMPLATE_AVATAR ? (
     <Avatar avatar={props.avatar} />
   ) : (
-    <Avatar model={props.model} streamedText={props.streamedText} />
+    <Avatar
+      model={props.model}
+      streamedText={props.streamedText}
+      name={props.name}
+    />
   );
 }
 
@@ -120,6 +125,7 @@ export function TemplateConfig(props: {
               <TemplateAvatar
                 avatar={props.template.avatar}
                 model={config.modelConfig.model}
+                name={props.template.name}
               />
             </div>
           </Popover>

@@ -214,6 +214,7 @@ export function MessageSelector(props: {
                   <TemplateAvatar
                     avatar={session.template.avatar}
                     model={m.model || config.modelConfig.model}
+                    name={session.template.name}
                   />
                 )}
               </div>

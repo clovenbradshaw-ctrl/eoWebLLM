@@ -378,17 +378,21 @@
 }
 
 .terrain-panel-tabs {
-  display: flex;
-  flex-wrap: wrap;
+  // 9 kinds, laid out row-major over the engine's own Domain × Grain
+  // matrix (TERRAIN_CARD_KINDS in terrain/types.ts) — 3 columns so the
+  // grid IS the matrix: Existence / Structure / Interpretation rows,
+  // Ground / Figure / Pattern columns.
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
   gap: 2px;
   padding: 8px 10px;
   border-bottom: var(--border-in-light);
 }
 
 .terrain-tab {
-  flex: 1 0 auto;
   padding: 4px 8px;
   font-size: 11px;
+  text-align: center;
   color: var(--black);
   opacity: 0.6;
   border: var(--border-in-light);
@@ -1247,6 +1251,36 @@ input.eot-graph-search {
   opacity: 0.65;
   word-break: break-word;
   white-space: normal;
+}
+
+// Citey's inline note — appears once per message, only when there's an
+// unresolved span, teasing the full WarrantPanel trace below it rather
+// than duplicating it. Clickable, not a hover tooltip: the reasoning has
+// to be discoverable, not stumbled on.
+.citey-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 12px;
+  max-width: 52ch;
+  border-radius: 9px;
+  background: var(--eo-citey-soft);
+  cursor: pointer;
+
+  &:hover {
+    background: color-mix(in srgb, var(--eo-citey) 24%, var(--eo-citey-soft));
+  }
+}
+
+.citey-note-text {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--black);
+
+  b {
+    color: var(--eo-citey);
+  }
 }
 
 .chat-message-item-image-multi {

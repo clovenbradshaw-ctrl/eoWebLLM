@@ -124,6 +124,28 @@ export function remarkGroundingChips() {
   };
 }
 
+/** The reasoning behind a span's state, in plain language — shared by the
+ *  chip's own title tooltip and CiteyNote's inline callout (chat.tsx) so
+ *  the two surfaces never drift into saying different things about the
+ *  same verdict. */
+export function chipReasonText(
+  span: GroundingSpan,
+  citation?: CitationEntry,
+): string {
+  switch (span.state) {
+    case "contradicted":
+      return (
+        span.correction ?? "This may not check out against what was found."
+      );
+    case "sourced":
+      return citation?.text ?? "Backed by material gathered this turn.";
+    case "checking":
+      return "Not checked against anything yet.";
+    default:
+      return "Nothing was gathered to check this against — held as unconfirmed rather than guessed.";
+  }
+}
+
 export function GroundingChip(props: {
   "data-span-index"?: string;
   children?: React.ReactNode;
@@ -158,14 +180,7 @@ export function GroundingChip(props: {
           ? "eo-chip-checking"
           : "eo-chip-owned";
 
-  const title =
-    span.state === "contradicted"
-      ? (span.correction ?? "This may not check out against what was found.")
-      : span.state === "sourced"
-        ? (citation?.text ?? "Backed by material gathered this turn.")
-        : span.state === "checking"
-          ? "Not checked against anything yet."
-          : "The character's own assertion — nothing was gathered to check it against.";
+  const title = chipReasonText(span, citation);
 
   return (
     <span
@@ -186,6 +201,7 @@ export function GroundingChip(props: {
       }
     >
       {props.children}
+      {span.state === "owned" && <span className="eo-chip-owned-tag">gap</span>}
     </span>
   );
 }
