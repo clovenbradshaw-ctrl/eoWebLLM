@@ -37,15 +37,51 @@
 
 .citey-eye-wander {
   display: flex;
-  gap: 1px;
-  // Citey's standard eye size: each eye is ~48% of his own width, matching
-  // the favicon's proportions so he reads the same big-eyed way everywhere.
+  // Loosened from a near-touching 1px — a little breathing room between the
+  // eyes reads calmer than close-set/startled.
+  gap: 7px;
+  // Citey's standard eye size: each eye is ~44% of his own width, matching
+  // the favicon's proportions so he reads the same big-eyed way everywhere
+  // (trimmed slightly from 48% to make room for the wider gap above).
   animation: citey-eye-wander 8s ease-in-out infinite;
 
   img {
-    width: 48%;
+    width: 44%;
     height: auto;
   }
+}
+
+// A rare third eye — asserted/structured content only, sitting just above
+// the normal pair like an extra bit of insight.
+.citey-third-eye {
+  position: absolute;
+  top: -2%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 22%;
+  height: auto;
+  z-index: 1;
+}
+
+// Glasses/sunglasses: sit right on the eye line, spanning both eyes.
+.citey-glasses {
+  position: absolute;
+  top: 8%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 96%;
+  height: auto;
+  z-index: 2;
+}
+
+// Hats: worn above the eyes, at the top of his "head."
+.citey-hat {
+  position: absolute;
+  top: -22%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 78%;
+  height: auto;
 }
 
 @keyframes citey-bob {
