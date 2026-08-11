@@ -164,6 +164,23 @@ const useWebLLM = () => {
   const isWebllmInitialized = useRef(false);
   const fallbackTimeout = useRef<ReturnType<typeof setTimeout>>();
 
+  // Registered here, by hand, with a real `.catch()` -- rather than via
+  // @serwist/next's auto-injected `register: true` default, whose
+  // `window.serwist.register()` call has no `.catch()` and runs before any
+  // of our own effects mount, so app code never gets a chance to handle a
+  // rejection (see `register: false` in next.config.mjs). In contexts where
+  // ServiceWorker storage is partitioned or blocked (private browsing,
+  // sandboxed embeds), registration can legitimately fail; the fallback
+  // effect below already recovers by switching to a web worker, so a failure
+  // here is only ever logged, never surfaced as an uncaught rejection.
+  useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch((err) => {
+        log.info("Service Worker registration failed, using web worker.", err);
+      });
+    }
+  }, []);
+
   // If service worker registration timeout, fall back to web worker.
   // Scheduled from an effect, not the render body: the render body also
   // runs during SSR, where `setTimeout` is real (unlike `useEffect`), and

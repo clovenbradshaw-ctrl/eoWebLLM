@@ -128,4 +128,11 @@ if (mode !== "export") {
 export default withSerwistInit({
   swSrc: "app/worker/service-worker.ts",
   swDest: "public/sw.js",
+  // The default auto-injected registration calls `.register()` with no
+  // `.catch()` -- in storage-partitioned/sandboxed contexts (private
+  // browsing, embedded previews) that promise rejects and surfaces as an
+  // uncaught rejection with no way to handle it from app code, since it
+  // runs before any of our own effects mount. Registering it ourselves in
+  // app/components/home.tsx (with a real .catch()) instead.
+  register: false,
 })(nextConfig);

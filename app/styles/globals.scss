@@ -94,12 +94,19 @@
 
 html {
   height: var(--full-height);
-
-  font-family: var(--font-instrument), "PingFang SC", "Helvetica Neue",
-    Helvetica, Arial, sans-serif;
 }
 
 body {
+  // next/font's variable class (--font-instrument, see layout.tsx) is
+  // applied to <body>, not <html> -- CSS custom properties only inherit
+  // downward, so a font-family reading that var has to live here or on a
+  // descendant, never on <html> (its parent). It used to live on `html`
+  // above, which silently made `var(--font-instrument)` unresolvable and
+  // dropped the entire font-family declaration, so every element in the
+  // app fell through to the browser's serif default instead of the
+  // self-hosted sans this app actually ships.
+  font-family: var(--font-instrument), "PingFang SC", "Helvetica Neue",
+    Helvetica, Arial, sans-serif;
   background-color: var(--gray);
   color: var(--black);
   margin: 0;

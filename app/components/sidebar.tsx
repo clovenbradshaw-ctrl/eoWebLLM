@@ -13,7 +13,6 @@ import {
   GlobeSimple,
   Moon,
   Plus,
-  Sparkle,
   Sun,
   Trash,
 } from "@phosphor-icons/react";
@@ -40,6 +39,10 @@ import { showConfirm, showToast } from "./ui-lib";
 const ChatList = dynamic(async () => (await import("./chat-list")).ChatList, {
   loading: () => null,
 });
+const ProjectsPanel = dynamic(
+  async () => (await import("./projects")).ProjectsPanel,
+  { loading: () => null },
+);
 
 function useHotKey() {
   const chatStore = useChatStore();
@@ -183,9 +186,6 @@ export function SideBar(props: { className?: string }) {
           <div className={styles["sidebar-title"]}>{Locale.Title}</div>
           <div className={styles["sidebar-sub-title"]}>{Locale.Subtitle}</div>
         </div>
-        <div className={styles["sidebar-logo"] + " no-dark"}>
-          <Sparkle size={22} weight="fill" />
-        </div>
       </div>
 
       <div className={styles["sidebar-header-bar"]}>
@@ -217,6 +217,7 @@ export function SideBar(props: { className?: string }) {
           }
         }}
       >
+        <ProjectsPanel narrow={shouldNarrow} />
         <ChatList narrow={shouldNarrow} />
       </div>
 
