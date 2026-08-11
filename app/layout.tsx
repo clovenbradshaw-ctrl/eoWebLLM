@@ -38,7 +38,7 @@ const plexMono = localFont({
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://clovenbradshaw-ctrl.github.io/eoWebLLM/"),
-  title: "Elinor",
+  title: "Citey",
   description:
     "Chat with AI large language models running natively in your browser, gated by a surf/fold instruction set. Private, server-free, bounded-context AI conversations.",
   keywords: [
@@ -64,28 +64,28 @@ export const metadata: Metadata = {
     { media: "(prefers-color-scheme: dark)", color: "#151515" },
   ],
   appleWebApp: {
-    title: "eoWebLLM",
+    title: "Citey",
     statusBarStyle: "default",
   },
   openGraph: {
     type: "website",
     url: "https://clovenbradshaw-ctrl.github.io/eoWebLLM/",
-    title: "eoWebLLM",
+    title: "Citey",
     description:
       "Chat with AI large language models running natively in your browser, gated by a surf/fold instruction set",
-    siteName: "eoWebLLM",
+    siteName: "Citey",
     images: [
       {
         url: "https://clovenbradshaw-ctrl.github.io/eoWebLLM/favicon-32x32.png",
         width: 32,
         height: 32,
-        alt: "eoWebLLM - Browser-based AI conversation",
+        alt: "Citey - Browser-based AI conversation",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "eoWebLLM",
+    title: "Citey",
     description:
       "Chat with AI large language models running natively in your browser, gated by a surf/fold instruction set",
     images: [
@@ -152,17 +152,17 @@ export default function RootLayout({
         <link
           rel="mask-icon"
           href={`${basePath}/safari-pinned-tab.svg`}
-          color="#062578"
+          color="#6E5EE8"
         />
-        <meta name="msapplication-TileColor" content="#2b5797" />
-        <meta name="theme-color" content="#ffffff" />
+        <meta name="msapplication-TileColor" content="#6E5EE8" />
+        <meta name="theme-color" content="#6E5EE8" />
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{
             __html: JSON.stringify({
               "@context": "https://schema.org",
               "@type": "WebApplication",
-              name: "eoWebLLM",
+              name: "Citey",
               url: "https://clovenbradshaw-ctrl.github.io/eoWebLLM/",
               description:
                 "Chat with AI large language models running natively in your browser, gated by a surf/fold instruction set. Private, server-free, bounded-context AI conversations.",

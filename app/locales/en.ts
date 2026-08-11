@@ -3,7 +3,7 @@ import { SubmitKey } from "../store/config";
 // if you are adding a new translation, please use PartialLocaleType instead of LocaleType
 
 const en = {
-  Title: "Elinor",
+  Title: "Citey",
   Subtitle: "AI Models Running in Browser",
   WIP: "Coming Soon...",
   ChatItem: {
@@ -393,7 +393,7 @@ const en = {
 
   ServiceWorker: {
     Error:
-      "The WebLLM worker has lost connection. Please close all tabs of eoWebLLM and try opening eoWebLLM again.",
+      "The WebLLM worker has lost connection. Please close all tabs of Citey and try opening Citey again.",
   },
   MlcLLMConnect: {
     Title: "Connect to MLC-LLM API Endpoint",

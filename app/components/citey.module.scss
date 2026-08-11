@@ -1,0 +1,132 @@
+.citey-sprite {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.citey-bob {
+  animation: citey-bob 3.8s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center bottom;
+}
+
+.citey-boil {
+  animation: citey-boil 2.6s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.citey-morph {
+  animation: citey-morph 0.5s cubic-bezier(0.4, 1.5, 0.5, 1);
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: stroke 0.45s ease;
+}
+
+.citey-eyes {
+  position: absolute;
+  top: 8%;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.citey-blink {
+  animation: citey-blink 5.2s ease-in-out infinite;
+}
+
+.citey-eye-wander {
+  display: flex;
+  gap: 1px;
+  // Citey's standard eye size: each eye is ~48% of his own width, matching
+  // the favicon's proportions so he reads the same big-eyed way everywhere.
+  animation: citey-eye-wander 8s ease-in-out infinite;
+
+  img {
+    width: 48%;
+    height: auto;
+  }
+}
+
+@keyframes citey-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes citey-boil {
+  0% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+  25% {
+    transform: translate(0.6px, -0.5px) rotate(1deg);
+  }
+  50% {
+    transform: translate(-0.5px, 0.6px) rotate(-0.9deg);
+  }
+  75% {
+    transform: translate(0.5px, 0.4px) rotate(0.8deg);
+  }
+  100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+}
+
+@keyframes citey-morph {
+  0% {
+    transform: scale(0.6) rotate(-9deg);
+    opacity: 0.25;
+  }
+  45% {
+    transform: scale(1.14) rotate(4.5deg);
+    opacity: 1;
+  }
+  72% {
+    transform: scale(0.95) rotate(-1.6deg);
+  }
+  100% {
+    transform: scale(1) rotate(0);
+    opacity: 1;
+  }
+}
+
+@keyframes citey-blink {
+  0%,
+  93%,
+  100% {
+    transform: scaleY(1);
+  }
+  96% {
+    transform: scaleY(0.12);
+  }
+}
+
+@keyframes citey-eye-wander {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  22% {
+    transform: translate(1.2px, -0.8px);
+  }
+  50% {
+    transform: translate(-1px, 0.6px);
+  }
+  76% {
+    transform: translate(0.8px, 1px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .citey-bob,
+  .citey-boil,
+  .citey-morph,
+  .citey-blink,
+  .citey-eye-wander {
+    animation: none;
+  }
+}

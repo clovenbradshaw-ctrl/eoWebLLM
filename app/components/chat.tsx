@@ -1404,7 +1404,14 @@ function ChatInner() {
       return;
     }
 
-    if (isStreaming) return;
+    // `isStreaming` alone used to leave a gap open: it only reflects the
+    // visible token stream, which chat.ts's onFinish can outlive by several
+    // seconds while its background live fact-check pass is still running
+    // (see the `botMessage.streaming = true` held there for exactly this).
+    // `session.isGenerating` now spans that whole tail, so checking both is
+    // what actually keeps a second submit from landing mid-turn and
+    // corrupting the in-flight message with an overlapping revision pass.
+    if (isStreaming || session.isGenerating) return;
 
     chatStore.onUserInput(userInput, llm, attachImages);
     setAttachImages([]);
@@ -2702,6 +2709,7 @@ function ChatInner() {
                             <TemplateAvatar
                               avatar={session.template.avatar}
                               model={message.model || config.modelConfig.model}
+                              streamedText={getMessageTextContent(message)}
                             />
                           )}
                         </>
@@ -2713,14 +2721,6 @@ function ChatInner() {
                           className={`${styles["chat-message-role-name"]} ${styles["no-hide"]}`}
                         >
                           {Locale.Chat.Roles.System}
-                        </div>
-                      )}
-                      {message.role === "assistant" && (
-                        <div className={styles["chat-message-role-name"]}>
-                          {models.find((m) => m.name === message.model)
-                            ? models.find((m) => m.name === message.model)!
-                                .display_name
-                            : message.model}
                         </div>
                       )}
                       {showActions && (
