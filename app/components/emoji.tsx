@@ -5,8 +5,7 @@ import EmojiPicker, {
 } from "emoji-picker-react";
 
 import { Model } from "../store";
-
-import { Robot } from "@phosphor-icons/react";
+import { CiteySprite } from "./citey";
 
 export function getEmojiUrl(unified: string, style: EmojiStyle) {
   // Whoever owns this Content Delivery Network (CDN), I am using your CDN to serve emojis
@@ -31,13 +30,13 @@ export function AvatarPicker(props: {
   );
 }
 
-export function Avatar(props: { model?: Model; avatar?: string }) {
+export function Avatar(props: {
+  model?: Model;
+  avatar?: string;
+  streamedText?: string;
+}) {
   if (props.model) {
-    return (
-      <div className="bot-avatar no-dark">
-        <Robot size={18} weight="fill" />
-      </div>
-    );
+    return <CiteySprite text={props.streamedText ?? ""} size={48} />;
   }
 
   return (

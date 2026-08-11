@@ -871,7 +871,9 @@ export function ChatActions(props: {
 // warrant, ...), styled like Claude's extended-thinking display: a small
 // clock while the step is still running, a checkmark + "Done" once it has
 // resolved, and an italic muted-gray body so the trace reads as scratch
-// work rather than part of the answer.
+// work rather than part of the answer. Collapsed, this must stay a plain
+// line of text with no box around it (LAWS.md L1) — the border/indent live
+// only on the opened body in chat.module.scss's .trace-panel rules.
 function TracePanel(props: {
   label: React.ReactNode;
   running: boolean;
@@ -1402,7 +1404,14 @@ function ChatInner() {
       return;
     }
 
-    if (isStreaming) return;
+    // `isStreaming` alone used to leave a gap open: it only reflects the
+    // visible token stream, which chat.ts's onFinish can outlive by several
+    // seconds while its background live fact-check pass is still running
+    // (see the `botMessage.streaming = true` held there for exactly this).
+    // `session.isGenerating` now spans that whole tail, so checking both is
+    // what actually keeps a second submit from landing mid-turn and
+    // corrupting the in-flight message with an overlapping revision pass.
+    if (isStreaming || session.isGenerating) return;
 
     chatStore.onUserInput(userInput, llm, attachImages);
     setAttachImages([]);
@@ -2700,6 +2709,7 @@ function ChatInner() {
                             <TemplateAvatar
                               avatar={session.template.avatar}
                               model={message.model || config.modelConfig.model}
+                              streamedText={getMessageTextContent(message)}
                             />
                           )}
                         </>
@@ -2711,14 +2721,6 @@ function ChatInner() {
                           className={`${styles["chat-message-role-name"]} ${styles["no-hide"]}`}
                         >
                           {Locale.Chat.Roles.System}
-                        </div>
-                      )}
-                      {message.role === "assistant" && (
-                        <div className={styles["chat-message-role-name"]}>
-                          {models.find((m) => m.name === message.model)
-                            ? models.find((m) => m.name === message.model)!
-                                .display_name
-                            : message.model}
                         </div>
                       )}
                       {showActions && (

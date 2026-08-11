@@ -1,5 +1,4 @@
 import DeleteIcon from "../icons/delete.svg";
-import BotIcon from "../icons/bot.svg";
 
 import styles from "./home.module.scss";
 import {
@@ -9,12 +8,11 @@ import {
   OnDragEndResponder,
 } from "@hello-pangea/dnd";
 
-import { useAppConfig, useChatStore } from "../store";
+import { useChatStore } from "../store";
 
 import Locale from "../locales";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Path } from "../constant";
-import { TemplateAvatar } from "./template";
 import { Template } from "../store/template";
 import { useRef, useEffect } from "react";
 import { showConfirm } from "./ui-lib";
@@ -29,10 +27,8 @@ export function ChatItem(props: {
   selected: boolean;
   id: string;
   index: number;
-  narrow?: boolean;
   template: Template;
 }) {
-  const config = useAppConfig();
   const draggableRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (props.selected && draggableRef.current) {
@@ -63,29 +59,13 @@ export function ChatItem(props: {
             props.count,
           )}`}
         >
-          {props.narrow ? (
-            <div className={styles["chat-item-narrow"]}>
-              <div className={styles["chat-item-avatar"] + " no-dark"}>
-                <TemplateAvatar
-                  avatar={props.template.avatar}
-                  model={config.modelConfig.model}
-                />
-              </div>
-              <div className={styles["chat-item-narrow-count"]}>
-                {props.count}
-              </div>
+          <div className={styles["chat-item-title"]}>{props.title}</div>
+          <div className={styles["chat-item-info"]}>
+            <div className={styles["chat-item-count"]}>
+              {Locale.ChatItem.ChatItemCount(props.count)}
             </div>
-          ) : (
-            <>
-              <div className={styles["chat-item-title"]}>{props.title}</div>
-              <div className={styles["chat-item-info"]}>
-                <div className={styles["chat-item-count"]}>
-                  {Locale.ChatItem.ChatItemCount(props.count)}
-                </div>
-                <div className={styles["chat-item-date"]}>{props.time}</div>
-              </div>
-            </>
-          )}
+            <div className={styles["chat-item-date"]}>{props.time}</div>
+          </div>
 
           <div
             className={styles["chat-item-delete"]}
@@ -115,6 +95,10 @@ export function ChatList(props: { narrow?: boolean }) {
   const chatStore = useChatStore();
   const navigate = useNavigate();
   const isMobileScreen = useMobileScreen();
+
+  // Collapsed sidebar is a compact nav strip, not a second narrow content
+  // column — no per-chat list there (matches ProjectsPanel's own narrow gate).
+  if (props.narrow) return null;
 
   const onDragEnd: OnDragEndResponder = (result) => {
     const { destination, source } = result;
@@ -156,13 +140,12 @@ export function ChatList(props: { narrow?: boolean }) {
                 }}
                 onDelete={async () => {
                   if (
-                    (!props.narrow && !isMobileScreen) ||
+                    !isMobileScreen ||
                     (await showConfirm(Locale.Home.DeleteChat))
                   ) {
                     chatStore.deleteSession(i);
                   }
                 }}
-                narrow={props.narrow}
                 template={item.template}
               />
             ))}

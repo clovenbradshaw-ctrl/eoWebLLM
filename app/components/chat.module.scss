@@ -825,32 +825,45 @@ input.eot-graph-search {
 
 // Shared shell for every collapsible reasoning trace (Thinking/Plan/Warrant
 // panels, see TracePanel in chat.tsx), styled like Claude's extended-
-// thinking display. A real class (not inline styles) so the summary row can
-// truncate its label instead of letting `word-break: break-word` (inherited
-// from .chat-message-item above) shrink a flex child down to one letter per
-// line -- the bug that used to make the "Done" badge wrap vertically.
+// thinking display: collapsed, it's just a dim clickable text row (no box,
+// no border, no fill) -- the disclosure marker and the hover state are the
+// only affordance. Only once opened does it pick up an indent and a left
+// rule to set the reasoning apart from the answer. A real class (not inline
+// styles) so the summary row can truncate its label instead of letting
+// `word-break: break-word` (inherited from .chat-message-item above) shrink
+// a flex child down to one letter per line -- the bug that used to make the
+// "Done" badge wrap vertically.
 .trace-panel {
-  margin: 0 0 10px;
-  padding: 8px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--border-in-light);
-  background: var(--gray);
+  margin: 0 0 6px;
   font-size: 13px;
 }
 
 .trace-panel-summary {
   cursor: pointer;
   color: var(--black);
-  opacity: 0.6;
+  opacity: 0.55;
   user-select: none;
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
+  padding: 2px 4px;
+  margin: 0 -4px;
+  border-radius: 6px;
+  transition: opacity 0.15s ease, background-color 0.15s ease;
+
+  &:hover {
+    opacity: 0.85;
+    background: var(--hover-color);
+  }
 
   &::-webkit-details-marker {
     flex-shrink: 0;
   }
+}
+
+.trace-panel[open] > .trace-panel-summary {
+  opacity: 0.8;
 }
 
 .trace-panel-icon {
@@ -886,7 +899,9 @@ input.eot-graph-search {
 }
 
 .trace-panel-body {
-  margin-top: 8px;
+  margin: 6px 0 4px 6px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border-in-light);
   display: flex;
   flex-direction: column;
   gap: 6px;

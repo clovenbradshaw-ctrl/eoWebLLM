@@ -67,11 +67,15 @@ function reorder<T>(list: T[], startIndex: number, endIndex: number): T[] {
   return result;
 }
 
-export function TemplateAvatar(props: { avatar: string; model?: Model }) {
+export function TemplateAvatar(props: {
+  avatar: string;
+  model?: Model;
+  streamedText?: string;
+}) {
   return props.avatar !== DEFAULT_TEMPLATE_AVATAR ? (
     <Avatar avatar={props.avatar} />
   ) : (
-    <Avatar model={props.model} />
+    <Avatar model={props.model} streamedText={props.streamedText} />
   );
 }
 
