@@ -2112,7 +2112,6 @@ function ChatInner() {
             <div className={"window-action-button"}>
               <IconButton
                 icon={<ReturnIcon />}
-                bordered
                 title={Locale.Chat.Actions.ChatList}
                 onClick={() => navigate(Path.Home)}
               />
@@ -2136,7 +2135,6 @@ function ChatInner() {
             <div className="window-action-button">
               <IconButton
                 icon={<RenameIcon />}
-                bordered
                 onClick={() => setShowEditPromptModal(true)}
               />
             </div>
@@ -2144,7 +2142,6 @@ function ChatInner() {
           <div className="window-action-button">
             <IconButton
               icon={<ShareIcon />}
-              bordered
               title={Locale.Chat.Actions.Share}
               onClick={() => {
                 const params = new URLSearchParams({
@@ -2168,7 +2165,6 @@ function ChatInner() {
           <div className="window-action-button">
             <IconButton
               icon={<ExportIcon />}
-              bordered
               title={Locale.Chat.Actions.Export}
               onClick={() => {
                 setShowExport(true);
@@ -2178,7 +2174,6 @@ function ChatInner() {
           <div className="window-action-button">
             <IconButton
               icon={<Paperclip size={16} />}
-              bordered
               title="Sources — this chat's local corpus"
               onClick={() => setShowSources((v) => !v)}
             />
@@ -2186,7 +2181,6 @@ function ChatInner() {
           <div className="window-action-button">
             <IconButton
               icon={<TerminalWindow size={17} />}
-              bordered
               title="EOT — system log"
               onClick={() => setShowEoLog((v) => !v)}
             />
@@ -2195,7 +2189,6 @@ function ChatInner() {
             <div className="window-action-button">
               <IconButton
                 icon={config.tightBorder ? <MinIcon /> : <MaxIcon />}
-                bordered
                 onClick={() => {
                   config.update(
                     (config) => (config.tightBorder = !config.tightBorder),

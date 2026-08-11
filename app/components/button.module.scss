@@ -47,6 +47,10 @@
   &:focus {
     border-color: var(--primary);
   }
+
+  &:not(.primary):not(.danger):hover {
+    background-color: var(--hover-color);
+  }
 }
 
 .shadow {

@@ -38,7 +38,7 @@ const plexMono = localFont({
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://clovenbradshaw-ctrl.github.io/eoWebLLM/"),
-  title: "eoWebLLM",
+  title: "Elinor",
   description:
     "Chat with AI large language models running natively in your browser, gated by a surf/fold instruction set. Private, server-free, bounded-context AI conversations.",
   keywords: [
