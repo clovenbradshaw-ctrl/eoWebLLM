@@ -6,7 +6,28 @@ import EmojiPicker, {
 
 import { Model } from "../store";
 
-import { Robot } from "@phosphor-icons/react";
+// Elinor's mark: a geometric "E" monogram, in the same flat/rounded-bar
+// language as the rest of the declutter pass, rather than a generic
+// third-party robot glyph. currentColor so it follows the avatar's own
+// color handling (light/dark, no-dark override) exactly like the icon it
+// replaces did.
+function ElinorMark(props: { size?: number }) {
+  const size = props.size ?? 18;
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <rect x="4" y="4" width="3" height="16" rx="1.5" />
+      <rect x="4" y="4" width="14" height="3" rx="1.5" />
+      <rect x="4" y="10.5" width="11" height="3" rx="1.5" />
+      <rect x="4" y="17" width="14" height="3" rx="1.5" />
+    </svg>
+  );
+}
 
 export function getEmojiUrl(unified: string, style: EmojiStyle) {
   // Whoever owns this Content Delivery Network (CDN), I am using your CDN to serve emojis
@@ -35,7 +56,7 @@ export function Avatar(props: { model?: Model; avatar?: string }) {
   if (props.model) {
     return (
       <div className="bot-avatar no-dark">
-        <Robot size={18} weight="fill" />
+        <ElinorMark size={18} />
       </div>
     );
   }
