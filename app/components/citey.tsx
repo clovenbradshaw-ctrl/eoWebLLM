@@ -13,19 +13,52 @@ import { useEffect, useRef, useState } from "react";
 import styles from "./citey.module.scss";
 
 export type CiteyStateName = "turnstile" | "entails" | "asserted" | "context";
+type Accessory = "reading-glasses" | "laurel" | "mortarboard" | "cap";
 
 const CITEY_STATES: Record<
   CiteyStateName,
-  { glyph: string; color: string; eyes: [string, string] }
+  {
+    glyph: string;
+    color: string;
+    eyes: [string, string];
+    accessory: Accessory;
+    thirdEye?: boolean;
+  }
 > = {
   // ⊢ "entails / follows from" — the default, resting shape. It's the
   // simplest glyph in the set (one stem, one arm) and the most fitting one
   // for a mascot named after citing: it's the logic symbol for "this is
-  // backed by that."
-  turnstile: { glyph: "⊢", color: "#7C74DE", eyes: ["r1c0", "r1c1"] },
-  entails: { glyph: "⊨", color: "#1F9E76", eyes: ["r2c6", "r2c7"] }, // ⊨ a strong claim
-  asserted: { glyph: "⊢", color: "#2E8B86", eyes: ["r0c6", "r0c7"] }, // a list / structure
-  context: { glyph: "⊪", color: "#4D7EA8", eyes: ["r0c2", "r0c3"] }, // ⊪ a question back
+  // backed by that." Reading glasses fit a citation assistant's baseline.
+  turnstile: {
+    glyph: "⊢",
+    color: "#7C74DE",
+    eyes: ["r1c0", "r1c1"],
+    accessory: "reading-glasses",
+  },
+  // ⊨ a strong claim, delivered with total confidence ("always", "never",
+  // "must", an exclamation) — dictator energy, so he gets the laurel.
+  entails: {
+    glyph: "⊨",
+    color: "#1F9E76",
+    eyes: ["r2c6", "r2c7"],
+    accessory: "laurel",
+  },
+  // a list / structured analysis — the mortarboard for academic rigor, plus
+  // a third eye: structured thinking gets the extra-insight treatment.
+  asserted: {
+    glyph: "⊢",
+    color: "#2E8B86",
+    eyes: ["r0c6", "r0c7"],
+    accessory: "mortarboard",
+    thirdEye: true,
+  },
+  // ⊪ answering with background — a press hat, out canvassing for context.
+  context: {
+    glyph: "⊪",
+    color: "#4D7EA8",
+    eyes: ["r0c2", "r0c3"],
+    accessory: "cap",
+  },
 };
 
 const BODY_PATHS: Record<string, string> = {
@@ -50,6 +83,158 @@ function pickState(text: string): CiteyStateName {
 }
 
 const EYE_BASE = `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/citey-eyes/`;
+
+// Hand-drawn (not sourced) — flat shapes with a bold dark outline, echoing
+// the same clip-art language the reference images used, but original.
+const INK = "#20174B";
+function Accessory(props: { kind: Accessory; color: string }) {
+  const stroke = {
+    stroke: INK,
+    strokeWidth: 4,
+    strokeLinejoin: "round" as const,
+  };
+  switch (props.kind) {
+    case "reading-glasses":
+      // Lenses sized/spaced to match where the eye images actually sit
+      // (each eye renders at ~44% of the sprite's width with a 7px gap,
+      // which is wider than it looks from the viewBox alone) — verified
+      // against the real rendered eye positions, not just eyeballed.
+      return (
+        <svg viewBox="0 0 120 32" className={styles["citey-glasses"]}>
+          <g fill="none" {...stroke}>
+            <rect x="2" y="2" width="50" height="26" rx="10" />
+            <rect x="68" y="2" width="50" height="26" rx="10" />
+            <path d="M52 14 Q60 6 68 14" />
+          </g>
+        </svg>
+      );
+    case "laurel": {
+      // A Roman laurel crown — two branches of leaves meeting at a center
+      // berry. Three bold leaves per side (not five small ones) so the
+      // wreath still reads as a wreath at avatar size.
+      const gold = "#C9A227";
+      const branch = (dir: 1 | -1) =>
+        Array.from({ length: 3 }, (_, i) => {
+          const t = i / 2;
+          const angle = dir * (18 + t * 62);
+          const radius = 16 + t * 26;
+          const rad = (angle * Math.PI) / 180;
+          const cx = 60 + Math.sin(rad) * radius;
+          const cy = 41 - Math.cos(rad) * radius * 0.85;
+          return (
+            <ellipse
+              key={`${dir}-${i}`}
+              cx={cx}
+              cy={cy}
+              rx={11 - t * 1.5}
+              ry={5}
+              transform={`rotate(${angle} ${cx} ${cy})`}
+              fill={gold}
+              stroke={INK}
+              strokeWidth={3}
+            />
+          );
+        });
+      return (
+        <svg viewBox="0 0 120 50" className={styles["citey-hat"]}>
+          {branch(-1)}
+          {branch(1)}
+          <circle
+            cx="60"
+            cy="41"
+            r="3.5"
+            fill={gold}
+            stroke={INK}
+            strokeWidth="2.5"
+          />
+        </svg>
+      );
+    }
+    case "mortarboard": {
+      // Navy cap, red tassel — the classic academic-regalia pairing.
+      const navy = "#1B1A3E";
+      const red = "#D8412C";
+      return (
+        <svg viewBox="0 0 120 66" className={styles["citey-hat"]}>
+          <rect
+            x="42"
+            y="30"
+            width="36"
+            height="16"
+            rx="3"
+            fill={navy}
+            {...stroke}
+          />
+          <polygon points="60,2 116,26 60,50 4,26" fill={navy} {...stroke} />
+          <circle
+            cx="60"
+            cy="26"
+            r="5"
+            fill={red}
+            stroke={INK}
+            strokeWidth="3"
+          />
+          <path
+            d="M96 22 L108 30 L102 54"
+            fill="none"
+            stroke={red}
+            strokeWidth="4"
+            strokeLinecap="round"
+          />
+          <circle
+            cx="102"
+            cy="56"
+            r="5"
+            fill={red}
+            stroke={INK}
+            strokeWidth="3"
+          />
+        </svg>
+      );
+    }
+    case "cap":
+      // A press-hat fedora — brim, band, and a tucked card. Out gathering
+      // context reads better as an old-school reporter than a flat cap.
+      return (
+        <svg viewBox="0 0 130 62" className={styles["citey-hat"]}>
+          <ellipse
+            cx="65"
+            cy="46"
+            rx="60"
+            ry="11"
+            fill={props.color}
+            {...stroke}
+          />
+          <path
+            d="M27 44 Q27 6 65 6 Q103 6 103 44 Z"
+            fill={props.color}
+            {...stroke}
+          />
+          <path
+            d="M52 14 Q60 22 68 26"
+            fill="none"
+            stroke="#FFFFFF"
+            strokeWidth="3"
+            strokeLinecap="round"
+            opacity="0.5"
+          />
+          <rect x="27" y="34" width="76" height="11" fill={INK} />
+          <g transform="rotate(-14 62 30)">
+            <rect
+              x="53"
+              y="18"
+              width="16"
+              height="22"
+              rx="1.5"
+              fill="#FFFFFF"
+              stroke={INK}
+              strokeWidth="3"
+            />
+          </g>
+        </svg>
+      );
+  }
+}
 
 // The animated sprite — mounted in the avatar slot for every assistant turn.
 // Re-samples `pickState` every ~700ms rather than on every token, so a shape
@@ -103,6 +288,15 @@ export function CiteySprite(props: { text: string; size?: number }) {
           </div>
         </div>
       </div>
+      {d.thirdEye && (
+        <img
+          src={EYE_BASE + "r1c4.png"}
+          className={styles["citey-third-eye"]}
+          draggable={false}
+          alt=""
+        />
+      )}
+      <Accessory kind={d.accessory} color={d.color} />
     </div>
   );
 }
