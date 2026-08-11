@@ -102,7 +102,7 @@ const DEFAULT_MODEL_CONFIG: ModelConfig = {
 export const DEFAULT_CONFIG: ConfigType = {
   lastUpdate: Date.now(), // timestamp, to merge state
 
-  submitKey: SubmitKey.MetaEnter,
+  submitKey: SubmitKey.Enter,
   avatar: "1f603",
   fontSize: 14,
   theme: Theme.Auto,
@@ -217,7 +217,7 @@ export const useAppConfig = createPersistStore(
   }),
   {
     name: StoreKey.Config,
-    version: 0.65,
+    version: 0.66,
     migrate: (persistedState, version) => {
       if (version < 0.65) {
         return {
@@ -225,6 +225,13 @@ export const useAppConfig = createPersistStore(
           ...(persistedState as any),
           submitKey: SubmitKey.MetaEnter,
           models: DEFAULT_MODELS as any as ModelRecord[],
+        };
+      }
+      if (version < 0.66) {
+        return {
+          ...DEFAULT_CONFIG,
+          ...(persistedState as any),
+          submitKey: SubmitKey.Enter,
         };
       }
       return persistedState;

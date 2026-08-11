@@ -27,19 +27,10 @@
   }
 }
 
-// A single grouped toolbar rather than N individually-bordered squares --
-// one border/background for the whole row, ghost buttons inside it (no
-// per-button border/shadow), only a hover state to show what's clickable.
-// Matches the same declutter treatment as the composer toolbar
-// (.chat-input-action) and the shared IconButton default.
 .window-actions {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  padding: 3px;
-  border-radius: 9px;
-  border: var(--border-in-light);
-  background-color: var(--white);
 }
 
 .window-action-button {
