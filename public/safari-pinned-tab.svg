@@ -1,8 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">
 <g fill="none" stroke="#000000" stroke-width="20" stroke-linecap="round" stroke-linejoin="round">
 <path d="M100 92 L100 178"/>
-<path d="M100 124 L156 124"/>
-<path d="M100 157 L156 157"/>
+<path d="M100 140 L156 140"/>
 </g>
 <circle cx="64" cy="62" r="18" fill="#000000"/>
 <circle cx="136" cy="62" r="18" fill="#000000"/>
