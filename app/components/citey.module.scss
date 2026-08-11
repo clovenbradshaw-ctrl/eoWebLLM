@@ -51,18 +51,6 @@
   }
 }
 
-// A rare third eye — asserted/structured content only, sitting just above
-// the normal pair like an extra bit of insight.
-.citey-third-eye {
-  position: absolute;
-  top: -2%;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 22%;
-  height: auto;
-  z-index: 1;
-}
-
 // Glasses: sit right on the eye line, spanning both eyes. Width matches the
 // eyes' own real rendered span (~102% of the sprite, since each eye is 44%
 // wide with a 7px gap) rather than an arbitrary "almost full width" guess.
