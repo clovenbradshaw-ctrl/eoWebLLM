@@ -22,7 +22,6 @@ const CITEY_STATES: Record<
     color: string;
     eyes: [string, string];
     accessory: Accessory;
-    thirdEye?: boolean;
   }
 > = {
   // ⊢ "entails / follows from" — the default, resting shape. It's the
@@ -43,14 +42,12 @@ const CITEY_STATES: Record<
     eyes: ["r2c6", "r2c7"],
     accessory: "laurel",
   },
-  // a list / structured analysis — the mortarboard for academic rigor, plus
-  // a third eye: structured thinking gets the extra-insight treatment.
+  // a list / structured analysis — the mortarboard for academic rigor.
   asserted: {
     glyph: "⊢",
     color: "#2E8B86",
     eyes: ["r0c6", "r0c7"],
     accessory: "mortarboard",
-    thirdEye: true,
   },
   // ⊪ answering with background — a press hat, out canvassing for context.
   context: {
@@ -151,7 +148,10 @@ function Accessory(props: { kind: Accessory; color: string }) {
       );
     }
     case "mortarboard": {
-      // Navy cap, red tassel — the classic academic-regalia pairing.
+      // Navy cap, red tassel — the classic academic-regalia pairing. The
+      // "insight" eye lives ON the band itself (not floated above as a
+      // separate layer) so it can never drift out of place relative to
+      // the hat it's supposed to be part of.
       const navy = "#1B1A3E";
       const red = "#D8412C";
       return (
@@ -166,6 +166,13 @@ function Accessory(props: { kind: Accessory; color: string }) {
             {...stroke}
           />
           <polygon points="60,2 116,26 60,50 4,26" fill={navy} {...stroke} />
+          <image
+            href={EYE_BASE + "r1c4.png"}
+            x="51"
+            y="32"
+            width="18"
+            height="12"
+          />
           <circle
             cx="60"
             cy="26"
@@ -288,14 +295,6 @@ export function CiteySprite(props: { text: string; size?: number }) {
           </div>
         </div>
       </div>
-      {d.thirdEye && (
-        <img
-          src={EYE_BASE + "r1c4.png"}
-          className={styles["citey-third-eye"]}
-          draggable={false}
-          alt=""
-        />
-      )}
       <Accessory kind={d.accessory} color={d.color} />
     </div>
   );
