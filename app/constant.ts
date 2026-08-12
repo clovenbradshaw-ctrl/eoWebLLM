@@ -54,9 +54,8 @@ export const GITHUB_DEVICE_CODE_RELAY_URL =
 export const GITHUB_ACCESS_TOKEN_RELAY_URL =
   "https://n8n.intelechia.com/webhook/github-access-token";
 
-export const DEFAULT_SIDEBAR_WIDTH = 320;
-export const MAX_SIDEBAR_WIDTH = 500;
-export const MIN_SIDEBAR_WIDTH = 260;
+// Fixed, not user-resizable — a ChatGPT-style sidebar width, not a default.
+export const DEFAULT_SIDEBAR_WIDTH = 220;
 // EOChat's collapsed left rail is a compact navigation strip, not a second
 // narrow content column.
 export const NARROW_SIDEBAR_WIDTH = 56;

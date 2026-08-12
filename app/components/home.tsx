@@ -16,7 +16,7 @@ import {
 import LoadingIcon from "../icons/three-dots.svg";
 
 import Locale from "../locales";
-import { getCSSVar, useMobileScreen } from "../utils";
+import { getCSSVar } from "../utils";
 import { DEFAULT_MODELS, Path, SlotID } from "../constant";
 import { ErrorBoundary } from "./error";
 import { getISOLang, getLang } from "../locales";
@@ -127,11 +127,8 @@ const loadAsyncFonts = () => {
 };
 
 function Screen() {
-  const config = useAppConfig();
   const location = useLocation();
   const isHome = location.pathname === Path.Home;
-  const isMobileScreen = useMobileScreen();
-  const shouldTightBorder = config.tightBorder && !isMobileScreen;
 
   useEffect(() => {
     loadAsyncFonts();
@@ -140,10 +137,7 @@ function Screen() {
   return (
     <div
       className={
-        styles.container +
-        ` ${shouldTightBorder ? styles["tight-container"] : styles.container} ${
-          getLang() === "ar" ? styles["rtl-screen"] : ""
-        }`
+        styles.container + ` ${getLang() === "ar" ? styles["rtl-screen"] : ""}`
       }
     >
       <>

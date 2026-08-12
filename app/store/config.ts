@@ -57,7 +57,6 @@ export type ConfigType = {
   avatar: string;
   fontSize: number;
   theme: Theme;
-  tightBorder: boolean;
   enableAutoGenerateTitle: boolean;
   sidebarWidth: number;
   terrainPanelWidth: number;
@@ -114,7 +113,6 @@ export const DEFAULT_CONFIG: ConfigType = {
   avatar: "1f603",
   fontSize: 14,
   theme: Theme.Auto,
-  tightBorder: false,
   enableAutoGenerateTitle: true,
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   terrainPanelWidth: DEFAULT_TERRAIN_PANEL_WIDTH,

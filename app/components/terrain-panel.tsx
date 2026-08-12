@@ -179,12 +179,12 @@ export function TerrainPanel(props: {
         }
       }
       if (cancelled) return;
-      const hydrateTurns =
-        session.eoConversationEnabled === false
-          ? []
-          : session.messages
-              .filter((m) => !m.isError && !m.streaming)
-              .map((m) => ({ id: m.id, content: getMessageTextContent(m) }));
+      // Admitted unconditionally, same as the store's own hydrateTurns —
+      // eoIncludedInExplore/eoConversationEnabled gate visibility
+      // (isDocEnabled), not admission.
+      const hydrateTurns = session.messages
+        .filter((m) => !m.isError && !m.streaming)
+        .map((m) => ({ id: m.id, content: getMessageTextContent(m) }));
       const movements = ensureHypergraphHydrated(
         hypergraphScopeId(session),
         hydrateSources,
@@ -198,7 +198,7 @@ export function TerrainPanel(props: {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session.id, session.eoSources, session.eoConversationEnabled]);
+  }, [session.id, session.eoSources]);
 
   return (
     <>

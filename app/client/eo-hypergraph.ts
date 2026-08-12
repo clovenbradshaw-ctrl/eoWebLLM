@@ -597,14 +597,23 @@ export function resolveDocId(
 export interface DocEnabledSession {
   eoSources?: { id: string; enabled: boolean }[];
   eoConversationEnabled?: boolean;
+  messages?: { id: string; eoIncludedInExplore?: boolean }[];
 }
 
 /**
- * Is a docId's own source (an uploaded file, or the conversation itself)
- * currently enabled? A docId that isn't "turn:"/"source:" shaped (right
- * now, only SELF_FACT_GIVER) is never hidden — a self-declared fact has no
- * corresponding toggle in the UI, so filtering it would silently disappear
- * something the reader has no way to bring back.
+ * Is a docId's own source (an uploaded file, a specific chat turn, or the
+ * conversation as a whole) currently enabled? A docId that isn't
+ * "turn:"/"source:" shaped (right now, only SELF_FACT_GIVER) is never
+ * hidden — a self-declared fact has no corresponding toggle in the UI, so
+ * filtering it would silently disappear something the reader has no way to
+ * bring back.
+ *
+ * Turns are opt-in, the inverse of sources: eoConversationEnabled === true
+ * bulk-admits every turn (the "This conversation" toggle), otherwise a turn
+ * is visible only if that specific message's own eoIncludedInExplore is
+ * set. A turn id this session's message list doesn't recognise (same
+ * "can't prove it's disabled" reasoning as an unrecognised source below)
+ * stays visible rather than silently disappearing.
  */
 export function isDocEnabled(
   docId: string,
@@ -612,7 +621,11 @@ export function isDocEnabled(
 ): boolean {
   const resolved = resolveDocId(docId);
   if (!resolved) return true;
-  if (resolved.kind === "turn") return session.eoConversationEnabled !== false;
+  if (resolved.kind === "turn") {
+    if (session.eoConversationEnabled === true) return true;
+    const message = session.messages?.find((m) => m.id === resolved.id);
+    return message ? !!message.eoIncludedInExplore : true;
+  }
   const source = session.eoSources?.find((s) => s.id === resolved.id);
   // A source id this session doesn't recognise (e.g. a project-shared
   // reading whose source list this particular session object hasn't

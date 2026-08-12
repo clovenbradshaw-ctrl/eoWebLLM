@@ -249,6 +249,14 @@ export type ChatMessage = RequestMessage & {
   // claim this turn, what was folded away, and why the turn routed the way it
   // did. Attached to the message it governed, one step from the artifact.
   warrantTrace?: WarrantTrace;
+  // Explore/the hypergraph is source-scoped by default — a chat turn is
+  // admitted (see admitHypergraphTurn) but stays invisible there (see
+  // isDocEnabled in eo-hypergraph.ts) unless the reader opts THIS message
+  // in specifically, or eoConversationEnabled bulk-admits the whole
+  // conversation. Undefined means excluded — the inverse default of
+  // eoConversationEnabled above, and deliberately so: uploaded sources are
+  // what a reader meant to bring in, a chat reply is not, unless said so.
+  eoIncludedInExplore?: boolean;
 };
 
 export interface PlanTrace {
@@ -2342,15 +2350,17 @@ export const useChatStore = createPersistStore(
                 // the same fail-open discipline retrieveCorpus already uses.
               }
             }
-            const hydrateTurns =
-              session0.eoConversationEnabled === false
-                ? []
-                : session0.messages
-                    .filter((m) => !m.isError && !m.streaming)
-                    .map((m) => ({
-                      id: m.id,
-                      content: getMessageTextContent(m),
-                    }));
+            // Admitted unconditionally, same as sources above — a turn's
+            // eoIncludedInExplore / eoConversationEnabled gate its
+            // VISIBILITY (isDocEnabled in eo-hypergraph.ts), not whether it
+            // reaches the graph at all. Gating admission itself would mean
+            // opting a message in later has nothing to reveal.
+            const hydrateTurns = session0.messages
+              .filter((m) => !m.isError && !m.streaming)
+              .map((m) => ({
+                id: m.id,
+                content: getMessageTextContent(m),
+              }));
             const movements = ensureHypergraphHydrated(
               hypergraphScopeId(session0),
               hydrateSources,
@@ -2529,8 +2539,10 @@ export const useChatStore = createPersistStore(
 
         // Admitted AFTER this turn's own navigation ran, so the graph a
         // question is checked against never includes the question's own
-        // words as if they were prior context.
-        if (userContent.trim() && session0.eoConversationEnabled !== false) {
+        // words as if they were prior context. Admitted unconditionally —
+        // see the hydrateTurns comment above for why visibility, not
+        // admission, is where eoIncludedInExplore/eoConversationEnabled gate.
+        if (userContent.trim()) {
           const m = admitHypergraphTurn(
             hypergraphScopeId(session0),
             { id: userMessage.id, content: userContent },
@@ -2753,16 +2765,15 @@ export const useChatStore = createPersistStore(
               // The assistant's own reply is content too — admitted here so
               // the graph accumulates entities and relations discussed in
               // either direction of the conversation, not only in what the
-              // reader typed or uploaded. Skipped when the reader has
-              // turned the conversation off as a source.
-              const botMovement =
-                session0.eoConversationEnabled === false
-                  ? null
-                  : admitHypergraphTurn(
-                      hypergraphScopeId(session0),
-                      { id: botMessage.id, content: message },
-                      turnIndex,
-                    );
+              // reader typed or uploaded. Admitted unconditionally — see the
+              // hydrateTurns comment above for why visibility, not
+              // admission, is where eoIncludedInExplore/eoConversationEnabled
+              // gate.
+              const botMovement = admitHypergraphTurn(
+                hypergraphScopeId(session0),
+                { id: botMessage.id, content: message },
+                turnIndex,
+              );
               if (botMovement)
                 get().pushEoLog(
                   "hypergraph",

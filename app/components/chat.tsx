@@ -18,8 +18,6 @@ import ReturnIcon from "../icons/return.svg";
 import CopyIcon from "../icons/copy.svg";
 import LoadingIcon from "../icons/three-dots.svg";
 import LoadingButtonIcon from "../icons/loading.svg";
-import MaxIcon from "../icons/max.svg";
-import MinIcon from "../icons/min.svg";
 import ResetIcon from "../icons/reload.svg";
 import BreakIcon from "../icons/break.svg";
 import DeleteIcon from "../icons/clear.svg";
@@ -101,9 +99,11 @@ import {
   ClipboardText,
   Clock,
   Check,
-  ShareNetwork,
   DotsThreeVertical,
   Calculator,
+  FileText,
+  MagnifyingGlass,
+  Mountains,
 } from "@phosphor-icons/react";
 import { ingestFile } from "../client/eo-source-ingest";
 import { toEOTReader, reReadSource, ledgerStats } from "../client/eo-reading";
@@ -1813,7 +1813,6 @@ function ChatInner() {
       : -1;
 
   const autoFocus = !isMobileScreen; // wont auto focus on mobile screen
-  const showMaxIcon = !isMobileScreen;
 
   useCommand({
     fill: setUserInput,
@@ -2106,8 +2105,8 @@ function ChatInner() {
         <div className="window-actions">
           <div className="window-action-button">
             <IconButton
-              icon={<ShareNetwork size={16} />}
-              title="Terrain — entities, relations, and their sources"
+              icon={<Mountains size={16} />}
+              title="Explore — Sources, Names, Groups, Connections, Map, Timeline, Compare, Themes"
               onClick={() => {
                 if (showTerrainPanel) {
                   closeTerrainPanel();
@@ -2211,21 +2210,6 @@ function ChatInner() {
                   >
                     <TerminalWindow size={17} /> EOT — system log
                   </div>
-                  {showMaxIcon && (
-                    <div
-                      className={styles["header-menu-item"]}
-                      onClick={() => {
-                        setShowHeaderMenu(false);
-                        config.update(
-                          (config) =>
-                            (config.tightBorder = !config.tightBorder),
-                        );
-                      }}
-                    >
-                      {config.tightBorder ? <MinIcon /> : <MaxIcon />}{" "}
-                      {config.tightBorder ? "Restore window" : "Maximize"}
-                    </div>
-                  )}
                 </div>
               }
             >
@@ -2476,11 +2460,11 @@ function ChatInner() {
             <label className={styles["source-row"]}>
               <input
                 type="checkbox"
-                checked={session.eoConversationEnabled !== false}
+                checked={session.eoConversationEnabled === true}
                 onChange={() =>
                   chatStore.updateCurrentSession((current) => {
                     current.eoConversationEnabled =
-                      current.eoConversationEnabled === false;
+                      current.eoConversationEnabled !== true;
                   })
                 }
               />
@@ -2488,8 +2472,9 @@ function ChatInner() {
                 <strong>This conversation</strong>
                 <small>
                   {session.messages.length} message
-                  {session.messages.length === 1 ? "" : "s"} · admitted into the
-                  same graph as an uploaded source
+                  {session.messages.length === 1 ? "" : "s"} · off by default —
+                  check to admit every message into Explore, or opt messages in
+                  one at a time below
                 </small>
               </span>
             </label>
@@ -2566,6 +2551,54 @@ function ChatInner() {
                 </div>
                 <div className={styles["model-load-progress-note"]}>
                   {Locale.Chat.ModelLoading.Note}
+                </div>
+              </div>
+            )}
+            {renderMessages.length === 0 && !session.modelLoadProgress && (
+              <div className={styles["chat-empty-hero"]}>
+                <div className={styles["chat-empty-hero-badge"]}>F</div>
+                <div className={styles["chat-empty-hero-title"]}>
+                  What are you looking into?
+                </div>
+                <div className={styles["chat-empty-hero-sub"]}>
+                  A real small model, downloaded once and run entirely in your
+                  browser.
+                </div>
+                <div className={styles["chat-empty-hero-sub-dim"]}>
+                  When it replies, Citey checks the reply against what
+                  you&rsquo;ve attached — not part of the model, a separate pass
+                  over its words.
+                </div>
+                <div className={styles["chat-empty-hero-pills"]}>
+                  {[
+                    {
+                      icon: <FileText size={15} />,
+                      text: "Summarize a document",
+                      fill: "Summarize the document I attached.",
+                    },
+                    {
+                      icon: <Scales size={15} />,
+                      text: "Compare two sources",
+                      fill: "Compare what my attached sources say about ",
+                    },
+                    {
+                      icon: <MagnifyingGlass size={15} />,
+                      text: "Check a claim",
+                      fill: "Check this claim against my attached sources: ",
+                    },
+                  ].map((pill) => (
+                    <div
+                      key={pill.text}
+                      className={styles["chat-empty-hero-pill"]}
+                      onClick={() => {
+                        setUserInput(pill.fill);
+                        inputRef.current?.focus();
+                      }}
+                    >
+                      {pill.icon}
+                      {pill.text}
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -2706,6 +2739,29 @@ function ChatInner() {
                                         }
                                         ttsSpeak(speechId, text);
                                       }}
+                                    />
+
+                                    <ChatAction
+                                      text={
+                                        message.eoIncludedInExplore
+                                          ? "Remove from Explore"
+                                          : "Include in Explore"
+                                      }
+                                      icon={<Mountains size={16} />}
+                                      selected={!!message.eoIncludedInExplore}
+                                      onClick={() =>
+                                        chatStore.updateCurrentSession(
+                                          (session) => {
+                                            const m = session.template.context
+                                              .concat(session.messages)
+                                              .find((m) => m.id === message.id);
+                                            if (m) {
+                                              m.eoIncludedInExplore =
+                                                !m.eoIncludedInExplore;
+                                            }
+                                          },
+                                        )
+                                      }
                                     />
 
                                     <ChatAction

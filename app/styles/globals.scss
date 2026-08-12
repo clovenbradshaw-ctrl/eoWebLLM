@@ -1,32 +1,33 @@
 @import "./animation.scss";
 @import "./window.scss";
 
-// The app's whole palette, not just Citey's chips — shifted from the old
-// warm off-white/olive-black scheme to the cool violet-tinted one validated
-// in the mockup. --primary is now literally --eo-model (the "model" accent
-// from the Citey design system) so there's one source of truth instead of
-// two brand colors that happen to both be teal.
+// The Fold's shell palette — near-white + a single indigo accent, taken
+// directly from the "Citey Aesthetic Overhaul" reference mockup's own theme
+// object. --primary is deliberately NOT --eo-model anymore: it's the app's
+// general chrome accent (buttons/links/focus/send), while --eo-model/
+// --eo-citey/--eo-warn/--eo-echoed stay put below as the grounding-chip
+// system's own WCAG-AA-validated colors — two different jobs that happened
+// to share a color before, not one job.
 @mixin light {
   --theme: light;
 
   /* color */
   --white: #ffffff;
-  --black: #1c1830;
-  --gray: #f6f5fb;
-  --light-gray: #706a92;
-  --primary: #1b7964;
-  --second: #ece9fb;
-  --hover-color: #f0eefb;
-  --bar-color: #e2dff0;
+  --black: #17171d;
+  --gray: #fafafb;
+  --light-gray: #8a8a96;
+  --primary: #5b5bd6;
+  --second: #fafafb;
+  --hover-color: #f2f2f7;
+  --bar-color: #ececf0;
   --theme-color: var(--gray);
 
-  /* Citey design system — the model/annotator split's own accents. --model
-     mirrors --primary (kept distinct so chip/note code never has to know
-     which one the app calls its "brand" color). Darkened from the mockup's
-     exact values (#1f8a72/#6b5fd6/#a8752f) — measured against their own
-     "-soft" chip backgrounds those originals landed at 3.4-4.2:1, under
-     WCAG AA's 4.5:1 floor for normal-weight chip-sized text (verified with
-     the standard relative-luminance formula, not eyeballed). Each is
+  /* Citey design system — the model/annotator split's own accents, kept
+     independent of --primary above (see comment at file top). Darkened from
+     the mockup's exact values (#1f8a72/#6b5fd6/#a8752f) — measured against
+     their own "-soft" chip backgrounds those originals landed at 3.4-4.2:1,
+     under WCAG AA's 4.5:1 floor for normal-weight chip-sized text (verified
+     with the standard relative-luminance formula, not eyeballed). Each is
      darkened just enough to clear ~4.6:1 there (5.3-5.6:1 on plain white),
      same hue, so the chip system still reads as the same three colors. */
   --eo-model: #1b7964;
@@ -41,12 +42,13 @@
   --eo-echoed: #0b6e7f;
   --eo-echoed-soft: #e0f2f5;
 
-  /* shadow */
-  --shadow: 0 1px 2px rgba(28, 24, 48, 0.06), 0 8px 20px -8px rgba(28, 24, 48, 0.16), 0 28px 64px -32px rgba(28, 24, 48, 0.35);
-  --card-shadow: 0 1px 2px rgba(28, 24, 48, 0.08), 0 4px 10px -4px rgba(28, 24, 48, 0.14);
+  /* shadow — lighter than the old violet-tinted triple-shadow, matching the
+     mockup's flatter chrome. */
+  --shadow: 0 8px 24px rgba(20, 20, 30, 0.12);
+  --card-shadow: 0 1px 2px rgba(20, 20, 30, 0.06), 0 4px 10px -4px rgba(20, 20, 30, 0.1);
 
   /* stroke */
-  --border-in-light: 1px solid #e2dff0;
+  --border-in-light: 1px solid #ececf0;
   --border-in-dark: 1px solid rgb(136, 136, 136);
 }
 
@@ -54,15 +56,15 @@
   --theme: dark;
 
   /* color */
-  --white: #1e1a2c;
-  --black: #ece9fb;
-  --gray: #16131f;
-  --light-gray: #b7b1d6;
-  --primary: #4fc9a8;
-  --second: #2a2447;
-  --hover-color: #322c47;
+  --white: #1e1a33;
+  --black: #f3f1fa;
+  --gray: #100e1a;
+  --light-gray: #8b87a6;
+  --primary: #8b7ff0;
+  --second: #161329;
+  --hover-color: #252140;
 
-  --bar-color: #322c47;
+  --bar-color: #2e2a47;
 
   --eo-model: #4fc9a8;
   --eo-model-soft: #17322a;
@@ -73,8 +75,11 @@
   --eo-echoed: #5cc9dc;
   --eo-echoed-soft: #123138;
 
-  --border-in-light: 1px solid #322c47;
+  --border-in-light: 1px solid #2e2a47;
   --border-in-dark: 1px solid rgb(255, 255, 255, 0.56);
+
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
+  --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 4px 10px -4px rgba(0, 0, 0, 0.28);
 
   --theme-color: var(--gray);
 
@@ -99,9 +104,9 @@
 :root {
   @include light;
 
-  --window-width: 90vw;
-  --window-height: 90vh;
-  --sidebar-width: 300px;
+  --window-width: 100vw;
+  --window-height: 100vh;
+  --sidebar-width: 220px;
   --window-content-width: calc(100% - var(--sidebar-width));
   --message-max-width: 80%;
   --full-height: 100%;
@@ -148,31 +153,9 @@ body {
   padding: 0;
   height: var(--full-height);
   width: 100vw;
-  display: flex;
-  justify-content: center;
-  align-items: center;
   user-select: none;
   touch-action: pan-x pan-y;
   overflow: hidden;
-
-  // Tints matched to --primary/--black's own values (was hardcoded to the
-  // old warm palette pre-reskin — a stray gradient with the wrong colors
-  // reads as a design regression even when every token underneath it is
-  // correct).
-  background-image: radial-gradient(
-      ellipse 120% 80% at 50% -20%,
-      rgba(31, 138, 114, 0.07),
-      transparent 60%
-    ),
-    radial-gradient(
-      ellipse 100% 60% at 50% 120%,
-      rgba(28, 24, 48, 0.05),
-      transparent 60%
-    );
-
-  @media only screen and (max-width: 600px) {
-    background-color: var(--second);
-  }
 
   *:focus-visible {
     outline: none;

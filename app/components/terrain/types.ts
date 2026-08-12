@@ -77,16 +77,19 @@ export interface TerrainCardProps {
   onNavigate: OnNavigate;
 }
 
+// Display labels only — friendlier names for the same 9 terrain cells, per
+// the reference design's "Explore" panel. Internal keys/logic (below and
+// throughout terrain-panel.tsx) are unchanged.
 export const TERRAIN_TAB_LABEL: Record<TerrainCardKind, string> = {
-  void: "Void",
-  entity: "Entity",
-  link: "Link",
-  network: "Network",
-  atmosphere: "Atmosphere",
-  field: "Field",
-  kind: "Kind",
-  lens: "Lens",
-  paradigm: "Paradigm",
+  void: "Ground",
+  entity: "Names",
+  link: "Connections",
+  network: "Map",
+  atmosphere: "Timeline",
+  field: "Sources",
+  kind: "Groups",
+  lens: "Compare",
+  paradigm: "Themes",
 };
 
 /** Void/Kind/Lens/Paradigm have no live data path today — see types.ts header. */
