@@ -148,14 +148,18 @@ body {
   touch-action: pan-x pan-y;
   overflow: hidden;
 
+  // Tints matched to --primary/--black's own values (was hardcoded to the
+  // old warm palette pre-reskin — a stray gradient with the wrong colors
+  // reads as a design regression even when every token underneath it is
+  // correct).
   background-image: radial-gradient(
       ellipse 120% 80% at 50% -20%,
-      rgba(31, 90, 76, 0.06),
+      rgba(31, 138, 114, 0.07),
       transparent 60%
     ),
     radial-gradient(
       ellipse 100% 60% at 50% 120%,
-      rgba(38, 36, 31, 0.05),
+      rgba(28, 24, 48, 0.05),
       transparent 60%
     );
 
