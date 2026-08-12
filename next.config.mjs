@@ -26,10 +26,15 @@ console.log("[Next] build mode", mode);
 const disableChunk = !!process.env.DISABLE_CHUNK || mode === "export";
 console.log("[Next] build with chunk: ", !disableChunk);
 
+// worker-src needs blob: + esm.sh alongside script-src: app/worker/tts-worker.ts
+// loads kokoro-js from esm.sh at runtime and spins up its own nested worker
+// for threaded WASM (see that file's header comment) — without both origins
+// here that nested worker is CSP-blocked and TTS silently falls back to slow
+// single-threaded WASM or fails outright.
 const cspHeader = `
     default-src 'self';
     script-src 'self' 'unsafe-eval' 'unsafe-inline' https://esm.sh;
-    worker-src 'self';
+    worker-src 'self' blob: https://esm.sh;
     connect-src 'self' blob: data: https: http:;
     style-src 'self' 'unsafe-inline';
     img-src 'self' blob: data: https:;

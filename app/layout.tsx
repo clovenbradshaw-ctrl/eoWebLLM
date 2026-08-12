@@ -38,7 +38,7 @@ const plexMono = localFont({
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://clovenbradshaw-ctrl.github.io/eoWebLLM/"),
-  title: "Citey",
+  title: "The Fold",
   description:
     "Chat with AI large language models running natively in your browser, gated by a surf/fold instruction set. Private, server-free, bounded-context AI conversations.",
   keywords: [
@@ -60,32 +60,32 @@ export const metadata: Metadata = {
     maximumScale: 1,
   },
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#fafafa" },
-    { media: "(prefers-color-scheme: dark)", color: "#151515" },
+    { media: "(prefers-color-scheme: light)", color: "#fafafb" },
+    { media: "(prefers-color-scheme: dark)", color: "#100e1a" },
   ],
   appleWebApp: {
-    title: "Citey",
+    title: "The Fold",
     statusBarStyle: "default",
   },
   openGraph: {
     type: "website",
     url: "https://clovenbradshaw-ctrl.github.io/eoWebLLM/",
-    title: "Citey",
+    title: "The Fold",
     description:
       "Chat with AI large language models running natively in your browser, gated by a surf/fold instruction set",
-    siteName: "Citey",
+    siteName: "The Fold",
     images: [
       {
         url: "https://clovenbradshaw-ctrl.github.io/eoWebLLM/favicon-32x32.png",
         width: 32,
         height: 32,
-        alt: "Citey - Browser-based AI conversation",
+        alt: "The Fold - Browser-based AI conversation",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Citey",
+    title: "The Fold",
     description:
       "Chat with AI large language models running natively in your browser, gated by a surf/fold instruction set",
     images: [
@@ -97,10 +97,14 @@ export const metadata: Metadata = {
   },
 };
 
+// worker-src needs blob: + esm.sh alongside script-src (see next.config.mjs's
+// matching comment) — this meta-tag CSP is the one that actually applies to
+// the static-exported build GitHub Pages serves, since next.config.mjs's
+// headers() only runs in non-export mode.
 const cspHeader = `
     default-src 'self';
     script-src 'self' 'unsafe-eval' 'unsafe-inline' https://esm.sh;
-    worker-src 'self';
+    worker-src 'self' blob: https://esm.sh;
     connect-src 'self' blob: data: https: http:;
     style-src 'self' 'unsafe-inline';
     img-src 'self' blob: data: https:;
@@ -154,15 +158,15 @@ export default function RootLayout({
           href={`${basePath}/safari-pinned-tab.svg`}
           color="#6E5EE8"
         />
-        <meta name="msapplication-TileColor" content="#6E5EE8" />
-        <meta name="theme-color" content="#6E5EE8" />
+        <meta name="msapplication-TileColor" content="#5B5BD6" />
+        <meta name="theme-color" content="#5B5BD6" />
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{
             __html: JSON.stringify({
               "@context": "https://schema.org",
               "@type": "WebApplication",
-              name: "Citey",
+              name: "The Fold",
               url: "https://clovenbradshaw-ctrl.github.io/eoWebLLM/",
               description:
                 "Chat with AI large language models running natively in your browser, gated by a surf/fold instruction set. Private, server-free, bounded-context AI conversations.",

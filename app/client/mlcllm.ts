@@ -42,18 +42,36 @@ export class MlcLLMApi implements LLMApi {
 
       if (config.stream) {
         const reader = response.body!.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let pending = "";
+        let done = false;
         while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          // Extracting the data part from the server response
-          const chunk = new TextDecoder("utf-8").decode(value);
-          const result = chunk.match(/data: (.+)/);
-          if (result) {
+          const { value, done: streamDone } = await reader.read();
+          if (streamDone) break;
+
+          // SSE transports are allowed to split an event across reads or
+          // batch several events into one read. Ollama does both in normal
+          // streaming, so parsing one greedy `data:` match can leave a turn
+          // permanently in its optimistic "Typing…" state. Keep an event
+          // buffer and consume every complete line independently.
+          pending += decoder.decode(value, { stream: true });
+          const lines = pending.split(/\r?\n/);
+          pending = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.startsWith("data:")) continue;
+            const event = line.slice(5).trim();
+            if (event === "[DONE]") {
+              done = true;
+              break;
+            }
             try {
-              const data = JSON.parse(result[1]);
+              const data = JSON.parse(event);
               if (data.choices && data.choices.length > 0) {
-                reply += data.choices[0].delta.content; // Append the content
-                options.onUpdate?.(reply, chunk); // Handle the chunk update
+                const delta = data.choices[0].delta.content ?? "";
+                if (delta) {
+                  reply += delta;
+                  options.onUpdate?.(reply, delta);
+                }
 
                 if (data.choices[0].finish_reason) {
                   stopReason = data.choices[0].finish_reason;
@@ -70,11 +88,7 @@ export class MlcLLMApi implements LLMApi {
               );
             }
           }
-
-          if (chunk.includes("[DONE]")) {
-            // Ending the stream when "[DONE]" is found
-            break;
-          }
+          if (done) break;
         }
         options.onFinish(reply, stopReason, usage);
       } else {
