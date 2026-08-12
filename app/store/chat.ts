@@ -45,6 +45,14 @@ import {
   hasExplicitSearchIntent,
 } from "../client/eo-tool-router";
 import {
+  extractComparisonPhrase,
+  searchGithubArchetype,
+  pickLicensedCandidate,
+} from "../client/eo-prior-art";
+import { cloneRepo, listFiles, readFileText } from "../client/eo-repo-clone";
+import { checkCoherence, filterCodeFiles } from "../client/eo-coherence-check";
+import { ingestFile } from "../client/eo-source-ingest";
+import {
   defineAnswerSpec,
   evaluateCompliance,
   reconcileDraft,
@@ -273,6 +281,12 @@ export type EoLogKind =
   | "error"
   | "web"
   | "file"
+  // The prior-art pipeline (eo-prior-art.ts / eo-repo-clone.ts /
+  // eo-coherence-check.ts): every stage — search, clone, coherence-check,
+  // ingest — logs here whether it hit or missed. CRISPR.md's provenance
+  // law (L2e, "absence is auditable") carried over: a miss at any stage is
+  // a visible record, not a silent fallthrough.
+  | "prior-art"
   // The warrant decision: what could carry a claim this turn, what was folded
   // away, and which system the turn routed to. Its own kind because it is the
   // line a reader checks when an answer looks ungrounded.
@@ -453,6 +467,13 @@ const EO_DESK_WINDOW_MARGIN_TURNS = 2;
 // JSON. Give it more slack before treating it as failed; a slow verdict
 // still fails open (see the try/catch around planTools in onUserInput).
 const EO_ROUTER_TIMEOUT_MS = 45000;
+
+// Bounds how many of a cloned repo's real code files get ingested in one
+// turn — same context-economy discipline as everything else the prior-art
+// pipeline touches (see eo-repo-clone.ts's MAX_LISTED_FILES/MAX_FILE_BYTES):
+// every ingested source is a permanent addition to the corpus a small local
+// model has to be able to surf over, not a one-time cost.
+const MAX_PRIOR_ART_INGEST_FILES = 15;
 
 // The WebLLM engine is single-flight: background calls (fold/summary, topic)
 // must never overlap each other or the streaming answer. eoFoldInFlight guards
@@ -1845,6 +1866,125 @@ export const useChatStore = createPersistStore(
           }
         }
 
+        // Prior-art pipeline (CRISPR.md's retrieve-before-hand-coding
+        // pipeline, ported from eochat — see CRISPR-AGENT-LOOP-HANDOFF.md):
+        // triggered by a MECHANICAL condition on the message text, never an
+        // LLM JSON tool-call decision — the same "physics" precedent as
+        // hasExplicitSearchIntent above, just for a different capability. A
+        // reader who compares their ask to a named existing kind ("like
+        // Hacker News but for dolphins") gets a real, licensed
+        // implementation searched, cloned, coherence-checked, and ingested
+        // as grounded, citable source material — never invented structure
+        // from nothing. Every stage logs whether it hit or missed
+        // (CRISPR.md's L2e, "absence is auditable") — a miss at ANY stage
+        // (no archetype found, no license, incoherent clone) is a real,
+        // visible record, and the pipeline simply stops there; it never
+        // falls back to silently answering as if nothing was tried.
+        const comparisonPhrase = extractComparisonPhrase(userContent);
+        if (comparisonPhrase) {
+          try {
+            const { candidates, error: searchError } =
+              await searchGithubArchetype(comparisonPhrase);
+            if (searchError) {
+              get().pushEoLog(
+                "prior-art",
+                `search failed for "${comparisonPhrase}" — ${searchError}`,
+              );
+            } else if (!candidates.length) {
+              get().pushEoLog(
+                "prior-art",
+                `no known archetype for "${comparisonPhrase}" — building from scratch is the honest next step`,
+              );
+            } else {
+              get().pushEoLog(
+                "prior-art",
+                `search: "${comparisonPhrase}" -> ${candidates.length} candidate(s), top: ${candidates[0].repo} (${candidates[0].stars} stars, ${candidates[0].license})`,
+              );
+              const licensed = pickLicensedCandidate(candidates);
+              if (!licensed) {
+                get().pushEoLog(
+                  "prior-art",
+                  `no candidate has an allowed license — refusing to clone (CRISPR.md L2)`,
+                );
+              } else {
+                const cloneUrl = licensed.url.endsWith(".git")
+                  ? licensed.url
+                  : `${licensed.url}.git`;
+                const { result: cloned, error: cloneError } =
+                  await cloneRepo(cloneUrl);
+                if (cloneError || !cloned) {
+                  get().pushEoLog(
+                    "prior-art",
+                    `clone failed for ${licensed.repo} — ${cloneError}`,
+                  );
+                } else {
+                  const allFiles = await listFiles(cloned);
+                  const codeFiles = filterCodeFiles(allFiles);
+                  const coherence = await checkCoherence(cloned, codeFiles);
+                  get().pushEoLog(
+                    "prior-art",
+                    `cloned ${licensed.repo}: ${allFiles.length} file(s), coherence: ${
+                      coherence.coherent
+                        ? "coherent"
+                        : `${coherence.isolated.length} isolated file(s)`
+                    }`,
+                  );
+                  if (!coherence.coherent) {
+                    get().pushEoLog(
+                      "prior-art",
+                      `refusing to ingest an incoherent pile — isolated: ${coherence.isolated.slice(0, 5).join(", ")}`,
+                    );
+                  } else {
+                    let ingestedCount = 0;
+                    for (const relPath of codeFiles.slice(
+                      0,
+                      MAX_PRIOR_ART_INGEST_FILES,
+                    )) {
+                      const { text, error: readError } = await readFileText(
+                        cloned,
+                        relPath,
+                      );
+                      if (readError || text === null) {
+                        get().pushEoLog(
+                          "prior-art",
+                          `skipped ${relPath} — ${readError}`,
+                        );
+                        continue;
+                      }
+                      try {
+                        const file = new File(
+                          [text],
+                          `${licensed.repo.replace("/", "__")}/${relPath}`,
+                          { type: "text/plain" },
+                        );
+                        const { source, logLines } = await ingestFile(file);
+                        get().registerEoSource(source);
+                        for (const line of logLines)
+                          get().pushEoLog(line.channel, line.text);
+                        ingestedCount++;
+                      } catch (err) {
+                        get().pushEoLog(
+                          "prior-art",
+                          `ingest failed for ${relPath} — ${(err as Error).message}`,
+                        );
+                      }
+                    }
+                    get().pushEoLog(
+                      "prior-art",
+                      `ingested ${ingestedCount}/${codeFiles.length} file(s) from ${licensed.repo} — now part of the answerable corpus, cited like any other source`,
+                    );
+                  }
+                }
+              }
+            }
+          } catch (err) {
+            get().pushEoLog(
+              "prior-art",
+              `pipeline failed — ${(err as Error).message}`,
+            );
+          }
+        }
+
         // Non-text source surf (see eo-binary-structure.ts): a binary/
         // unreadable upload's only turn-time material is its structural
         // summary, and — same discipline as the text corpus surf just below
@@ -2571,12 +2711,22 @@ export const useChatStore = createPersistStore(
               }
 
               // Mechanical citation surface: the talker was never told
-              // citations exist, so strip any [n] it wrote anyway. The real
-              // source list is attached as structured data (webResults),
-              // not text — the UI renders it as a clickable panel (see
-              // WebSearchPanel in chat.tsx) instead of a markdown footer the
-              // reader has to scroll past the answer to find.
-              //
+              // citations exist, so strip any [n] it wrote anyway — whether
+              // it drew on web results or on numbered corpus passages
+              // (formatCorpusContext in eo-corpus.ts numbers those the same
+              // way). The real source list is attached as structured data
+              // (webResults / sourceCitations below), not text — the UI
+              // renders it as a clickable panel (see WebSearchPanel /
+              // SourceCitationsPanel in chat.tsx) instead of a markdown
+              // footer the reader has to scroll past the answer to find.
+              // Stripping used to be gated on turnWebQuery alone, which left
+              // corpus-cited turns' raw [1]/[2] text unstripped since
+              // formatCorpusContext numbers passages the same way a web
+              // search does.
+              if (turnWebQuery || corpusPassages.length) {
+                message = stripCitationBrackets(message);
+              }
+
               // LAWS.md L2e — absence is auditable: a search that ran and
               // found nothing must render differently from a turn that never
               // searched at all, or the reader can't tell "checked, nothing
@@ -2585,7 +2735,6 @@ export const useChatStore = createPersistStore(
               // a zero-result search still surfaces as a disclosed gap.
               const webCitations: CitationEntry[] = [];
               if (turnWebQuery) {
-                message = stripCitationBrackets(message);
                 botMessage.webResults = turnWebResults;
                 botMessage.webQuery = turnWebQuery;
                 webCitations.push(

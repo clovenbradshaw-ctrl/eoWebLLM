@@ -1132,9 +1132,9 @@
 // Citey's grounding chips — inline over message text, one per checkable
 // atom (see app/client/eo-grounding-spans.ts, app/components/terrain/
 // grounding-chip.tsx). A small pill per state, scannable at a glance rather
-// than an underline a reader has to notice; only "sourced" (with a
-// resolvable corpus citation) is actually clickable, into the terrain
-// panel's Field card.
+// than an underline a reader has to notice; "sourced"/"echoed" chips with a
+// resolvable citation are clickable, opening the citation modal (a corpus
+// ref also offers "open in Field" from inside that modal).
 .eo-chip {
   display: inline-flex;
   align-items: baseline;
@@ -1149,6 +1149,16 @@
   color: var(--eo-model);
 }
 
+// A multi-token atom that echoes a source's wording without every token
+// matching verbatim — the honest middle tier between "sourced" and the
+// model's own unchecked wording (see ECHOED_MIN_TOKEN_FRACTION in
+// eo-grounding-spans.ts). Deliberately its own hue, not a lighter/darker
+// --eo-model, so it never reads as "sourced, just less confident."
+.eo-chip-echoed {
+  background: var(--eo-echoed-soft);
+  color: var(--eo-echoed);
+}
+
 .eo-chip-clickable {
   cursor: pointer;
   &:hover {
@@ -1156,19 +1166,31 @@
   }
 }
 
-.eo-chip-owned {
-  background: var(--eo-citey-soft);
-  color: var(--eo-citey);
+.eo-chip-echoed.eo-chip-clickable:hover {
+  background: color-mix(in srgb, var(--eo-echoed) 30%, var(--eo-echoed-soft));
 }
 
-// The badge that names an "owned" chip's real meaning — nothing was
-// gathered to check this atom against — without rewriting the atom's own
-// text (props.children stays exactly the substring it wrapped).
-.eo-chip-owned-tag {
+// The footnote-style [n] a sourced/echoed chip with a resolvable citation
+// carries — see buildCitationNumbering in grounding-chip.tsx. Small and
+// muted so it reads as a marker, not a second chip.
+.eo-chip-cite-number {
   font-weight: 700;
-  font-size: 0.85em;
-  opacity: 0.85;
-  text-transform: lowercase;
+  opacity: 0.75;
+  margin-left: 1px;
+}
+
+// "owned" — nothing was gathered to check this atom against. Deliberately
+// NOT a filled pill like the other states: this is the model's own
+// unchecked opinion, not a verdict of any kind, and giving it the same
+// visual weight as "sourced"/"contradicted" overstates it. A dashed
+// underline on inherited text reads as "this word is being watched," not
+// "this word has been judged" — the tooltip carries the actual reasoning.
+.eo-chip-owned {
+  background: transparent;
+  color: inherit;
+  font-weight: inherit;
+  padding: 0;
+  border-bottom: 1px dashed var(--dim, var(--light-gray));
 }
 
 .eo-chip-checking {

@@ -1,4 +1,13 @@
 import withSerwistInit from "@serwist/next";
+import { createRequire } from "module";
+
+// next.config.mjs is loaded as a real ES module, so there is no ambient
+// `require` — some environments' Node builds happen to polyfill CJS
+// interop for ESM and mask that, others (e.g. this sandboxed preview
+// shell) don't, which is exactly the kind of environment-dependent
+// breakage `require.resolve(...)` below used to cause. createRequire
+// works the same everywhere.
+const require = createRequire(import.meta.url);
 
 // Plain `next dev` (the "dev" script) sets no BUILD_MODE and must NOT
 // silently become export mode — export mode forces output:'export' and
@@ -19,7 +28,7 @@ console.log("[Next] build with chunk: ", !disableChunk);
 
 const cspHeader = `
     default-src 'self';
-    script-src 'self' 'unsafe-eval' 'unsafe-inline';
+    script-src 'self' 'unsafe-eval' 'unsafe-inline' https://esm.sh;
     worker-src 'self';
     connect-src 'self' blob: data: https: http:;
     style-src 'self' 'unsafe-inline';
@@ -37,7 +46,7 @@ const nextConfig = {
   // Allows an isolated local test server to avoid replacing the active
   // developer server's chunks in `.next`. Production keeps the default.
   distDir: process.env.NEXT_DIST_DIR || ".next",
-  webpack(config, { isServer }) {
+  webpack(config, { isServer, webpack }) {
     config.module.rules.push({
       test: /\.svg$/,
       use: ["@svgr/webpack"],
@@ -70,7 +79,16 @@ const nextConfig = {
         fs: false, // the solution
         module: false,
         perf_hooks: false,
+        // isomorphic-git (app/client/eo-repo-clone.ts) expects Node's
+        // Buffer/events globals to exist — real browser polyfills, not
+        // stubbed out to `false` like the Node-only builtins above, since
+        // isomorphic-git actually calls into them at runtime.
+        buffer: require.resolve("buffer/"),
+        events: require.resolve("events/"),
       };
+      config.plugins.push(
+        new webpack.ProvidePlugin({ Buffer: ["buffer", "Buffer"] }),
+      );
     }
 
     return config;

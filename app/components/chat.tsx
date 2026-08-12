@@ -30,6 +30,7 @@ import BrainIcon from "../icons/brain.svg";
 import BottomIcon from "../icons/bottom.svg";
 import StopIcon from "../icons/pause.svg";
 import RobotIcon from "../icons/robot.svg";
+import SpeakerIcon from "../icons/speaker.svg";
 
 import {
   ChatMessage,
@@ -128,12 +129,19 @@ import {
   SourceReaderTrigger,
   SourceReaderPanel,
 } from "./source-reader";
+import { SourceReadAloudButton, showTTSError } from "./read-aloud";
 import type { WebSearchResult } from "../client/eo-websearch";
 import type { GroundingReport, Snippet } from "../client/eo-citation-check";
 import type { CitationEntry } from "../client/eo-citation-check";
 import { TerrainPanel } from "./terrain-panel";
+import { useTTSStore } from "../store/tts";
+import { toSpeechText } from "../utils/tts-text";
 import type { TerrainCardRef } from "./terrain/types";
-import { chipReasonText } from "./terrain/grounding-chip";
+import {
+  chipReasonText,
+  buildCitationNumbering,
+} from "./terrain/grounding-chip";
+import { CitationModal } from "./terrain/citation-modal";
 import type { GroundingSpan } from "../client/eo-grounding-spans";
 import { CiteySprite } from "./citey";
 
@@ -711,7 +719,6 @@ function useScrollToBottom(
 }
 
 export function ChatActions(props: {
-  uploadImage: () => void;
   uploadFile: () => void;
   setAttachImages: (images: ChatImage[]) => void;
   setUploading: (uploading: boolean) => void;
@@ -730,12 +737,9 @@ export function ChatActions(props: {
   const currentModel = config.modelConfig.model;
   const models = config.models;
   const [showModelSelector, setShowModelSelector] = useState(false);
-  const [showUploadImage, setShowUploadImage] = useState(false);
 
   useEffect(() => {
-    const show = isVisionModel(currentModel);
-    setShowUploadImage(show);
-    if (!show) {
+    if (!isVisionModel(currentModel)) {
       props.setAttachImages([]);
       props.setUploading(false);
     }
@@ -1268,6 +1272,10 @@ function SourceRow(props: {
           </small>
         </span>
         <SourceReaderTrigger state={reader} />
+        <SourceReadAloudButton
+          source={source}
+          className={styles["source-speak"]}
+        />
         {source.textReadable && (
           <button
             type="button"
@@ -1299,9 +1307,25 @@ function ChatInner() {
 
   const isStreaming = session.messages.some((m) => m.streaming);
 
+  const ttsPlayingId = useTTSStore((s) => s.playingMessageId);
+  const ttsError = useTTSStore((s) => s.error);
+  const ttsSpeak = useTTSStore((s) => s.speak);
+  const ttsStop = useTTSStore((s) => s.stop);
+
   const [showExport, setShowExport] = useState(false);
   const [showEoLog, setShowEoLog] = useState(false);
   const [showHeaderMenu, setShowHeaderMenu] = useState(false);
+  // The currently-open citation modal (grounding-chip.tsx's [n] markers),
+  // if any — carries the whole span/citation set the clicked message
+  // rendered with, so the modal can compute its own citation number and a
+  // "view in Field" target without re-deriving them from message state.
+  const [openCitation, setOpenCitation] = useState<{
+    content: string;
+    spans: GroundingSpan[];
+    citations: CitationEntry[];
+    span: GroundingSpan;
+    citation: CitationEntry;
+  } | null>(null);
   // The terminal's active click-to-fold target, if any (see
   // renderEotEntryText below): a name pulled from a log line's own
   // quoted text, narrowing the terminal to only the lines that name it.
@@ -1509,6 +1533,11 @@ function ChatInner() {
   useEffect(() => {
     chatStore.resetGeneratingStatus();
   }, []);
+
+  // Surface TTS pipeline failures (model download, synthesis) as toasts.
+  useEffect(() => {
+    if (ttsError) showTTSError(ttsError);
+  }, [ttsError]);
 
   useEffect(() => {
     chatStore.updateCurrentSession((session) => {
@@ -1771,51 +1800,6 @@ function ChatInner() {
     },
     [attachImages, chatStore],
   );
-
-  async function uploadImage() {
-    const images: ChatImage[] = [];
-    images.push(...attachImages);
-
-    images.push(
-      ...(await new Promise<ChatImage[]>((res, rej) => {
-        const fileInput = document.createElement("input");
-        fileInput.type = "file";
-        fileInput.accept =
-          "image/png, image/jpeg, image/webp, image/heic, image/heif";
-        fileInput.multiple = true;
-        fileInput.onchange = (event: any) => {
-          setUploading(true);
-          const files = event.target.files;
-          const imagesData: ChatImage[] = [];
-          for (let i = 0; i < files.length; i++) {
-            const file = event.target.files[i];
-            compressImage(file, 256 * 1024)
-              .then((imageData) => {
-                imagesData.push(imageData);
-                if (
-                  imagesData.length === 3 ||
-                  imagesData.length === files.length
-                ) {
-                  setUploading(false);
-                  res(imagesData);
-                }
-              })
-              .catch((e) => {
-                setUploading(false);
-                rej(e);
-              });
-          }
-        };
-        fileInput.click();
-      })),
-    );
-
-    const imagesLength = images.length;
-    if (imagesLength > 3) {
-      images.splice(3, imagesLength - 3);
-    }
-    setAttachImages(images);
-  }
 
   // Above this many raw bytes, skip the CPU-heavy passes (UTF-8 decode,
   // modifier tagging, PDF/XLSX extraction) and keep only the lossless OPFS
@@ -2496,6 +2480,8 @@ function ChatInner() {
                 !(message.preview || message.content.length === 0) &&
                 !isContext;
               const showTyping = message.preview || message.streaming;
+              const speechId = `msg:${message.id ?? i}`;
+              const speechPlaying = ttsPlayingId === speechId;
 
               const shouldShowClearContextDivider = i === clearContextIndex - 1;
 
@@ -2597,6 +2583,35 @@ function ChatInner() {
                                     />
 
                                     <ChatAction
+                                      text={
+                                        speechPlaying ? "Stop" : "Read aloud"
+                                      }
+                                      icon={
+                                        speechPlaying ? (
+                                          <StopIcon />
+                                        ) : (
+                                          <SpeakerIcon />
+                                        )
+                                      }
+                                      selected={speechPlaying}
+                                      onClick={() => {
+                                        if (speechPlaying) {
+                                          ttsStop();
+                                          return;
+                                        }
+                                        const full =
+                                          getMessageTextContent(message);
+                                        const { rest } = splitThinking(full);
+                                        const text = toSpeechText(rest || full);
+                                        if (!text.trim()) {
+                                          showToast("Nothing to read aloud");
+                                          return;
+                                        }
+                                        ttsSpeak(speechId, text);
+                                      }}
+                                    />
+
+                                    <ChatAction
                                       text={Locale.Chat.Actions.Delete}
                                       icon={<DeleteIcon />}
                                       onClick={() => onDelete(message.id ?? i)}
@@ -2675,6 +2690,12 @@ function ChatInner() {
                                   {`\u{2696} System 2 · ${message.responseKind.replace(/-/g, " ")}`}
                                 </div>
                               )}
+                              {/* Warrant/Plan trace panels hidden per feedback — the
+                                  per-message "Warrant — System 1..." / "Plan — ..."
+                                  lines above the reply. Data is still collected
+                                  (message.warrantTrace/planTrace); CiteyNote's
+                                  click-to-open still no-ops safely without a
+                                  rendered panel. Re-enable by uncommenting below.
                               {!isUser && message.warrantTrace && (
                                 <WarrantPanel
                                   trace={message.warrantTrace}
@@ -2684,6 +2705,7 @@ function ChatInner() {
                               {!isUser && message.planTrace && (
                                 <PlanPanel trace={message.planTrace} />
                               )}
+                              */}
                               {!isUser && message.sourceCitations?.length ? (
                                 <SourceCitationsPanel
                                   citations={message.sourceCitations}
@@ -2714,7 +2736,15 @@ function ChatInner() {
                                 defaultShow={i >= messages.length - 6}
                                 groundingSpans={shiftedGroundingSpans}
                                 groundingCitations={message.groundingCitations}
-                                onNavigateTerrain={openTerrainCard}
+                                onOpenCitation={(span, citation) =>
+                                  setOpenCitation({
+                                    content: rest,
+                                    spans: shiftedGroundingSpans ?? [],
+                                    citations: message.groundingCitations ?? [],
+                                    span,
+                                    citation,
+                                  })
+                                }
                               />
                               {!isUser && (
                                 <CiteyNote
@@ -2784,7 +2814,6 @@ function ChatInner() {
             />
 
             <ChatActions
-              uploadImage={uploadImage}
               uploadFile={uploadFile}
               setAttachImages={setAttachImages}
               setUploading={setUploading}
@@ -2893,6 +2922,20 @@ function ChatInner() {
 
       {showEditPromptModal && (
         <SessionConfigModel onClose={() => setShowEditPromptModal(false)} />
+      )}
+
+      {openCitation && (
+        <CitationModal
+          messageContent={openCitation.content}
+          span={openCitation.span}
+          citation={openCitation.citation}
+          citationNumber={buildCitationNumbering(
+            openCitation.spans,
+            openCitation.citations,
+          ).get(openCitation.citation.index)}
+          onNavigate={openTerrainCard}
+          onClose={() => setOpenCitation(null)}
+        />
       )}
     </div>
   );

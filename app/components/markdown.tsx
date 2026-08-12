@@ -20,8 +20,9 @@ import {
   wrapGroundingSpans,
   remarkGroundingChips,
   GroundingChip,
+  buildCitationNumbering,
 } from "./terrain/grounding-chip";
-import type { OnNavigate } from "./terrain/types";
+import type { OnOpenCitation } from "./terrain/types";
 
 export function Mermaid(props: { code: string }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -147,8 +148,17 @@ function MarkDownContent(props: {
   content: string;
   groundingSpans?: GroundingSpan[];
   groundingCitations?: CitationEntry[];
-  onNavigateTerrain?: OnNavigate;
+  onOpenCitation?: OnOpenCitation;
 }) {
+  const citationNumbers = useMemo(
+    () =>
+      buildCitationNumbering(
+        props.groundingSpans ?? [],
+        props.groundingCitations,
+      ),
+    [props.groundingSpans, props.groundingCitations],
+  );
+
   const escapedContent = useMemo(() => {
     // Sentinel-wrap FIRST, against the raw content the spans' own [start,end)
     // offsets were computed against in chat.ts — then escape. escapeDollarNumber
@@ -207,7 +217,8 @@ function MarkDownContent(props: {
                 {...chipProps}
                 spans={props.groundingSpans}
                 citations={props.groundingCitations}
-                onNavigate={props.onNavigateTerrain}
+                citationNumbers={citationNumbers}
+                onOpenCitation={props.onOpenCitation}
               />
             ) : (
               <>{chipProps.children}</>
@@ -231,7 +242,7 @@ export function Markdown(
     defaultShow?: boolean;
     groundingSpans?: GroundingSpan[];
     groundingCitations?: CitationEntry[];
-    onNavigateTerrain?: OnNavigate;
+    onOpenCitation?: OnOpenCitation;
   } & React.DOMAttributes<HTMLDivElement>,
 ) {
   const mdRef = useRef<HTMLDivElement>(null);
@@ -254,7 +265,7 @@ export function Markdown(
           content={props.content}
           groundingSpans={props.groundingSpans}
           groundingCitations={props.groundingCitations}
-          onNavigateTerrain={props.onNavigateTerrain}
+          onOpenCitation={props.onOpenCitation}
         />
       )}
     </div>

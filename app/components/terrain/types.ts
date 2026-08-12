@@ -58,6 +58,17 @@ export interface TerrainCardRef {
  *  when what it lands on isn't built yet. */
 export type OnNavigate = (ref: TerrainCardRef) => void;
 
+/** Opens the citation modal for a grounding span with a resolvable citation
+ *  (sourced or echoed, web or corpus) — see grounding-chip.tsx's
+ *  GroundingChip and citation-modal.tsx. Distinct from OnNavigate: this
+ *  never jumps straight to a terrain card, it opens the modal, which can
+ *  itself offer a "view in Field" action via corpusFieldTarget when the
+ *  citation happens to be corpus-backed. */
+export type OnOpenCitation = (
+  span: import("../../client/eo-grounding-spans").GroundingSpan,
+  citation: import("../../client/eo-citation-check").CitationEntry,
+) => void;
+
 export interface TerrainCardProps {
   /** Full session, not just its id — Field needs session.eoSources to
    *  resolve a citation's source name back to its OPFS source id. */

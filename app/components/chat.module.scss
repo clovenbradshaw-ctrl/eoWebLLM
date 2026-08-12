@@ -755,6 +755,9 @@
 .eot-entry-hypergraph {
   color: #8b949e;
 }
+.eot-entry-prior-art {
+  color: #e3b341;
+}
 
 // Click-to-fold (see renderEotEntryText in chat.tsx): every quoted name
 // in a log line is a target that narrows the terminal to just the lines
@@ -1529,7 +1532,8 @@ input.eot-graph-search {
 }
 
 .source-reread,
-.source-view {
+.source-view,
+.source-speak {
   flex-shrink: 0;
   align-self: flex-start;
   padding: 3px 7px;
@@ -1548,6 +1552,21 @@ input.eot-graph-search {
 
 .source-view {
   background: var(--second);
+}
+
+.source-speak {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+
+  svg {
+    flex-shrink: 0;
+  }
+
+  &:hover {
+    background: var(--second);
+  }
 }
 
 // The ledger viewer: two named modes over the same persisted log --

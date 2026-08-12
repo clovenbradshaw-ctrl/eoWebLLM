@@ -39,7 +39,16 @@ import {
   type CitationEntry,
 } from "./eo-citation-check";
 
-export type GroundingState = "sourced" | "owned" | "checking" | "contradicted";
+export type GroundingState =
+  "sourced" | "echoed" | "owned" | "checking" | "contradicted";
+
+// A multi-token name atom ("Metro Nashville Police Department") doesn't
+// have to be all-or-nothing against the union index the way a single-token
+// number atom does — reusing the wording of a source closely, without every
+// token clearing the bar, is the honest middle state between "sourced" and
+// the model's own unchecked wording. Majority, not "any", so a single
+// coincidental word match ("the") doesn't earn the tier.
+const ECHOED_MIN_TOKEN_FRACTION = 0.5;
 
 export interface GroundingSpan {
   start: number;
@@ -81,11 +90,12 @@ export function buildGroundingSpans(
       let state: GroundingState;
       let supportingCitationIndexes: number[] = [];
       if (index) {
-        const supported = atom.tokens.every((t) =>
+        const matched = atom.tokens.filter((t) =>
           atom.kind === "number"
             ? hasNumber(index.numbers, t)
             : hasWord(index.words, t),
         );
+        const supported = matched.length === atom.tokens.length;
         if (supported) {
           state = "sourced";
           // The merged union index only says SOMETHING supports this atom —
@@ -99,6 +109,28 @@ export function buildGroundingSpans(
                 atom.kind === "number"
                   ? hasNumber(numbers, t)
                   : hasWord(words, t),
+              );
+            })
+            .map((c) => c.index);
+        } else if (
+          // Only a multi-token atom can partially match — a single-token
+          // atom (one bare number, one bare word) is already fully binary
+          // between the two branches above.
+          atom.tokens.length > 1 &&
+          matched.length / atom.tokens.length >= ECHOED_MIN_TOKEN_FRACTION
+        ) {
+          state = "echoed";
+          supportingCitationIndexes = citations
+            .filter((c) => {
+              const words = wordSet(c.text);
+              const numbers = numberSet(c.text);
+              const hits = atom.tokens.filter((t) =>
+                atom.kind === "number"
+                  ? hasNumber(numbers, t)
+                  : hasWord(words, t),
+              );
+              return (
+                hits.length / atom.tokens.length >= ECHOED_MIN_TOKEN_FRACTION
               );
             })
             .map((c) => c.index);
