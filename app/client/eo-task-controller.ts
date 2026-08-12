@@ -206,7 +206,14 @@ export function createTaskController(
   );
   const used = new Set<string>();
   const aliases = new Map<string, string>();
-  for (const definition of definitions.slice(0, 6)) {
+  // Safety backstop only, not a design target — see eo-task-plan.ts's
+  // defineTaskPlan for the matching rationale. Because defineTaskPlan
+  // rebuilds the controller from scratch on every fold step with the
+  // ever-growing accumulated list, a cap here that binds before
+  // defineTaskPlan's own maxSteps backstop would silently re-impose a
+  // hard ceiling one layer down; keep it above maxSteps's backstop so
+  // natural termination (not this cap) is what normally decides length.
+  for (const definition of definitions.slice(0, 20)) {
     const id = uniqueId(definition.id, used);
     aliases.set(definition.id, id);
     controller.tasks.push({

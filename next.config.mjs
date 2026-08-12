@@ -46,7 +46,16 @@ const nextConfig = {
   // Allows an isolated local test server to avoid replacing the active
   // developer server's chunks in `.next`. Production keeps the default.
   distDir: process.env.NEXT_DIST_DIR || ".next",
-  webpack(config, { isServer, webpack }) {
+  webpack(config, { isServer, webpack, dev }) {
+    if (dev) {
+      // The on-disk persistent webpack cache (.next/cache/webpack) has been
+      // observed corrupting mid-session during this app's dev server (ENOENT
+      // on .next/server/app, unresolvable vendor-chunks/*), forcing a full
+      // reload that crashes the page to blank with no recovery — hit
+      // repeatedly during long-running e2e chat sessions. Memory-only cache
+      // in dev avoids the corruption; build (`next build`) is unaffected.
+      config.cache = { type: "memory" };
+    }
     config.module.rules.push({
       test: /\.svg$/,
       use: ["@svgr/webpack"],

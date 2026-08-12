@@ -5,9 +5,11 @@
   justify-content: center;
 }
 
+// Wraps body + eyes + hat together so a hat actually rides along with the
+// body's bob instead of sitting fixed while the glyph moves under it.
 .citey-bob {
+  position: relative;
   animation: citey-bob 3.8s ease-in-out infinite;
-  transform-box: fill-box;
   transform-origin: center bottom;
 }
 
@@ -38,8 +40,12 @@
 .citey-eye-wander {
   display: flex;
   // Loosened from a near-touching 1px — a little breathing room between the
-  // eyes reads calmer than close-set/startled.
-  gap: 7px;
+  // eyes reads calmer than close-set/startled. Scales with --citey-scale
+  // (set by CiteySprite from its `size` prop) instead of a fixed 7px —
+  // at a small icon size (e.g. the 18px header toggle) a flat 7px gap was
+  // wider than the eyes themselves, pushing the right eye clean off the
+  // sprite's own box.
+  gap: calc(7px * var(--citey-scale, 1));
   // Citey's standard eye size: each eye is ~44% of his own width, matching
   // the favicon's proportions so he reads the same big-eyed way everywhere
   // (trimmed slightly from 48% to make room for the wider gap above).
@@ -49,19 +55,6 @@
     width: 44%;
     height: auto;
   }
-}
-
-// Glasses: sit right on the eye line, spanning both eyes. Width matches the
-// eyes' own real rendered span (~102% of the sprite, since each eye is 44%
-// wide with a 7px gap) rather than an arbitrary "almost full width" guess.
-.citey-glasses {
-  position: absolute;
-  top: 7%;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 102%;
-  height: auto;
-  z-index: 2;
 }
 
 // Hats: worn above the eyes, at the top of his "head."
@@ -80,7 +73,7 @@
     transform: translateY(0);
   }
   50% {
-    transform: translateY(-4px);
+    transform: translateY(-2px);
   }
 }
 
@@ -89,13 +82,13 @@
     transform: translate(0, 0) rotate(0deg);
   }
   25% {
-    transform: translate(0.6px, -0.5px) rotate(1deg);
+    transform: translate(0.3px, -0.25px) rotate(0.5deg);
   }
   50% {
-    transform: translate(-0.5px, 0.6px) rotate(-0.9deg);
+    transform: translate(-0.25px, 0.3px) rotate(-0.45deg);
   }
   75% {
-    transform: translate(0.5px, 0.4px) rotate(0.8deg);
+    transform: translate(0.25px, 0.2px) rotate(0.4deg);
   }
   100% {
     transform: translate(0, 0) rotate(0deg);

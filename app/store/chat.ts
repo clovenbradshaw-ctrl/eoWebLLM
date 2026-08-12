@@ -55,6 +55,7 @@ import { ingestFile } from "../client/eo-source-ingest";
 import {
   defineAnswerSpec,
   evaluateCompliance,
+  needsDecomposition,
   reconcileDraft,
   type AnswerSpec,
 } from "../client/eo-holonic-plan";
@@ -64,6 +65,7 @@ import {
   computeMath,
   buildMathBlock,
   checkMathCompliance,
+  tryDirectCalculation,
   type MathResult,
 } from "../client/eo-math-check";
 import {
@@ -117,8 +119,10 @@ import {
   describeHypergraphMovement,
   draftHypergraphThought,
   buildHypergraphThoughtBlock,
+  buildThoughtUserPrompt,
   queryUserFacts,
   hypergraphScopeId,
+  type HypergraphNavigation,
 } from "../client/eo-hypergraph";
 import { buildSelfFactsBlock } from "../client/eo-self-facts";
 import {
@@ -163,6 +167,20 @@ export type ChatMessage = RequestMessage & {
   stopReason?: ChatCompletionFinishReason;
   model?: Model;
   usage?: CompletionUsage;
+  // Set when this reply bypassed the model entirely — a bare arithmetic
+  // question (see eo-math-check.ts's tryDirectCalculation) answered by
+  // mathjs directly, not generated. chat.tsx renders these differently
+  // (a plain calculator readout, not a Markdown reply) and labels them so
+  // a reader never mistakes a deterministic computation for the model's
+  // own reasoning.
+  viaCalculator?: boolean;
+  calculatorExpression?: string;
+  // Set when the OTHER math path fired (needsMathCheck/defineMathSpec,
+  // above) — the model DID run here, only to read the question into a
+  // literal expression; mathjs still computed the actual value. Different
+  // disclosure than viaCalculator's zero-model bypass, and not mutually
+  // exclusive with the model's own full generated reply around it.
+  calculatorVerified?: { expression: string; formatted: string };
   // The actual web_search results (if any) that grounded this reply — kept
   // structured, not baked into the text, so the UI can render a clickable
   // "what did it search" affordance instead of a markdown footer the reader
@@ -190,6 +208,15 @@ export type ChatMessage = RequestMessage & {
   // at the same point groundingSpans is finalized against the settled
   // message (not the live per-chunk one) — see the onFinish call site.
   groundingCitations?: CitationEntry[];
+  // True only during the async post-answer resolveSpans pass (onFinish's
+  // background block below) — deliberately separate from `streaming`.
+  // Reusing `streaming` for this used to make a finished answer look like
+  // it was "still thinking" a beat after the last visible token landed
+  // (showTyping/ThinkingPanel in chat.tsx both key off `streaming` being
+  // the single source of truth for "still composing the reply"). This flag
+  // exists so the UI can tell "citations are being checked in the
+  // background" apart from that, without resurrecting the typing bubble.
+  checkingCitations?: boolean;
   // Per-result "snip" (see eo-citation-check.ts): the one clause of each
   // search result that actually overlaps the reply's own words, so the
   // panel can show the exact sentence that grounded the answer instead of
@@ -341,11 +368,20 @@ export interface ChatSession {
   // DISPLAY-ONLY toggle, deliberately not a computation toggle: checkGrounding
   // and the System 2 escalation it can trigger (chat.ts's onUserInput) run
   // UNCHANGED either way — answer safety/quality never depends on this.
-  // false only suppresses the inline "Citey: ..." chip (grounding-chip.tsx)
+  // false suppresses the inline "Citey: ..." chip (grounding-chip.tsx)
   // and citation badges a reader sees, for a reader who finds the per-claim
-  // annotations distracting. Undefined/true (the default) preserves the
-  // exact behavior this app had before the toggle existed.
+  // annotations distracting. Now defaults to false for a brand new session
+  // (see newSession()) — a fresh chat starting with every claim underlined
+  // and chipped reads as overwhelming; the toggle (toggleGroundingDisplay,
+  // "Hide Citey"/"Show Citey") is right there for a reader who wants it on.
   groundingDisplayEnabled?: boolean;
+
+  // A submit that lands while `isGenerating` is true used to be silently
+  // dropped (chat.tsx's onSubmit early-returned with no feedback at all —
+  // the reader would click Send and nothing would visibly happen). This
+  // queues it instead: onUserInput's own finish/error paths check this
+  // after clearing isGenerating and automatically send the next one.
+  queuedInputs?: { content: string; images?: ChatImage[] }[];
 
   // set by an uploaded file (see app/client/eo-binary-structure.ts); consumed
   // and cleared by the next onUserInput call, same one-shot handoff pattern
@@ -475,7 +511,20 @@ const EO_DESK_WINDOW_MARGIN_TURNS = 2;
 // ordinary fold timeout even though the router prompt asks for one line of
 // JSON. Give it more slack before treating it as failed; a slow verdict
 // still fails open (see the try/catch around planTools in onUserInput).
-const EO_ROUTER_TIMEOUT_MS = 45000;
+//
+// This is also the budget for DEFINE (defineAnswerSpec), the post-answer
+// reading probe, and every eoRunSystem2/eo-task-plan background call (see
+// the `background` closure in eoRunSystem2 and its use as `generate` for
+// probeReading/defineTaskPlan/runTaskPlan) — live-testing on this machine
+// (2026-08-12, single clean `next dev`, no other tabs) caught the DEFINE
+// call and the reading probe each failing with "eo background model call
+// timed out" at just over the old 45s ceiling on ordinary, non-pathological
+// turns — not thrashing, just this 1B model's real inference-time variance
+// on this hardware. Widened rather than left tight, since a probe/DEFINE
+// call that never gets to finish is a call that can never route a turn to
+// system2 or task decomposition, no matter how the rest of the pipeline is
+// sequenced.
+const EO_ROUTER_TIMEOUT_MS = 75000;
 
 // Bounds how many of a cloned repo's real code files get ingested in one
 // turn — same context-economy discipline as everything else the prior-art
@@ -937,6 +986,12 @@ async function eoRunSystem2(input: {
   question: string;
   draft: string;
   sources: EoSource[];
+  // LAWS.md L3 — needsDecomposition's mechanical read (eo-holonic-plan.ts)
+  // of "does a proper response to this ask decompose into several
+  // dependent parts," folded straight through from chat.ts rather than
+  // re-derived. Independent of `sources`: the shape question is about the
+  // ask, not about whether a corpus was uploaded.
+  decomposes: boolean;
   alreadySurfaced: CorpusPassage[];
   ledger: FoldLedger;
   demand: GroundingDemand;
@@ -953,6 +1008,7 @@ async function eoRunSystem2(input: {
     question,
     draft,
     sources,
+    decomposes,
     demand,
     grounding,
   } = input;
@@ -1149,12 +1205,29 @@ async function eoRunSystem2(input: {
   //     owns legality; the model only proposes wording. This ran before the
   //     first token until now, which meant a multi-part question paid for a
   //     whole dependency graph before showing the reader anything.
-  if (probeRoute?.system === "system2" && sources.length) {
+  //
+  //     LAWS.md L3 — no longer gated on `sources.length`. A corpus-grounded
+  //     turn the reading probe itself finds unresolved (probeRoute) still
+  //     earns this the old way; `decomposes` is needsDecomposition's
+  //     mechanical verdict (eo-holonic-plan.ts) that the ask has dependent
+  //     parts worth planning, with or without a corpus to plan over —
+  //     defineTaskPlan/runTaskPlan both degrade gracefully with zero
+  //     sources (formatCorpusContext/retrieveCorpus return null/[] rather
+  //     than failing; see eo-corpus.ts), so a conversational multi-
+  //     constraint request plans over the question and conversational
+  //     context alone.
+  if (probeRoute?.system === "system2" || decomposes) {
     earned.push({
       kind: "worked-through",
       run: async () => {
         const plan = await defineTaskPlan(question, background);
-        if (plan.tasks.length < 2) return null;
+        if (plan.tasks.length < 2) {
+          get().pushEoLog(
+            "task",
+            `worked-through: abandoned — defineTaskPlan proposed only ${plan.tasks.length} task(s), needs 2+ to be worth planning`,
+          );
+          return null;
+        }
         const run = await runTaskPlan({
           question,
           plan,
@@ -1189,6 +1262,62 @@ async function eoRunSystem2(input: {
         return String(raw || "").trim() || null;
       },
     });
+  }
+
+  // 3d. The helix re-climb — eo-hypergraph.ts's NAVIGATE stage runs exactly
+  // once per turn today, keyed on the reader's raw question, before the
+  // draft exists. That is a one-way ladder: the corpus surf right above
+  // (3a/3b) already gets a second pass keyed on the DRAFT's own claims
+  // (`deliberate` above), but the graph never does — a claim only
+  // resolvable by climbing entities/relations, not by a lexical passage,
+  // currently gets one shot and no second look, unlike everything else in
+  // System 2. This closes that asymmetry: re-run NAVIGATE keyed on the
+  // draft's claims instead of the question, and earn a response only when
+  // that reaches a node or edge the PRE-draft navigation did not — i.e.
+  // only when the answer's own words, not the question's, are what surface
+  // it. Mechanical either way (eo-hypergraph.ts's own NAVIGATE stage makes
+  // no model call) — the model only runs if there is something new to read.
+  if (claims.length) {
+    const scopeId = hypergraphScopeId(input.session);
+    const preNav = navigateHypergraph(scopeId, question);
+    const postNav = navigateHypergraph(scopeId, claims.join(" "));
+    const preEdgeKeys = new Set(
+      (preNav?.relevantEdges ?? []).map((e) => e.edge),
+    );
+    const preNodeKeys = new Set((preNav?.relevantNodes ?? []).map((n) => n.id));
+    const newEdges = (postNav?.relevantEdges ?? []).filter(
+      (e) => !preEdgeKeys.has(e.edge),
+    );
+    const newNodes = (postNav?.relevantNodes ?? []).filter(
+      (n) => !preNodeKeys.has(n.id),
+    );
+    if (postNav && (newEdges.length || newNodes.length)) {
+      get().pushEoLog(
+        "hypergraph",
+        `hypergraph(system2): re-climbed against the draft's own claims — ` +
+          `${newEdges.length} new edge(s), ${newNodes.length} new node(s) reached ` +
+          `that the pre-draft navigation missed`,
+      );
+      earned.push({
+        kind: "climb",
+        run: async () => {
+          const climbedNav: HypergraphNavigation = {
+            ...postNav,
+            relevantEdges: newEdges,
+            relevantNodes: newNodes,
+          };
+          const raw = await background(
+            withRulesInForce(
+              "You are checking an answer that has already been given, against entities and relations in a graph (gathered mechanically from documents and this conversation, not written by you) that only surfaced once the ANSWER's own words were searched, not the question's. Say plainly whether this supports the answer, contradicts it, or adds a detail it is missing. If it does none of those, reply with exactly: NONE. Never invent a connection the material does not contain. Two sentences at most.",
+            ),
+            `The answer given:\n${draft.slice(0, 1500)}\n\n${buildThoughtUserPrompt(climbedNav, question)}`,
+          );
+          const text = String(raw || "").trim();
+          if (!text || /^none\.?$/i.test(text)) return null;
+          return text;
+        },
+      });
+    }
   }
 
   if (earned.length > EO_MAX_SYSTEM2_RESPONSES) {
@@ -1263,6 +1392,14 @@ function createEmptySession(): ChatSession {
     eoSummary: null,
     eoLastFoldIndex: 0,
     webSearchEnabled: false,
+    // Defaults OFF for a new conversation — the per-claim "Citey: ..."
+    // chips and underline spans read as overwhelming on first look at a
+    // fresh chat. A reader who wants them back has the toggle right there
+    // (toggleGroundingDisplay, "Hide Citey"/"Show Citey" in the input
+    // toolbar); this only changes what a BRAND NEW session starts with, not
+    // the underlying checkGrounding/System 2 check — see
+    // groundingDisplayEnabled's own field comment.
+    groundingDisplayEnabled: false,
     pendingFileContext: null,
     eoSources: [],
 
@@ -1630,13 +1767,15 @@ export const useChatStore = createPersistStore(
         });
       },
 
-      // See groundingDisplayEnabled's own comment: this flips a DISPLAY
-      // flag only. checkGrounding/System 2 escalation are never touched by
-      // this action or by reading this flag anywhere else in the store.
-      toggleGroundingDisplay() {
+      // Called by chat.tsx's onSubmit when a turn is already in flight,
+      // instead of dropping the reader's message. onUserInput's own
+      // finish/error paths dequeue and resend the next one once
+      // `isGenerating` clears — see queuedInputs's own comment.
+      queueUserInput(content: string, images?: ChatImage[]) {
         get().updateCurrentSession((session) => {
-          session.groundingDisplayEnabled =
-            session.groundingDisplayEnabled === false ? true : false;
+          session.queuedInputs = (session.queuedInputs ?? []).concat([
+            { content, images },
+          ]);
         });
       },
 
@@ -1706,6 +1845,20 @@ export const useChatStore = createPersistStore(
         });
       },
 
+      // Dequeues and resends the next queued turn, if any — called from
+      // onUserInput's finish/error paths right after `isGenerating` clears,
+      // never before, since onUserInput's own re-entrancy guard would just
+      // drop it again otherwise.
+      flushQueuedInput(llm: LLMApi) {
+        const queued = get().currentSession().queuedInputs;
+        if (!queued?.length) return;
+        const [next, ...rest] = queued;
+        get().updateCurrentSession((session) => {
+          session.queuedInputs = rest;
+        });
+        get().onUserInput(next.content, llm, next.images);
+      },
+
       async onUserInput(
         content: string,
         llm: LLMApi,
@@ -1723,6 +1876,25 @@ export const useChatStore = createPersistStore(
         if (get().currentSession().isGenerating) {
           log.warn("[User Input] dropped — a turn is already in flight");
           return;
+        }
+
+        // Free the single-flight engine BEFORE this turn touches it — not
+        // just before this turn's own final llm.chat() call. A background
+        // caller (the startup greeting warmup, a fold/topic-naming call) may
+        // still be mid-generation on the exact same non-reentrant MLC engine
+        // when the reader hits send; this turn's own background calls below
+        // (planTools web routing, math extraction, etc.) call llm.chat()
+        // too, and two chat() calls overlapping on one engine don't queue —
+        // they blend tokens from both prompts into one corrupted stream.
+        // That's what produced a startup greeting bleeding into (and
+        // garbling) the reader's first real answer: the abort used to be
+        // deferred until just before the real turn's own chat() call, well
+        // after these earlier background calls had already collided with
+        // the still-running warmup.
+        if (eoEngineBusy) {
+          eoEngineBusy = false;
+          eoFoldInFlight = false;
+          llm.abort();
         }
 
         const modelConfig = useAppConfig.getState().modelConfig;
@@ -1752,6 +1924,36 @@ export const useChatStore = createPersistStore(
           session.messages = session.messages.concat([userMessage]);
           session.lastUpdate = Date.now();
         });
+
+        // A turn that is NOTHING BUT a bare calculation ("17 * 23") skips
+        // the model entirely — mathjs answers it directly, no generation,
+        // no <think> block, no web/memory/grounding passes below. See
+        // tryDirectCalculation's own comment for why this is stricter than
+        // needsMathCheck's extract-then-correct pass further down (that one
+        // still lets the model answer first; this one never calls it).
+        const directCalc = tryDirectCalculation(userContent);
+        if (directCalc) {
+          get().updateCurrentSession((session) => {
+            session.isGenerating = true;
+          });
+          const calcMessage = createMessage({
+            role: "assistant",
+            content: directCalc.formatted ?? "",
+            model: modelConfig.model,
+            viaCalculator: true,
+            calculatorExpression: directCalc.expression,
+          });
+          get().updateCurrentSession((session) => {
+            session.messages = session.messages.concat([calcMessage]);
+            session.lastUpdate = Date.now();
+          });
+          get().onNewMessage(calcMessage, llm);
+          get().updateCurrentSession((session) => {
+            session.isGenerating = false;
+          });
+          get().flushQueuedInput(llm);
+          return;
+        }
 
         // The desk's turn counter (see eo-memory.ts) — this turn's index
         // among user turns, computed after this turn's own message is
@@ -2623,7 +2825,7 @@ export const useChatStore = createPersistStore(
               if (answerSpec || mathResult) {
                 const delivery = answerSpec?.delivery ?? "direct response";
                 let eva = answerSpec
-                  ? evaluateCompliance(message, answerSpec)
+                  ? evaluateCompliance(message, answerSpec, userContent)
                   : { compliant: true, violations: [] };
                 if (mathResult) {
                   const mathViolations = checkMathCompliance(
@@ -2680,7 +2882,7 @@ export const useChatStore = createPersistStore(
                       message = revised.text.trim();
                       reconciled = true;
                       eva = answerSpec
-                        ? evaluateCompliance(message, answerSpec)
+                        ? evaluateCompliance(message, answerSpec, userContent)
                         : { compliant: true, violations: [] };
                       if (mathResult) {
                         const mathViolations = checkMathCompliance(
@@ -2752,6 +2954,19 @@ export const useChatStore = createPersistStore(
               // there" from "never checked". Gated on turnWebQuery (set the
               // moment a search is attempted), not turnWebResults.length, so
               // a zero-result search still surfaces as a disclosed gap.
+              // Disclosure for the OTHER math path (defineMathSpec above) —
+              // unlike tryDirectCalculation's model-free bypass, this one
+              // DID use the model, just only to read the question into an
+              // expression; mathjs still did the actual arithmetic. Says so
+              // plainly rather than letting it look identical to either "the
+              // model computed this" or the zero-model calculator bypass.
+              if (mathResult?.ok && mathExpression) {
+                botMessage.calculatorVerified = {
+                  expression: mathExpression,
+                  formatted: mathResult.formatted ?? "",
+                };
+              }
+
               const webCitations: CitationEntry[] = [];
               if (turnWebQuery) {
                 botMessage.webResults = turnWebResults;
@@ -2844,7 +3059,34 @@ export const useChatStore = createPersistStore(
                 claimAtoms,
                 unsupported: groundingReport?.findings.length ?? 0,
               });
-              let turnRoute = escalate(preRoute, draftRoute);
+              // LAWS.md L3 — planning is the default cognitive step for every
+              // turn, not a special path reserved for corpus-grounded
+              // requests. This used to read DEFINE's own `decomposes` JSON
+              // field, but a small model's JSON reply can come back
+              // malformed on exactly the requests complex enough to need
+              // this judgment (see needsDecomposition's own comment in
+              // eo-holonic-plan.ts) — so this reads the question's own
+              // words directly instead, mechanically, the same
+              // no-model-call discipline eo-math-check.ts's needsMathCheck
+              // and eo-tool-router.ts's hasExplicitSearchIntent already use.
+              // Folding it in here — via the same monotone escalate() every
+              // other route reason uses — means a genuinely multi-
+              // constraint conversational turn reaches System 2 (and
+              // eo-task-plan.ts's decomposition below) even with zero
+              // uploaded sources, while a greeting or single-fact question
+              // costs nothing beyond the regex split this decision runs on.
+              const decomposes = needsDecomposition(userContent.trim());
+              const defineRoute: TurnRoute | null = decomposes
+                ? {
+                    system: "system2",
+                    stage: "define",
+                    reasons: [
+                      `the question's own shape needs more than one message: several separately-anchored constraints`,
+                    ],
+                    mechanical: true,
+                  }
+                : null;
+              let turnRoute = escalate(preRoute, draftRoute, defineRoute);
               botMessage.warrantTrace = eoWarrantTrace(
                 ledger,
                 demand,
@@ -2861,6 +3103,7 @@ export const useChatStore = createPersistStore(
                     question: userContent.trim(),
                     draft: message,
                     sources,
+                    decomposes,
                     alreadySurfaced: corpusPassages,
                     ledger,
                     demand,
@@ -2989,16 +3232,19 @@ export const useChatStore = createPersistStore(
                 (s) => s.state === "checking" || s.atomKind === "name",
               );
               if (toResolve.length && !eoEngineBusy) {
-                // Held true for the whole background pass, not just the
-                // visible token stream — chat.tsx's onSubmit guard (and the
-                // store-level re-entrancy check in onUserInput) both key off
-                // this. A real run of the string-splicing predecessor of
-                // this pass proved the gap: once the visible text looks
-                // finished, a reader can reasonably send a follow-up right
-                // then, and without this flag staying up a second turn was
-                // free to start while this one's background judge calls
-                // were still in flight.
-                botMessage.streaming = true;
+                // NOT `botMessage.streaming` — the answer is fully rendered
+                // at this point, and reusing `streaming` here used to make
+                // a finished reply visibly "think some more" a beat after
+                // the last token (chat.tsx's showTyping/ThinkingPanel both
+                // key off it as the single source of truth for "still
+                // composing"). The actual race this used to guard against —
+                // chat.tsx's onSubmit guard (and the store-level
+                // re-entrancy check in onUserInput) — keys off
+                // `session.isGenerating`, which stays true through this
+                // whole background pass regardless (see the `finally` below
+                // and this pass's onFinish caller), so that protection is
+                // untouched.
+                botMessage.checkingCitations = true;
                 get().onNewMessage(botMessage, llm);
                 const msgId = botMessage.id;
                 const finalContent = message;
@@ -3064,12 +3310,13 @@ export const useChatStore = createPersistStore(
                       `grounding resolve failed — ${(err as Error).message}`,
                     );
                   } finally {
-                    botMessage.streaming = false;
+                    botMessage.checkingCitations = false;
                     get().updateCurrentSession((session) => {
                       session.isGenerating = false;
                       session.modelLoadProgress = null;
                       session.messages = session.messages.concat();
                     });
+                    get().flushQueuedInput(llm);
                   }
                 })();
                 return;
@@ -3081,6 +3328,7 @@ export const useChatStore = createPersistStore(
               session.isGenerating = false;
               session.modelLoadProgress = null;
             });
+            get().flushQueuedInput(llm);
           },
           onError(error) {
             const errorMessage =
@@ -3095,6 +3343,7 @@ export const useChatStore = createPersistStore(
               session.isGenerating = false;
               session.modelLoadProgress = null;
             });
+            get().flushQueuedInput(llm);
 
             console.error("[Chat] failed ", error);
           },
@@ -3537,7 +3786,8 @@ export const useChatStore = createPersistStore(
               onError(err) {
                 // Aborted by a real turn, or the engine failed the warmup —
                 // either way the half-streamed warmup must not linger in the
-                // transcript; BOT_HELLO's render-time injection covers the gap.
+                // transcript. No placeholder covers the gap; the session
+                // just opens with an empty transcript.
                 get().updateCurrentSession((s) => {
                   s.messages = s.messages.filter((m) => m.id !== greeting.id);
                 });

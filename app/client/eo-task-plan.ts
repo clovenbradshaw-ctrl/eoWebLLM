@@ -25,7 +25,7 @@ import { foldToMouth } from "./eo-warrant";
 
 const FOLD_PLANNER_PROMPT = `Propose the NEXT task for a reader request — one task only, never a whole plan. You are one worker in a fold: the tasks already proposed are listed below, and they are the only world you see. A new task may depend ONLY on an id already in that list. If the listed tasks already cover the work, or nothing remains worth doing, return {"tasks":[]}. Return ONLY JSON:
 {"tasks":[{"id":"short id","goal":"self-contained research/writing task","dependsOn":["one of the listed ids"]}]}
-You do not hold the whole request; you propose the next increment and nothing else. A task must be independently executable and must not mention a hidden plan.`;
+You do not hold the whole request; you propose the next increment and nothing else. A task must be independently executable and must not mention a hidden plan. Propose a new task only if it is genuinely a distinct, necessary step the listed tasks don't already cover — stop as soon as remaining constraints are trivially covered or not worth a separate step, rather than manufacturing tasks to fill perceived need.`;
 
 export interface TaskPlan {
   tasks: TaskDefinition[];
@@ -215,14 +215,25 @@ export function parseTaskPlan(raw: string): TaskPlan {
  * refused and the fold stops. The plan that comes out is whatever the ledger
  * accumulated.
  *
- * The horizon law is enforced by construction: the fold never runs more than
- * `maxSteps`, so no single proposal call ever holds more than `maxSteps` live
- * tasks. `maxSteps` is a declared budget, not a discovered constant.
+ * The primary stopping condition is natural termination: the model returns
+ * {"tasks":[]} because nothing remains worth doing, or the controller
+ * refuses a proposal (a cycle, a duplicate, a malformed id). Task count is
+ * whatever the fold's own judgment settles on — there is no design target
+ * for how many tasks a request "should" take.
+ *
+ * `maxSteps` is not that design target. It is a safety backstop against a
+ * misbehaving local model that loops or keeps proposing distinct-looking
+ * tasks forever on a single-threaded engine that also has to serve DEFINE,
+ * the reading probe, topic-naming, and grounding-check on the same turn
+ * (and runTaskPlan below spends up to two more sequential calls PER task
+ * proposed here). It is set far above any expected real usage — most
+ * requests settle in 2-4 steps — purely so a runaway can't chain into an
+ * unbounded number of sequential inferences on one turn.
  */
 export async function defineTaskPlan(
   question: string,
   generate: (system: string, user: string) => Promise<string>,
-  { maxSteps = 6 } = {},
+  { maxSteps = 14 } = {},
 ): Promise<TaskPlan> {
   let controller = createTaskController([]);
   for (let step = 0; step < maxSteps; step += 1) {

@@ -194,8 +194,21 @@ function extractQueryText(raw: string): string {
 const EXPLICIT_SEARCH_INTENT_RE =
   /^(please\s+)?(search(\s+the\s+web)?\s+for|look\s+up|google|research|find\s+(out\s+)?(about|info(rmation)?\s+(on|about)))\b/i;
 
+// A small local model's own frozen training data is the single least
+// reliable source for "who currently holds this role" — it will answer
+// fluently and wrong (observed: a 1B model confidently naming a Prime
+// Minister who'd already left office, with no grounding attempt, because
+// the model-judged router below decided this ordinary-sounding question
+// didn't need a search). "current/latest X" questions are inherently
+// volatile facts regardless of phrasing politeness, so — same principle as
+// EXPLICIT_SEARCH_INTENT_RE above — this is caught mechanically rather than
+// left to the router's own small-model judgment call.
+const TIME_SENSITIVE_FACT_RE =
+  /\b(current|currently|latest|newest|right now|these days|nowadays)\b/i;
+
 export function hasExplicitSearchIntent(question: string): boolean {
-  return EXPLICIT_SEARCH_INTENT_RE.test(String(question || "").trim());
+  const q = String(question || "").trim();
+  return EXPLICIT_SEARCH_INTENT_RE.test(q) || TIME_SENSITIVE_FACT_RE.test(q);
 }
 
 /**
