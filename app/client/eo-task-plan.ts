@@ -21,10 +21,11 @@ import {
   type TaskController,
   type TaskDefinition,
 } from "./eo-task-controller";
+import { foldToMouth } from "./eo-warrant";
 
-const TASK_PLANNER_PROMPT = `Plan a complex reader request as a small dependency graph. Return ONLY JSON:
-{"tasks":[{"id":"short id","goal":"self-contained research/writing task","dependsOn":["earlier id"]}]}
-Use 2–6 tasks only when the request has genuinely distinct dependent parts. Otherwise return {"tasks":[]}. A task must be independently executable and must not mention a hidden plan.`;
+const FOLD_PLANNER_PROMPT = `Propose the NEXT task for a reader request — one task only, never a whole plan. You are one worker in a fold: the tasks already proposed are listed below, and they are the only world you see. A new task may depend ONLY on an id already in that list. If the listed tasks already cover the work, or nothing remains worth doing, return {"tasks":[]}. Return ONLY JSON:
+{"tasks":[{"id":"short id","goal":"self-contained research/writing task","dependsOn":["one of the listed ids"]}]}
+You do not hold the whole request; you propose the next increment and nothing else. A task must be independently executable and must not mention a hidden plan.`;
 
 export interface TaskPlan {
   tasks: TaskDefinition[];
@@ -205,13 +206,61 @@ export function parseTaskPlan(raw: string): TaskPlan {
   return { tasks: [] };
 }
 
+/**
+ * Plan as sediment, not authorship. The plan is not emitted by one call that
+ * reads the whole request; it accretes. Each step proposes the NEXT task only,
+ * against the current live-task projection (ids + goals — bounded, and the
+ * only world the proposer sees), and the controller re-validates the
+ * increment. A proposal that would cycle, or that carries nothing new, is
+ * refused and the fold stops. The plan that comes out is whatever the ledger
+ * accumulated.
+ *
+ * The horizon law is enforced by construction: the fold never runs more than
+ * `maxSteps`, so no single proposal call ever holds more than `maxSteps` live
+ * tasks. `maxSteps` is a declared budget, not a discovered constant.
+ */
 export async function defineTaskPlan(
   question: string,
   generate: (system: string, user: string) => Promise<string>,
+  { maxSteps = 6 } = {},
 ): Promise<TaskPlan> {
-  return parseTaskPlan(
-    await generate(TASK_PLANNER_PROMPT, `Reader request:\n${question}`),
-  );
+  let controller = createTaskController([]);
+  for (let step = 0; step < maxSteps; step += 1) {
+    const live =
+      controller.tasks.map((t) => `- ${t.id}: ${t.goal}`).join("\n") ||
+      "(none yet — you are proposing the first task)";
+    const raw = await generate(
+      FOLD_PLANNER_PROMPT,
+      `Reader request:\n${question}\n\nTasks proposed so far:\n${live}`,
+    );
+    const stepPlan = parseTaskPlan(raw);
+    const next = stepPlan.tasks[0];
+    if (!next) break;
+    let nextController;
+    try {
+      nextController = createTaskController([
+        ...controller.tasks.map((t) => ({
+          id: t.id,
+          goal: t.goal,
+          dependsOn: t.dependsOn,
+        })),
+        next,
+      ]);
+    } catch {
+      // A proposal the controller refuses (a cycle, a malformed id) is a typed
+      // gap, not a crash: the fold stops, the sediment stands.
+      break;
+    }
+    if (nextController.tasks.length === controller.tasks.length) break;
+    controller = nextController;
+  }
+  return {
+    tasks: controller.tasks.map((t) => ({
+      id: t.id,
+      goal: t.goal,
+      dependsOn: t.dependsOn,
+    })),
+  };
 }
 
 export interface TaskRunResult {
@@ -286,11 +335,38 @@ export async function runTaskPlan({
   const completed = controller.tasks.filter(
     (task) => task.status === "completed" && task.result,
   );
-  const context = completed.length
-    ? [
+  const held = controller.tasks.filter(
+    (task) => task.status === "held" && task.result,
+  );
+  // The horizon law: the mouth is a named budget, and what it withholds is
+  // reported, never silent. Worked results (up to 4) reach the synthesizer;
+  // the rest are named as withheld rather than vanishing.
+  const mouth = foldToMouth(completed, {
+    k: 4,
+    id: (t) => t.id,
+  });
+  const parts: string[] = [];
+  if (mouth.working.length) {
+    parts.push(
+      [
         "TASK WORKING RESULTS — these are bounded task outputs already checked by the controller. Synthesize them into one warranted answer. Distinguish direct support from inference, compare any live alternative, and preserve unresolved gaps; do not mention task planning.",
-        ...completed.map((task) => `TASK: ${task.goal}\n${task.result}`),
-      ].join("\n\n")
-    : null;
+        ...mouth.working.map((task) => `TASK: ${task.goal}\n${task.result}`),
+        ...(mouth.withheld
+          ? [
+              `(${mouth.withheld} more bounded task results were withheld from this fold — the work above is what the mouth holds.)`,
+            ]
+          : []),
+      ].join("\n\n"),
+    );
+  }
+  if (held.length) {
+    parts.push(
+      [
+        "TASK GAPS — bounded task work was held, not completed. These are refusals, and a refusal is a result: do not fill them. Say plainly that they were not settled, and name the strongest live alternative or counterexample one of them found if it is stated below.",
+        ...held.map((task) => `GAP: ${task.goal}\n${task.result}`),
+      ].join("\n\n"),
+    );
+  }
+  const context = parts.length ? parts.join("\n\n") : null;
   return { controller, context };
 }

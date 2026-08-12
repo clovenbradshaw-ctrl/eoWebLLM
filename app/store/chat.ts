@@ -125,6 +125,7 @@ import {
   runTaskPlan,
   type ThinkingSystem,
 } from "../client/eo-task-plan";
+import { createLiftRegistry, liftIfValidated } from "../client/eo-lift";
 import {
   buildFoldLedger,
   buildWarrantBlock,
@@ -140,6 +141,11 @@ import {
   type GroundingDemand,
   type TurnRoute,
 } from "../client/eo-warrant";
+
+// The lift registry: validated operator-compositions that recur become
+// citeable units. In-memory for now; persistence is the caller's, per the
+// module's own contract (eo-lift.ts is pure).
+const liftRegistry = createLiftRegistry();
 
 export type ChatMessage = RequestMessage & {
   date: string;
@@ -1129,9 +1135,20 @@ async function eoRunSystem2(input: {
           "task",
           `system 2 task controller: ${run.controller.tasks.length} task(s), ` +
             `${run.controller.tasks.filter((t) => t.status === "completed").length} completed, ` +
-            `${run.controller.tasks.filter((t) => t.status === "dropped").length} dropped, ` +
-            `closure=${run.controller.closed}`,
+            `${run.controller.tasks.filter((t) => t.status === "held").length} held, ` +
+            `closure=${run.controller.closed}, halted_by=${run.controller.halted_by}`,
         );
+        // The lift rule: a fully-closed (validated) shape that recurs becomes
+        // a citeable unit. Held controllers are refusals — reported, never
+        // lifted (the gate lives in eo-lift.ts's liftIfValidated).
+        const { unit, isNew } = liftIfValidated(liftRegistry, run.controller, {
+          now: Date.now(),
+        });
+        if (unit)
+          get().pushEoLog(
+            "lift",
+            `${isNew ? "" : "lifted again: "}validated composition ${unit.signature} (×${unit.count})${isNew ? " — first repeat" : ""}`,
+          );
         if (!run.context) return null;
         const raw = await background(
           withRulesInForce(
