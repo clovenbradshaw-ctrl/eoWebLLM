@@ -1149,6 +1149,35 @@ input.eot-graph-search {
   }
 }
 
+.chat-body-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+// The chat header's project badge — the only place a reader sees "this
+// chat belongs to project X" while actually inside the chat (see project.tsx
+// for the project-as-container page this jumps to).
+.chat-project-pill {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: var(--second);
+  color: var(--light-gray);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+
+  &:hover {
+    color: var(--black);
+    background: var(--hover-color);
+  }
+}
+
 @media only screen and (max-width: 600px) {
   .chat-body-title {
     text-align: center;
@@ -1621,7 +1650,7 @@ input.eot-graph-search {
   gap: 7px;
 }
 
-// The header's overflow menu — Rename/Share/Export/EOT-log/Maximize,
+// The header's overflow menu — Rename/Share/Export/EOT-log/Project,
 // collapsed out of the always-visible toolbar (see chat.tsx's
 // window-actions header). Popover (ui-lib.tsx) supplies positioning/the
 // click-outside-to-close overlay; this is only the menu's own content.
@@ -1655,6 +1684,26 @@ input.eot-graph-search {
   &:hover {
     background: var(--hover-color);
   }
+}
+
+.header-menu-label {
+  padding: 8px 10px 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--light-gray);
+}
+
+.header-menu-select {
+  margin: 0 2px 4px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  border: var(--border-in-light);
+  background: var(--white);
+  color: var(--black);
+  font-size: 13px;
+  font-family: inherit;
 }
 
 .source-row {

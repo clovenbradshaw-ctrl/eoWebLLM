@@ -104,6 +104,7 @@ import {
   FileText,
   MagnifyingGlass,
   Mountains,
+  FolderSimple,
 } from "@phosphor-icons/react";
 import { ingestFile } from "../client/eo-source-ingest";
 import { toEOTReader, reReadSource, ledgerStats } from "../client/eo-reading";
@@ -1372,6 +1373,14 @@ function ChatInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.id, session.projectId, session.messages.length]);
 
+  // The chat header's own "you're inside project X" state — session.projectId
+  // is otherwise an invisible tag (set once at session creation, never shown
+  // anywhere a reader is actually in the chat, only inside project.tsx).
+  const sessionProject = useMemo(
+    () => chatStore.projects.find((p) => p.id === session.projectId),
+    [chatStore.projects, session.projectId],
+  );
+
   const ttsPlayingId = useTTSStore((s) => s.playingMessageId);
   const ttsError = useTTSStore((s) => s.error);
   const ttsSpeak = useTTSStore((s) => s.speak);
@@ -2088,11 +2097,27 @@ function ChatInner() {
         )}
 
         <div className={`window-header-title ${styles["chat-body-title"]}`}>
-          <div
-            className={`window-header-main-title ${styles["chat-body-main-title"]}`}
-            onClickCapture={() => setShowEditPromptModal(true)}
-          >
-            {!session.topic ? DEFAULT_TOPIC : session.topic}
+          <div className={styles["chat-body-title-row"]}>
+            <div
+              className={`window-header-main-title ${styles["chat-body-main-title"]}`}
+              onClickCapture={() => setShowEditPromptModal(true)}
+            >
+              {!session.topic ? DEFAULT_TOPIC : session.topic}
+            </div>
+            {sessionProject && (
+              <div
+                className={styles["chat-project-pill"]}
+                role="button"
+                tabIndex={0}
+                title={`Open "${sessionProject.name}" — this chat's project`}
+                onClick={() => {
+                  chatStore.setCurrentProjectId(sessionProject.id);
+                  navigate(Path.Project);
+                }}
+              >
+                <FolderSimple size={12} /> {sessionProject.name}
+              </div>
+            )}
           </div>
           <div className="window-header-sub-title">
             {Locale.Chat.SubTitle(session.messages.length)}
@@ -2210,6 +2235,28 @@ function ChatInner() {
                   >
                     <TerminalWindow size={17} /> EOT — system log
                   </div>
+                  {chatStore.projects.length > 0 && (
+                    <>
+                      <div className={styles["header-menu-label"]}>Project</div>
+                      <select
+                        className={styles["header-menu-select"]}
+                        value={session.projectId ?? ""}
+                        onChange={(e) => {
+                          const nextId = e.target.value || undefined;
+                          chatStore.updateCurrentSession((s) => {
+                            s.projectId = nextId;
+                          });
+                        }}
+                      >
+                        <option value="">No project</option>
+                        {chatStore.projects.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                    </>
+                  )}
                 </div>
               }
             >
