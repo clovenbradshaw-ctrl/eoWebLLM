@@ -13,8 +13,6 @@ import {
   Route,
   useLocation,
 } from "react-router-dom";
-import { ServiceWorkerMLCEngine } from "@mlc-ai/web-llm";
-
 import LoadingIcon from "../icons/three-dots.svg";
 
 import Locale from "../locales";
@@ -29,6 +27,7 @@ import { ModelClient, useChatStore } from "../store";
 import { useGithubAutoSync } from "../store/sync-effect";
 import { MLCLLMContext, WebLLMContext } from "../context";
 import { MlcLLMApi } from "../client/mlcllm";
+import { useEngineStore, ensureWebLLMInit } from "../store/engine";
 
 export function Loading(props: { noLogo?: boolean }) {
   return (
@@ -164,120 +163,20 @@ function Screen() {
   );
 }
 
+// Engine lifecycle itself now lives in app/store/engine.ts as a module-level
+// singleton, so a second top-level route (app/coding/page.tsx) can reuse the
+// same loaded model instead of re-downloading it — see that file's header.
+// This hook is now a thin wrapper: kick off init (idempotent) and read the
+// shared store.
 const useWebLLM = () => {
   const config = useAppConfig();
-  const [webllm, setWebLLM] = useState<WebLLMApi | undefined>(undefined);
-  const [isWebllmActive, setWebllmAlive] = useState(false);
+  const webllm = useEngineStore((s) => s.webllm);
+  const isWebllmActive = useEngineStore((s) => s.isWebllmActive);
 
-  const isWebllmInitialized = useRef(false);
-  const fallbackTimeout = useRef<ReturnType<typeof setTimeout>>();
-
-  // Registered here, by hand, with a real `.catch()` -- rather than via
-  // @serwist/next's auto-injected `register: true` default, whose
-  // `window.serwist.register()` call has no `.catch()` and runs before any
-  // of our own effects mount, so app code never gets a chance to handle a
-  // rejection (see `register: false` in next.config.mjs). In contexts where
-  // ServiceWorker storage is partitioned or blocked (private browsing,
-  // sandboxed embeds), registration can legitimately fail; the fallback
-  // effect below already recovers by switching to a web worker, so a failure
-  // here is only ever logged, never surfaced as an uncaught rejection.
   useEffect(() => {
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch((err) => {
-        log.info("Service Worker registration failed, using web worker.", err);
-      });
-    }
+    ensureWebLLMInit(config.logLevel);
   }, []);
 
-  // If service worker registration timeout, fall back to web worker.
-  // Scheduled from an effect, not the render body: the render body also
-  // runs during SSR, where `setTimeout` is real (unlike `useEffect`), and
-  // the callback below reaches `new Worker(...)`, which doesn't exist server-side.
-  useEffect(() => {
-    fallbackTimeout.current = setTimeout(() => {
-      if (!isWebllmInitialized.current && !isWebllmActive && !webllm) {
-        log.info(
-          "Service Worker activation is timed out. Falling back to use web worker.",
-        );
-        setWebLLM(new WebLLMApi("webWorker", config.logLevel));
-        setWebllmAlive(true);
-      }
-    }, 2_000);
-    return () => clearTimeout(fallbackTimeout.current);
-  }, []);
-
-  // Initialize WebLLM engine
-  useEffect(() => {
-    if ("serviceWorker" in navigator) {
-      log.info("Service Worker API is available and in use.");
-      navigator.serviceWorker.ready.then(() => {
-        log.info("Service Worker is activated.");
-        // Check whether WebGPU is available in Service Worker
-        const request = {
-          kind: "checkWebGPUAvilability",
-          uuid: crypto.randomUUID(),
-          content: "",
-        };
-
-        const sendEventInterval = setInterval(() => {
-          navigator.serviceWorker.controller?.postMessage(request);
-        }, 200);
-
-        const webGPUCheckCallback = (event: MessageEvent) => {
-          const message = event.data;
-          if (message.kind === "return" && message.uuid === request.uuid) {
-            const isWebGPUAvailable = message.content;
-            log.info(
-              isWebGPUAvailable
-                ? "Service Worker has WebGPU Available."
-                : "Service Worker does not have available WebGPU.",
-            );
-            if (!webllm && !isWebllmActive) {
-              setWebLLM(
-                new WebLLMApi(
-                  isWebGPUAvailable ? "serviceWorker" : "webWorker",
-                  config.logLevel,
-                ),
-              );
-              setWebllmAlive(true);
-              isWebllmInitialized.current = true;
-              clearTimeout(fallbackTimeout.current);
-            }
-            navigator.serviceWorker.removeEventListener(
-              "message",
-              webGPUCheckCallback,
-            );
-            clearInterval(sendEventInterval);
-          }
-        };
-        navigator.serviceWorker.addEventListener(
-          "message",
-          webGPUCheckCallback,
-        );
-      });
-    } else {
-      log.info(
-        "Service Worker API is unavailable. Falling back to use web worker.",
-      );
-      setWebLLM(new WebLLMApi("webWorker", config.logLevel));
-      setWebllmAlive(true);
-      isWebllmInitialized.current = true;
-      clearTimeout(fallbackTimeout.current);
-    }
-  }, []);
-
-  if (webllm?.webllm.type === "serviceWorker") {
-    setInterval(() => {
-      if (webllm) {
-        // 10s per heartbeat, dead after 30 seconds of inactivity
-        setWebllmAlive(
-          !!webllm.webllm.engine &&
-            (webllm.webllm.engine as ServiceWorkerMLCEngine).missedHeartbeat <
-              3,
-        );
-      }
-    }, 10_000);
-  }
   return { webllm, isWebllmActive };
 };
 
