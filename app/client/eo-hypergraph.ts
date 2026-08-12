@@ -91,6 +91,30 @@ interface HypergraphWrapper {
    *  tick (emergence/graph.js) back to which source or turn was admitted
    *  then. Populated in admitOnce, nowhere else. */
   tickToDocId: Map<number, string>;
+  /** node id -> every docId whose admission created it or raised its
+   *  mentions. eoreader6 itself only keeps firstSeen/lastSeen (one tick,
+   *  not a history) on a node, so full per-doc provenance — which a
+   *  source/conversation enable-toggle needs to filter the graph view — is
+   *  tracked here instead, at the one place (admitOnce) that already knows
+   *  which docId is being admitted. Populated by diffing graph.nodes
+   *  immediately before/after each admission; nowhere else writes to this. */
+  nodeDocIds: Map<string, Set<string>>;
+  /** edge key -> every docId whose admission created it or changed its
+   *  weight. Same reasoning/diffing as nodeDocIds above. */
+  edgeDocIds: Map<string, Set<string>>;
+}
+
+function addProvenance(
+  map: Map<string, Set<string>>,
+  key: string,
+  docId: string,
+): void {
+  let set = map.get(key);
+  if (!set) {
+    set = new Set();
+    map.set(key, set);
+  }
+  set.add(docId);
 }
 
 /**
@@ -123,6 +147,8 @@ function wrapperFor(chatSessionId: string): HypergraphWrapper {
       hydrated: false,
       selfFactTurns: new Map(),
       tickToDocId: new Map(),
+      nodeDocIds: new Map(),
+      edgeDocIds: new Map(),
     };
     wrappers.set(chatSessionId, w);
   }
@@ -152,9 +178,41 @@ function admitOnce(
 ): HypergraphMovement | null {
   if (!text.trim() || w.admitted.has(docId)) return null;
   w.admitted.add(docId);
+  // Snapshot mentions/weights BEFORE this admission so the diff below can
+  // tell which nodes/edges this specific docId actually touched — the
+  // engine's own graph.nodes/edges carry no per-doc history, only a
+  // node's firstSeen/lastSeen tick, which isn't enough for "did docId X
+  // contribute to this node" once a node has been touched more than once.
+  const graphBefore = w.session?.graph;
+  const mentionsBefore = new Map<string, number>();
+  const weightsBefore = new Map<string, number>();
+  if (graphBefore) {
+    for (const [id, n] of graphBefore.nodes as Map<
+      string,
+      { mentions: number }
+    >)
+      mentionsBefore.set(id, n.mentions);
+    for (const [key, weight] of graphBefore.edges as Map<string, number>)
+      weightsBefore.set(key, weight);
+  }
   eoreader.admitChunked(w.session, { text, sourceId: docId });
   eoreader.attachTiers(w.session, { seed: TIER_SEED });
   const { admitted } = eoreader.admitTiers(w.session, { sourceId: docId });
+  const graphAfter = w.session?.graph;
+  if (graphAfter) {
+    for (const [id, n] of graphAfter.nodes as Map<
+      string,
+      { mentions: number }
+    >) {
+      if (n.mentions > (mentionsBefore.get(id) ?? 0))
+        addProvenance(w.nodeDocIds, id, docId);
+    }
+    for (const [key, weight] of graphAfter.edges as Map<string, number>) {
+      const prev = weightsBefore.get(key);
+      if (prev === undefined || weight !== prev)
+        addProvenance(w.edgeDocIds, key, docId);
+    }
+  }
   const one = admitted[0];
   const result = one?.admitted;
   if (!result) return null;
@@ -245,6 +303,21 @@ export function admitSelfFacts(
     object: f.object,
   }));
   eoreader.injectPrior(graph, triples, { giver: SELF_FACT_GIVER });
+  for (const f of facts) {
+    // Matches emergence/graph.js's own edgeKey exactly: subject/object
+    // lowercased, verb left as-is — a mismatch here would silently make
+    // these edges invisible to the enabled-source filter (no provenance
+    // entry found -> the "unknown -> show" default saves it, but "always
+    // shown, deliberately" is a different, correct claim than "shown by
+    // accident").
+    addProvenance(w.nodeDocIds, "user", SELF_FACT_GIVER);
+    addProvenance(w.nodeDocIds, f.object.toLowerCase(), SELF_FACT_GIVER);
+    addProvenance(
+      w.edgeDocIds,
+      `user|${f.verb}|${f.object.toLowerCase()}`,
+      SELF_FACT_GIVER,
+    );
+  }
   if (Number.isFinite(turnIndex)) {
     for (const f of facts) {
       const key = `${f.verb}|${f.object.toLowerCase()}`;
@@ -308,6 +381,14 @@ export interface GraphTerrainSnapshot {
   cursor: number;
   nodes: { id: string; mentions: number }[];
   edges: { edge: string; weight: number }[];
+  /** How many nodes/edges actually matched this snapshot's own query, BEFORE
+   *  the `nodes`/`edges` arrays above were sliced to `limit` for rendering —
+   *  the correct baseline for "is this rendering incomplete", which is NOT
+   *  `nodeCount`/`edgeCount` (the whole graph's totals) once a fold has
+   *  narrowed things to one entity's small neighbourhood. Equal to
+   *  `nodes.length`/`edges.length` when nothing was cut. */
+  matchedNodeCount: number;
+  matchedEdgeCount: number;
 }
 
 /** Plain-data graph view for the terminal's Graph tab — never the live Maps. */
@@ -324,6 +405,11 @@ export function hypergraphSnapshot(
     cursor: snap.tick,
     nodes: snap.nodes,
     edges: snap.edges,
+    // Unfolded: what's "matched" is just this snapshot's own strongest-N
+    // window — the true totals (nodeCount/edgeCount) are the honest
+    // "more exists" signal here, not a second matched count.
+    matchedNodeCount: snap.nodes.length,
+    matchedEdgeCount: snap.edgeCount,
   };
 }
 
@@ -331,24 +417,66 @@ export function hypergraphSnapshot(
  * Fold the graph terrain to one entity's own neighbourhood — every edge
  * whose subject or object names it, at the current cursor. Read-only;
  * `null` entity returns the unfolded snapshot's own edges unchanged.
+ *
+ * Reads `graph.edges`/`graph.nodes` directly (entityDetail's own pattern),
+ * NOT the windowed "1000 strongest" `hypergraphSnapshot` — a fold is asking
+ * about ONE entity, and a match on a low-weight edge must not go invisible
+ * just because it missed the strongest-edges cut a whole-graph view uses.
  */
 export function foldGraphOnEntity(
   chatSessionId: string,
   entity: string | null,
   { limit = 60 }: { limit?: number } = {},
 ): GraphTerrainSnapshot | null {
-  const snap = hypergraphSnapshot(chatSessionId, { limit: 1000 });
-  if (!snap) return null;
-  if (!entity) return { ...snap, edges: snap.edges.slice(0, limit) };
+  if (!entity) {
+    const snap = hypergraphSnapshot(chatSessionId, { limit: 1000 });
+    if (!snap) return null;
+    return {
+      ...snap,
+      edges: snap.edges.slice(0, limit),
+      matchedNodeCount: snap.nodes.length,
+      matchedEdgeCount: snap.edgeCount,
+    };
+  }
+
+  const w = wrappers.get(chatSessionId);
+  const graph = w?.session?.graph;
+  if (!graph?.nodes || !graph?.edges) return null;
+
   const needle = entity.toLowerCase();
-  const edges = snap.edges
-    .filter((e) => e.edge.toLowerCase().includes(needle))
-    .slice(0, limit);
+  const allEdges: { edge: string; weight: number }[] = [];
+  for (const [key, weight] of graph.edges as Map<string, number>) {
+    if (String(key).toLowerCase().includes(needle))
+      allEdges.push({ edge: key, weight });
+  }
+  const edges = allEdges.slice(0, limit);
+  // Only the subject/object (index 0/2) are node ids — the verb (index 1)
+  // is a relation label, never a key in graph.nodes, and folding it into
+  // "touched" inflated matchedNodeCount with entries that can never
+  // resolve to a real node below.
+  const endpoints = (edge: string) => {
+    const parts = edge.split("|");
+    return parts.length === 3 ? [parts[0], parts[2]] : [];
+  };
+  const allTouched = new Set<string>();
+  for (const e of allEdges)
+    for (const id of endpoints(e.edge)) allTouched.add(id);
   const touched = new Set<string>();
-  for (const e of edges)
-    for (const part of e.edge.split("|")) touched.add(part);
-  const nodes = snap.nodes.filter((n) => touched.has(n.id)).slice(0, limit);
-  return { ...snap, nodes, edges };
+  for (const e of edges) for (const id of endpoints(e.edge)) touched.add(id);
+  const nodes = [...touched]
+    .map((id) => graph.nodes.get(id))
+    .filter((n): n is { id: string; mentions: number } => Boolean(n))
+    .map((n) => ({ id: n.id, mentions: n.mentions }));
+
+  return {
+    nodeCount: graph.nodes.size,
+    edgeCount: graph.edges.size,
+    cursor: graph.tick,
+    nodes,
+    edges,
+    matchedNodeCount: allTouched.size,
+    matchedEdgeCount: allEdges.length,
+  };
 }
 
 export interface EntityDetail {
@@ -461,6 +589,64 @@ export function resolveDocId(
   const kind = docId.slice(0, i);
   if (kind !== "turn" && kind !== "source") return null;
   return { kind, id: docId.slice(i + 1) };
+}
+
+/** Minimal session shape the enabled-source/conversation filter below needs
+ *  — never the full ChatSession type (that lives in app/store/chat.ts, and
+ *  this file must not import it back). */
+export interface DocEnabledSession {
+  eoSources?: { id: string; enabled: boolean }[];
+  eoConversationEnabled?: boolean;
+}
+
+/**
+ * Is a docId's own source (an uploaded file, or the conversation itself)
+ * currently enabled? A docId that isn't "turn:"/"source:" shaped (right
+ * now, only SELF_FACT_GIVER) is never hidden — a self-declared fact has no
+ * corresponding toggle in the UI, so filtering it would silently disappear
+ * something the reader has no way to bring back.
+ */
+export function isDocEnabled(
+  docId: string,
+  session: DocEnabledSession,
+): boolean {
+  const resolved = resolveDocId(docId);
+  if (!resolved) return true;
+  if (resolved.kind === "turn") return session.eoConversationEnabled !== false;
+  const source = session.eoSources?.find((s) => s.id === resolved.id);
+  // A source id this session doesn't recognise (e.g. a project-shared
+  // reading whose source list this particular session object hasn't
+  // loaded) is a "can't prove it's disabled" case, not a "hide it" case.
+  return source ? source.enabled : true;
+}
+
+/**
+ * Is a node/edge visible under the current enabled-source/conversation
+ * toggles? Visible if ANY docId that contributed to it is enabled, or if
+ * it has no recorded provenance at all (nothing here should regress to
+ * "invisible" just because provenance tracking — added after the graph
+ * already existed in some sessions — never saw this one admitted).
+ */
+export function isNodeVisible(
+  chatSessionId: string,
+  nodeId: string,
+  session: DocEnabledSession,
+): boolean {
+  const docs = wrappers.get(chatSessionId)?.nodeDocIds.get(nodeId);
+  if (!docs || docs.size === 0) return true;
+  for (const d of docs) if (isDocEnabled(d, session)) return true;
+  return false;
+}
+
+export function isEdgeVisible(
+  chatSessionId: string,
+  edgeKey: string,
+  session: DocEnabledSession,
+): boolean {
+  const docs = wrappers.get(chatSessionId)?.edgeDocIds.get(edgeKey);
+  if (!docs || docs.size === 0) return true;
+  for (const d of docs) if (isDocEnabled(d, session)) return true;
+  return false;
 }
 
 export interface TierShiftRecord {

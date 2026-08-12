@@ -275,7 +275,13 @@ export type EoLogKind =
   // node, and edge it considered, not just the bounded slice (if any) that
   // made it into a thought block. The model sees the bounded slice; a
   // reader who opens this log sees the whole search.
-  | "hypergraph";
+  | "hypergraph"
+  // The DEFINE/EVALUATE/RECONCILE decision (eo-holonic-plan.ts) — already
+  // attached per-message as planTrace, but that dies with the message the
+  // moment it scrolls out of view. This is the same line, in the one place
+  // "warrant" and "hypergraph" already put their own per-turn decisions so a
+  // reader can find every turn's shape without reopening each message.
+  | "plan";
 
 export interface EoLogEntry {
   id: string;
@@ -321,6 +327,14 @@ export interface ChatSession {
   // (eo-corpus.ts), so persisted chat state never contains an accidental copy
   // of a book or archive.
   eoSources?: EoSource[];
+
+  // Whether this conversation's own turns are admitted into the hypergraph
+  // and surfaced as context — the same "enabled" concept an EoSource
+  // carries, applied to the conversation itself, since it is admitted into
+  // the same graph exactly like an uploaded source is (see
+  // eo-hypergraph.ts's admitHypergraphTurn / isDocEnabled). Undefined means
+  // enabled — this field only ever needs to be written to turn it OFF.
+  eoConversationEnabled?: boolean;
 
   // The verbatim "desk" of stated facts (see app/client/eo-memory.ts) — a
   // small, bounded backstop that survives even when a fact falls out of
@@ -1950,9 +1964,15 @@ export const useChatStore = createPersistStore(
                 // the same fail-open discipline retrieveCorpus already uses.
               }
             }
-            const hydrateTurns = session0.messages
-              .filter((m) => !m.isError && !m.streaming)
-              .map((m) => ({ id: m.id, content: getMessageTextContent(m) }));
+            const hydrateTurns =
+              session0.eoConversationEnabled === false
+                ? []
+                : session0.messages
+                    .filter((m) => !m.isError && !m.streaming)
+                    .map((m) => ({
+                      id: m.id,
+                      content: getMessageTextContent(m),
+                    }));
             const movements = ensureHypergraphHydrated(
               hypergraphScopeId(session0),
               hydrateSources,
@@ -2132,7 +2152,7 @@ export const useChatStore = createPersistStore(
         // Admitted AFTER this turn's own navigation ran, so the graph a
         // question is checked against never includes the question's own
         // words as if they were prior context.
-        if (userContent.trim()) {
+        if (userContent.trim() && session0.eoConversationEnabled !== false) {
           const m = admitHypergraphTurn(
             hypergraphScopeId(session0),
             { id: userMessage.id, content: userContent },
@@ -2355,12 +2375,16 @@ export const useChatStore = createPersistStore(
               // The assistant's own reply is content too — admitted here so
               // the graph accumulates entities and relations discussed in
               // either direction of the conversation, not only in what the
-              // reader typed or uploaded.
-              const botMovement = admitHypergraphTurn(
-                hypergraphScopeId(session0),
-                { id: botMessage.id, content: message },
-                turnIndex,
-              );
+              // reader typed or uploaded. Skipped when the reader has
+              // turned the conversation off as a source.
+              const botMovement =
+                session0.eoConversationEnabled === false
+                  ? null
+                  : admitHypergraphTurn(
+                      hypergraphScopeId(session0),
+                      { id: botMessage.id, content: message },
+                      turnIndex,
+                    );
               if (botMovement)
                 get().pushEoLog(
                   "hypergraph",

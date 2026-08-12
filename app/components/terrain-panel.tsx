@@ -1,11 +1,11 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 
 import styles from "./chat.module.scss";
 import { IconButton } from "./button";
 import CloseIcon from "../icons/close.svg";
 import LeftIcon from "../icons/left.svg";
 import type { ChatSession } from "../store";
-import { useAppConfig } from "../store";
+import { useAppConfig, useChatStore } from "../store";
 import {
   DEFAULT_TERRAIN_PANEL_WIDTH,
   MAX_TERRAIN_PANEL_WIDTH,
@@ -25,6 +25,13 @@ import { LinkCard } from "./terrain/link-card";
 import { NetworkCard } from "./terrain/network-card";
 import { AtmosphereCard } from "./terrain/atmosphere-card";
 import { FieldCard } from "./terrain/field-card";
+import { readRawSource } from "../client/eo-corpus";
+import {
+  ensureHypergraphHydrated,
+  describeHypergraphMovement,
+  hypergraphScopeId,
+} from "../client/eo-hypergraph";
+import { getMessageTextContent } from "../utils";
 
 // The docked terrain panel — see docs/citey-structured-grounding.md.
 // Modeled on sidebar.tsx's useDragSideBar drag mechanics, docking right
@@ -134,6 +141,56 @@ export function TerrainPanel(props: {
 }) {
   const { onDragStart, width } = useDragTerrainPanel();
   const activeKind = props.active?.kind ?? "entity";
+  const chatStore = useChatStore();
+
+  // The hypergraph reading is in-memory only (eo-hypergraph.ts's module-
+  // level wrapper map) — it does NOT survive a page reload, and until now
+  // only rebuilt on the next chat turn's own ensureHypergraphHydrated call.
+  // A reader who reloads (or opens a fresh tab onto) a chat that already
+  // has sources/messages, then opens Terrain before sending anything, used
+  // to see every card claim "no graph yet" for content that plainly exists
+  // — this re-hydrates on open, the same re-scan the message-send path
+  // already performs, so the panel is honest about what's already there
+  // rather than only about what's arrived since this tab loaded.
+  const session = props.session;
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const hydrateSources: { id: string; text: string }[] = [];
+      for (const s of (session.eoSources ?? []).filter(
+        (s) => s.enabled && s.textReadable,
+      )) {
+        try {
+          const text = new TextDecoder("utf-8", { fatal: true }).decode(
+            await readRawSource(s.id),
+          );
+          hydrateSources.push({ id: s.id, text });
+        } catch {
+          // Same fail-open discipline as every other reader of a source's
+          // raw bytes — a source that won't decode is simply skipped.
+        }
+      }
+      if (cancelled) return;
+      const hydrateTurns =
+        session.eoConversationEnabled === false
+          ? []
+          : session.messages
+              .filter((m) => !m.isError && !m.streaming)
+              .map((m) => ({ id: m.id, content: getMessageTextContent(m) }));
+      const movements = ensureHypergraphHydrated(
+        hypergraphScopeId(session),
+        hydrateSources,
+        hydrateTurns,
+      );
+      if (cancelled) return;
+      for (const m of movements)
+        chatStore.pushEoLog("hypergraph", describeHypergraphMovement(m));
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.id, session.eoSources, session.eoConversationEnabled]);
 
   return (
     <>

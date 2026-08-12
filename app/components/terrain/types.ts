@@ -3,12 +3,25 @@ import type { ChatSession } from "../../store";
 // Shared shapes for the terrain panel — see docs/citey-structured-grounding.md.
 //
 // Field/Entity/Link/Network/Atmosphere are real cards, backed by data that
-// already exists in eo-hypergraph.ts/eo-corpus.ts. Kind/Lens/Paradigm render
-// as permanent, honest gap-state cards (placeholder-card.tsx) — no engine
-// export exists for Kind or full Paradigm content, and Lens cross-source
-// comparison is an unsolved design problem. See that spec doc's §8 for why.
+// already exists in eo-hypergraph.ts/eo-corpus.ts. Void/Kind/Lens/Paradigm
+// render as permanent, honest gap-state cards (placeholder-card.tsx) — no
+// engine export exists for Void, Kind, or full Paradigm content, and Lens
+// cross-source comparison is an unsolved design problem. See that spec
+// doc's §8 for why.
+//
+// The 9 kinds are exactly the engine's own Domain × Grain matrix
+// (eoreader6/packages/engine/operators.js's TERRAIN_BY_DOMAIN) — not a
+// hand-picked tab list. TERRAIN_CARD_KINDS below is laid out row-major over
+// that matrix (Existence / Structure / Interpretation rows, Ground / Figure
+// / Pattern columns) so a 3-column grid renders it as the matrix it is:
+//
+//                 Ground       Figure    Pattern
+//   Existence:     void        entity    kind
+//   Structure:     field       link      network
+//   Interpretation: atmosphere lens      paradigm
 
 export type TerrainCardKind =
+  | "void"
   | "field"
   | "entity"
   | "link"
@@ -19,12 +32,13 @@ export type TerrainCardKind =
   | "paradigm";
 
 export const TERRAIN_CARD_KINDS: TerrainCardKind[] = [
+  "void",
   "entity",
+  "kind",
+  "field",
   "link",
   "network",
   "atmosphere",
-  "field",
-  "kind",
   "lens",
   "paradigm",
 ];
@@ -53,6 +67,7 @@ export interface TerrainCardProps {
 }
 
 export const TERRAIN_TAB_LABEL: Record<TerrainCardKind, string> = {
+  void: "Void",
   entity: "Entity",
   link: "Link",
   network: "Network",
@@ -63,8 +78,9 @@ export const TERRAIN_TAB_LABEL: Record<TerrainCardKind, string> = {
   paradigm: "Paradigm",
 };
 
-/** Kind/Lens/Paradigm have no live data path today — see types.ts header. */
+/** Void/Kind/Lens/Paradigm have no live data path today — see types.ts header. */
 export const TERRAIN_GAP_KINDS: ReadonlySet<TerrainCardKind> = new Set([
+  "void",
   "kind",
   "lens",
   "paradigm",

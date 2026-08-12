@@ -1,5 +1,10 @@
 import styles from "../chat.module.scss";
-import { entityDetail, hypergraphScopeId } from "../../client/eo-hypergraph";
+import {
+  entityDetail,
+  hypergraphScopeId,
+  isNodeVisible,
+  isEdgeVisible,
+} from "../../client/eo-hypergraph";
 import { resolveDocLabel, type TerrainCardProps } from "./types";
 
 // Entity — one node's own neighbourhood. Orientation only (see
@@ -10,9 +15,8 @@ import { resolveDocLabel, type TerrainCardProps } from "./types";
 
 export function EntityCard({ session, params, onNavigate }: TerrainCardProps) {
   const entity = params.entity ?? "";
-  const detail = entity
-    ? entityDetail(hypergraphScopeId(session), entity)
-    : null;
+  const scopeId = hypergraphScopeId(session);
+  const detail = entity ? entityDetail(scopeId, entity) : null;
 
   if (!detail) {
     return (
@@ -28,6 +32,25 @@ export function EntityCard({ session, params, onNavigate }: TerrainCardProps) {
       </div>
     );
   }
+
+  if (!isNodeVisible(scopeId, detail.id, session)) {
+    return (
+      <div className={styles["terrain-card"]}>
+        <div className={styles["terrain-card-head"]}>
+          <div className={styles["terrain-card-title"]}>{detail.id}</div>
+        </div>
+        <div className={styles["terrain-panel-empty"]}>
+          Every source that mentioned &quot;{detail.id}&quot; is currently
+          disabled — re-enable one in Sources to see this entity.
+        </div>
+      </div>
+    );
+  }
+
+  const visibleEdges = detail.edges.filter((e) =>
+    isEdgeVisible(scopeId, e.edge, session),
+  );
+  const hiddenEdgeCount = detail.edges.length - visibleEdges.length;
 
   const firstSeen = resolveDocLabel(session, detail.firstSeenDocId);
   const lastSeen = resolveDocLabel(session, detail.lastSeenDocId);
@@ -56,13 +79,16 @@ export function EntityCard({ session, params, onNavigate }: TerrainCardProps) {
       </div>
       <div className={styles["terrain-divider"]} />
       <div className={styles["terrain-card-subhead"]}>
-        {detail.edges.length} relation{detail.edges.length === 1 ? "" : "s"}
+        {visibleEdges.length} relation{visibleEdges.length === 1 ? "" : "s"}
+        {hiddenEdgeCount > 0
+          ? ` (+${hiddenEdgeCount} hidden by a disabled source)`
+          : ""}
       </div>
-      {!detail.edges.length ? (
+      {!visibleEdges.length ? (
         <div className={styles["terrain-panel-empty"]}>None yet.</div>
       ) : (
         <div className={styles["terrain-edge-list"]}>
-          {detail.edges.map((e) => (
+          {visibleEdges.map((e) => (
             <div
               key={e.edge}
               className={styles["terrain-edge-row"]}

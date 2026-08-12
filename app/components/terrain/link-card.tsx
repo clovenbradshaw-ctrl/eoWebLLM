@@ -1,5 +1,9 @@
 import styles from "../chat.module.scss";
-import { hypergraphScopeId, linkDetail } from "../../client/eo-hypergraph";
+import {
+  hypergraphScopeId,
+  linkDetail,
+  isEdgeVisible,
+} from "../../client/eo-hypergraph";
 import { resolveDocLabel, type TerrainCardProps } from "./types";
 
 // Link — one relation's own detail. eo-warrant.ts's canWarrant firewall:
@@ -10,7 +14,8 @@ import { resolveDocLabel, type TerrainCardProps } from "./types";
 
 export function LinkCard({ session, params, onNavigate }: TerrainCardProps) {
   const edge = params.edge ?? "";
-  const detail = edge ? linkDetail(hypergraphScopeId(session), edge) : null;
+  const scopeId = hypergraphScopeId(session);
+  const detail = edge ? linkDetail(scopeId, edge) : null;
 
   if (!detail) {
     return (
@@ -22,6 +27,20 @@ export function LinkCard({ session, params, onNavigate }: TerrainCardProps) {
           {edge
             ? `No relation "${edge}" in this session's graph.`
             : "No relation selected."}
+        </div>
+      </div>
+    );
+  }
+
+  if (!isEdgeVisible(scopeId, detail.edge, session)) {
+    return (
+      <div className={styles["terrain-card"]}>
+        <div className={styles["terrain-card-head"]}>
+          <div className={styles["terrain-card-title"]}>Link</div>
+        </div>
+        <div className={styles["terrain-panel-empty"]}>
+          Every source this relation came from is currently disabled — re-enable
+          one in Sources to see it.
         </div>
       </div>
     );

@@ -102,6 +102,7 @@ import {
   Clock,
   Check,
   ShareNetwork,
+  DotsThreeVertical,
 } from "@phosphor-icons/react";
 import { ingestFile } from "../client/eo-source-ingest";
 import { toEOTReader, reReadSource, ledgerStats } from "../client/eo-reading";
@@ -1300,6 +1301,7 @@ function ChatInner() {
 
   const [showExport, setShowExport] = useState(false);
   const [showEoLog, setShowEoLog] = useState(false);
+  const [showHeaderMenu, setShowHeaderMenu] = useState(false);
   // The terminal's active click-to-fold target, if any (see
   // renderEotEntryText below): a name pulled from a log line's own
   // quoted text, narrowing the terminal to only the lines that name it.
@@ -2036,46 +2038,6 @@ function ChatInner() {
           </div>
         </div>
         <div className="window-actions">
-          {!isMobileScreen && (
-            <div className="window-action-button">
-              <IconButton
-                icon={<RenameIcon />}
-                onClick={() => setShowEditPromptModal(true)}
-              />
-            </div>
-          )}
-          <div className="window-action-button">
-            <IconButton
-              icon={<ShareIcon />}
-              title={Locale.Chat.Actions.Share}
-              onClick={() => {
-                const params = new URLSearchParams({
-                  model: config.modelConfig.model,
-                  temperature: config.modelConfig.temperature.toString(),
-                  top_p: config.modelConfig.top_p.toString(),
-                  max_tokens: config.modelConfig.max_tokens.toString(),
-                  presence_penalty:
-                    config.modelConfig.presence_penalty.toString(),
-                  frequency_penalty:
-                    config.modelConfig.frequency_penalty.toString(),
-                  // template: chatStore.currentSession().template;
-                });
-                const shareUrl = new URL(
-                  `${window.location.origin}${window.location.pathname}?${params}`,
-                );
-                copyToClipboard(shareUrl.href);
-              }}
-            />
-          </div>
-          <div className="window-action-button">
-            <IconButton
-              icon={<ExportIcon />}
-              title={Locale.Chat.Actions.Export}
-              onClick={() => {
-                setShowExport(true);
-              }}
-            />
-          </div>
           <div className="window-action-button">
             <IconButton
               icon={<ShareNetwork size={16} />}
@@ -2101,30 +2063,98 @@ function ChatInner() {
               onClick={() => setShowSources((v) => !v)}
             />
           </div>
+          {/* Rename/Share/Export/EOT-log/Maximize used to each get their own
+              always-visible icon (7 buttons total on desktop) — collapsed
+              into one overflow menu since Terrain/Sources are the two a
+              reader actually reaches for during a session; the rest are
+              occasional or dev-facing. Rename doubles as a no-op here since
+              clicking the title itself already opens the same modal
+              (window-header-main-title's onClickCapture above) — kept in
+              the menu anyway since a reader scanning a menu for "rename"
+              shouldn't have to already know that secondary affordance. */}
           <div className="window-action-button">
-            <IconButton
-              icon={<TerminalWindow size={17} />}
-              title="EOT — system log"
-              onClick={() =>
-                setShowEoLog((v) => {
-                  if (!v) closeTerrainPanel();
-                  return !v;
-                })
+            <Popover
+              open={showHeaderMenu}
+              onClose={() => setShowHeaderMenu(false)}
+              content={
+                <div className={styles["header-menu"]}>
+                  <div
+                    className={styles["header-menu-item"]}
+                    onClick={() => {
+                      setShowHeaderMenu(false);
+                      setShowEditPromptModal(true);
+                    }}
+                  >
+                    <RenameIcon /> Rename
+                  </div>
+                  <div
+                    className={styles["header-menu-item"]}
+                    onClick={() => {
+                      setShowHeaderMenu(false);
+                      const params = new URLSearchParams({
+                        model: config.modelConfig.model,
+                        temperature: config.modelConfig.temperature.toString(),
+                        top_p: config.modelConfig.top_p.toString(),
+                        max_tokens: config.modelConfig.max_tokens.toString(),
+                        presence_penalty:
+                          config.modelConfig.presence_penalty.toString(),
+                        frequency_penalty:
+                          config.modelConfig.frequency_penalty.toString(),
+                      });
+                      const shareUrl = new URL(
+                        `${window.location.origin}${window.location.pathname}?${params}`,
+                      );
+                      copyToClipboard(shareUrl.href);
+                    }}
+                  >
+                    <ShareIcon /> {Locale.Chat.Actions.Share}
+                  </div>
+                  <div
+                    className={styles["header-menu-item"]}
+                    onClick={() => {
+                      setShowHeaderMenu(false);
+                      setShowExport(true);
+                    }}
+                  >
+                    <ExportIcon /> {Locale.Chat.Actions.Export}
+                  </div>
+                  <div
+                    className={styles["header-menu-item"]}
+                    onClick={() => {
+                      setShowHeaderMenu(false);
+                      setShowEoLog((v) => {
+                        if (!v) closeTerrainPanel();
+                        return !v;
+                      });
+                    }}
+                  >
+                    <TerminalWindow size={17} /> EOT — system log
+                  </div>
+                  {showMaxIcon && (
+                    <div
+                      className={styles["header-menu-item"]}
+                      onClick={() => {
+                        setShowHeaderMenu(false);
+                        config.update(
+                          (config) =>
+                            (config.tightBorder = !config.tightBorder),
+                        );
+                      }}
+                    >
+                      {config.tightBorder ? <MinIcon /> : <MaxIcon />}{" "}
+                      {config.tightBorder ? "Restore window" : "Maximize"}
+                    </div>
+                  )}
+                </div>
               }
-            />
-          </div>
-          {showMaxIcon && (
-            <div className="window-action-button">
+            >
               <IconButton
-                icon={config.tightBorder ? <MinIcon /> : <MaxIcon />}
-                onClick={() => {
-                  config.update(
-                    (config) => (config.tightBorder = !config.tightBorder),
-                  );
-                }}
+                icon={<DotsThreeVertical size={18} />}
+                title="More"
+                onClick={() => setShowHeaderMenu((v) => !v)}
               />
-            </div>
-          )}
+            </Popover>
+          </div>
         </div>
       </div>
 

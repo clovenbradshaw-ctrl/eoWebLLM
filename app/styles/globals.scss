@@ -1,23 +1,29 @@
 @import "./animation.scss";
 @import "./window.scss";
 
+// The app's whole palette, not just Citey's chips — shifted from the old
+// warm off-white/olive-black scheme to the cool violet-tinted one validated
+// in the mockup. --primary is now literally --eo-model (the "model" accent
+// from the Citey design system) so there's one source of truth instead of
+// two brand colors that happen to both be teal.
 @mixin light {
   --theme: light;
 
   /* color */
-  --white: #fffdfa;
-  --black: #26241f;
-  --gray: #f4f2ed;
-  --light-gray: #8c877c;
-  --primary: #1f5a4c;
-  --second: #f1eee7;
-  --hover-color: #f2efe8;
-  --bar-color: #e0dace;
+  --white: #ffffff;
+  --black: #1c1830;
+  --gray: #f6f5fb;
+  --light-gray: #8c87a6;
+  --primary: #1f8a72;
+  --second: #ece9fb;
+  --hover-color: #f0eefb;
+  --bar-color: #e2dff0;
   --theme-color: var(--gray);
 
-  /* Citey design system — the model/annotator split's own accents, distinct
-     from --primary so this reads consistently regardless of the app's own
-     brand color. Values match the validated mockup exactly. */
+  /* Citey design system — the model/annotator split's own accents. --model
+     mirrors --primary (kept distinct so chip/note code never has to know
+     which one the app calls its "brand" color). Values match the
+     validated mockup exactly. */
   --eo-model: #1f8a72;
   --eo-model-soft: #e3f3ee;
   --eo-citey: #6b5fd6;
@@ -26,11 +32,11 @@
   --eo-warn-soft: #f7ecdb;
 
   /* shadow */
-  --shadow: 0 1px 2px rgba(38, 36, 31, 0.06), 0 8px 20px -8px rgba(38, 36, 31, 0.16), 0 28px 64px -32px rgba(38, 36, 31, 0.35);
-  --card-shadow: 0 1px 2px rgba(38, 36, 31, 0.08), 0 4px 10px -4px rgba(38, 36, 31, 0.14);
+  --shadow: 0 1px 2px rgba(28, 24, 48, 0.06), 0 8px 20px -8px rgba(28, 24, 48, 0.16), 0 28px 64px -32px rgba(28, 24, 48, 0.35);
+  --card-shadow: 0 1px 2px rgba(28, 24, 48, 0.08), 0 4px 10px -4px rgba(28, 24, 48, 0.14);
 
   /* stroke */
-  --border-in-light: 1px solid #e0dace;
+  --border-in-light: 1px solid #e2dff0;
   --border-in-dark: 1px solid rgb(136, 136, 136);
 }
 
@@ -38,15 +44,15 @@
   --theme: dark;
 
   /* color */
-  --white: #24221e;
-  --black: #eee9df;
-  --gray: #181714;
-  --light-gray: #aea79a;
-  --primary: #78b9a8;
-  --second: #302d27;
-  --hover-color: #37332c;
+  --white: #1e1a2c;
+  --black: #ece9fb;
+  --gray: #16131f;
+  --light-gray: #b7b1d6;
+  --primary: #4fc9a8;
+  --second: #2a2447;
+  --hover-color: #322c47;
 
-  --bar-color: #595348;
+  --bar-color: #322c47;
 
   --eo-model: #4fc9a8;
   --eo-model-soft: #17322a;
@@ -55,7 +61,7 @@
   --eo-warn: #dba75e;
   --eo-warn-soft: #3a2c15;
 
-  --border-in-light: 1px solid #4b463e;
+  --border-in-light: 1px solid #322c47;
   --border-in-dark: 1px solid rgb(255, 255, 255, 0.56);
 
   --theme-color: var(--gray);

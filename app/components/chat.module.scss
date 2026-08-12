@@ -320,7 +320,12 @@
   display: flex;
   flex-direction: column;
   flex: 1;
-  min-width: 0;
+  // A floor, not 0 — at 0 a docked terrain/source panel wide enough to
+  // starve this column (a narrow window, or the panel's own
+  // MIN_TERRAIN_PANEL_WIDTH not accounting for how little space is left)
+  // used to collapse it well below any word's own width, so ordinary text
+  // wrapped one character per line instead of overflowing sanely.
+  min-width: 220px;
 }
 
 .chat-body {
@@ -1452,6 +1457,42 @@ input.eot-graph-search {
   display: flex;
   flex-direction: column;
   gap: 7px;
+}
+
+// The header's overflow menu — Rename/Share/Export/EOT-log/Maximize,
+// collapsed out of the always-visible toolbar (see chat.tsx's
+// window-actions header). Popover (ui-lib.tsx) supplies positioning/the
+// click-outside-to-close overlay; this is only the menu's own content.
+.header-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--white);
+  border: var(--border-in-light);
+  border-radius: 10px;
+  box-shadow: var(--card-shadow);
+}
+
+.header-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--black);
+  cursor: pointer;
+
+  svg {
+    width: 15px;
+    height: 15px;
+    flex: 0 0 auto;
+  }
+
+  &:hover {
+    background: var(--hover-color);
+  }
 }
 
 .source-row {
