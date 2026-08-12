@@ -2792,13 +2792,14 @@ function ChatInner() {
                           </div>
                         )}
                       </div>
-                      <div className={styles["chat-message-action-date"]}>
-                        <div>
-                          {isContext
-                            ? Locale.Chat.IsContext
-                            : message.date.toLocaleString()}
+                      {/* Per-message timestamp hidden per feedback — the
+                          "System Prompt" context-marker label stays (it's
+                          not a date, it flags the clear-context boundary). */}
+                      {isContext && (
+                        <div className={styles["chat-message-action-date"]}>
+                          <div>{Locale.Chat.IsContext}</div>
                         </div>
-                      </div>
+                      )}
                     </div>
                   </div>
                   {shouldShowClearContextDivider && <ClearContextDivider />}
