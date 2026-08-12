@@ -13,8 +13,8 @@
   --white: #ffffff;
   --black: #1c1830;
   --gray: #f6f5fb;
-  --light-gray: #8c87a6;
-  --primary: #1f8a72;
+  --light-gray: #706a92;
+  --primary: #1b7964;
   --second: #ece9fb;
   --hover-color: #f0eefb;
   --bar-color: #e2dff0;
@@ -22,13 +22,18 @@
 
   /* Citey design system — the model/annotator split's own accents. --model
      mirrors --primary (kept distinct so chip/note code never has to know
-     which one the app calls its "brand" color). Values match the
-     validated mockup exactly. */
-  --eo-model: #1f8a72;
+     which one the app calls its "brand" color). Darkened from the mockup's
+     exact values (#1f8a72/#6b5fd6/#a8752f) — measured against their own
+     "-soft" chip backgrounds those originals landed at 3.4-4.2:1, under
+     WCAG AA's 4.5:1 floor for normal-weight chip-sized text (verified with
+     the standard relative-luminance formula, not eyeballed). Each is
+     darkened just enough to clear ~4.6:1 there (5.3-5.6:1 on plain white),
+     same hue, so the chip system still reads as the same three colors. */
+  --eo-model: #1b7964;
   --eo-model-soft: #e3f3ee;
-  --eo-citey: #6b5fd6;
+  --eo-citey: #6459c9;
   --eo-citey-soft: #ece9fb;
-  --eo-warn: #a8752f;
+  --eo-warn: #895f26;
   --eo-warn-soft: #f7ecdb;
 
   /* shadow */
