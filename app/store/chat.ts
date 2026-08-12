@@ -3470,6 +3470,90 @@ export const useChatStore = createPersistStore(
         set(() => ({ sessions }));
       },
 
+      // Startup warmup ("prime the pump"): once home.tsx's usePreloadModel has
+      // downloaded and loaded the model, run ONE tiny inference — ask the model
+      // to greet the reader — so the first real turn doesn't pay the engine's
+      // cold-start latency (first-call compile, KV-cache warm), and a brand-new
+      // session opens with the model's OWN words instead of the static BOT_HELLO
+      // render-time injection. Same single-flight discipline as every background
+      // call here: eoEngineBusy is set, so a reader who starts typing a real
+      // question has onUserInput abort this warmup (see the eoEngineBusy check
+      // before llm.chat) rather than collide on the engine.
+      async runStartupGreeting(llm: LLMApi) {
+        const session = get().currentSession();
+        // Never interrupt a real turn, never double-fire alongside a background
+        // call, and never drop a greeting into a conversation already underway.
+        if (session.isGenerating || eoEngineBusy || session.messages.length > 0)
+          return;
+
+        const greeting = createMessage({
+          role: "assistant",
+          streaming: true,
+          content: "",
+        });
+        get().updateCurrentSession((s) => {
+          s.messages = s.messages.concat([greeting]);
+        });
+
+        const modelConfig = useAppConfig.getState().modelConfig;
+        eoEngineBusy = true;
+        try {
+          await new Promise<void>((resolve) => {
+            llm.chat({
+              messages: [
+                createMessage({
+                  role: "system",
+                  content:
+                    "You are a helpful assistant about to open a conversation. Say a short, warm greeting to the reader — one or two sentences, no preamble, no markdown, no quotes.",
+                }),
+                createMessage({ role: "user", content: "Say hello." }),
+              ],
+              config: {
+                ...modelConfig,
+                cache: useAppConfig.getState().cacheType,
+                stream: true,
+                enable_thinking: useAppConfig.getState().enableThinking,
+              },
+              onUpdate(message) {
+                greeting.content = message;
+                // Shallow-copy the array so the transcript re-renders on every
+                // chunk (same pattern onUserInput's streaming onUpdate uses).
+                get().updateCurrentSession((s) => {
+                  s.messages = s.messages.concat();
+                });
+              },
+              onFinish(message) {
+                greeting.streaming = false;
+                greeting.content = message;
+                get().updateCurrentSession((s) => {
+                  s.messages = s.messages.concat();
+                });
+                get().pushEoLog(
+                  "task",
+                  "greeting: model warmed up and said hello on cold start",
+                );
+                resolve();
+              },
+              onError(err) {
+                // Aborted by a real turn, or the engine failed the warmup —
+                // either way the half-streamed warmup must not linger in the
+                // transcript; BOT_HELLO's render-time injection covers the gap.
+                get().updateCurrentSession((s) => {
+                  s.messages = s.messages.filter((m) => m.id !== greeting.id);
+                });
+                get().pushEoLog(
+                  "error",
+                  `greeting warmup dropped — ${(err as Error)?.message ?? err}`,
+                );
+                resolve();
+              },
+            });
+          });
+        } finally {
+          eoEngineBusy = false;
+        }
+      },
+
       updateStat(message: ChatMessage) {
         get().updateCurrentSession((session) => {
           session.stat.charCount += message.content.length;
@@ -3524,3 +3608,10 @@ export const useChatStore = createPersistStore(
     },
   },
 );
+
+// Dev-only hook: expose the store on `window` so an external e2e driver can
+// observe message/generation state without DOM-sniffing. No-op in production
+// builds for consumers (module is only ever imported client-side here).
+if (typeof window !== "undefined") {
+  (window as any).__CHAT_STORE__ = useChatStore;
+}

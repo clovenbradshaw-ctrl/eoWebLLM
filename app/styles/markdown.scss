@@ -1204,3 +1204,24 @@
   text-decoration: line-through;
   text-decoration-color: #b3261e;
 }
+
+// Citey's entity mentions — graph entities (eo-hypergraph.ts) the reader's
+// own reply text names, made clickable into the Terrain Entity card
+// (app/components/terrain/entity-mention.tsx). Deliberately an underline,
+// not a pill: grounding chips already use the pill vocabulary for EVIDENCE,
+// and an entity mention is navigation (see docs/citey-structured-grounding
+// .md §0 — "Entity/Link/Kind/Network are navigation and orientation, never
+// evidence"). The --eo-citey hue is the app's own accent, distinct from
+// --eo-model (grounding) so the two affordances read as different kinds of
+// thing even at a glance.
+.eo-entity-mention {
+  cursor: pointer;
+  color: var(--eo-citey);
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+
+  &:hover {
+    background: var(--eo-citey-soft);
+    text-decoration: underline solid;
+  }
+}

@@ -1313,6 +1313,21 @@ function ChatInner() {
 
   const isStreaming = session.messages.some((m) => m.streaming);
 
+  // The entity-mention affordance's target list (see entity-mention.tsx):
+  // the session's own hypergraph's strongest nodes, by mention — the SAME
+  // source the Entity terrain card reads, so a clickable mention always
+  // lands on a card that exists. Not reactive by itself (eo-hypergraph.ts
+  // is module state), so keyed on the two things that grow it: new turns
+  // and new sources. Empty until the graph has anything — no graph, no
+  // mentions, no dead click targets.
+  const entityMentionIds = useMemo(() => {
+    const snap = hypergraphSnapshot(hypergraphScopeId(session), {
+      limit: 120,
+    });
+    return snap?.nodes.map((n) => n.id) ?? [];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.id, session.projectId, session.messages.length]);
+
   const ttsPlayingId = useTTSStore((s) => s.playingMessageId);
   const ttsError = useTTSStore((s) => s.error);
   const ttsSpeak = useTTSStore((s) => s.speak);
@@ -1674,10 +1689,11 @@ function ChatInner() {
     return session.template.hideContext ? [] : session.template.context.slice();
   }, [session.template.context, session.template.hideContext]);
 
-  if (
-    context.length === 0 &&
-    session.messages.at(0)?.content !== BOT_HELLO.content
-  ) {
+  if (context.length === 0 && session.messages.length === 0) {
+    // Brand-new session with nothing real in the transcript yet — show the
+    // static hello as a placeholder. The moment the model's own startup
+    // greeting streams in (runStartupGreeting), or the reader sends the first
+    // message, the placeholder is replaced by real content.
     const copiedHello = Object.assign({}, BOT_HELLO);
     context.push(copiedHello);
   }
@@ -2757,6 +2773,13 @@ function ChatInner() {
                                     citations: message.groundingCitations ?? [],
                                     span,
                                     citation,
+                                  })
+                                }
+                                entityMentionIds={entityMentionIds}
+                                onEntityClick={(entity) =>
+                                  openTerrainCard({
+                                    kind: "entity",
+                                    params: { entity },
                                   })
                                 }
                               />

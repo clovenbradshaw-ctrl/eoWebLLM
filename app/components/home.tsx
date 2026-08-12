@@ -408,6 +408,15 @@ const usePreloadModel = (webllm: WebLLMApi | undefined, active: boolean) => {
           session.modelLoadProgress = null;
         });
         chatStore.pushEoLog("task", `model: ${model} ready before first turn`);
+        // Prime the pump: one tiny "say a greeting" inference now that the
+        // weights are live, so the first real turn skips the engine's
+        // cold-start cost and a fresh session opens with the model's own hello.
+        chatStore.runStartupGreeting(webllm).catch((err) => {
+          chatStore.pushEoLog(
+            "error",
+            `greeting warmup failed — ${(err as Error).message}`,
+          );
+        });
       })
       .catch((err) => {
         if (cancelled) return;
