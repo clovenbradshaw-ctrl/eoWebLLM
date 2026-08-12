@@ -1725,6 +1725,25 @@ export const useChatStore = createPersistStore(
           return;
         }
 
+        // Free the single-flight engine BEFORE this turn touches it — not
+        // just before this turn's own final llm.chat() call. A background
+        // caller (the startup greeting warmup, a fold/topic-naming call) may
+        // still be mid-generation on the exact same non-reentrant MLC engine
+        // when the reader hits send; this turn's own background calls below
+        // (planTools web routing, math extraction, etc.) call llm.chat()
+        // too, and two chat() calls overlapping on one engine don't queue —
+        // they blend tokens from both prompts into one corrupted stream.
+        // That's what produced a startup greeting bleeding into (and
+        // garbling) the reader's first real answer: the abort used to be
+        // deferred until just before the real turn's own chat() call, well
+        // after these earlier background calls had already collided with
+        // the still-running warmup.
+        if (eoEngineBusy) {
+          eoEngineBusy = false;
+          eoFoldInFlight = false;
+          llm.abort();
+        }
+
         const modelConfig = useAppConfig.getState().modelConfig;
 
         const userContent = fillTemplateWith(content, useAppConfig.getState());
