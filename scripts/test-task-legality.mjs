@@ -33,11 +33,11 @@ test("the cube records legal construction; it never classifies task wording", ()
 
   assert.deepEqual(
     controller.events.map((event) => event.cell.operation),
-    ["SEG", "SEG", "CON", "DEF", "EVA", "DEF", "REC", "SYN"],
+    ["NUL", "SEG", "SEG", "CON", "DEF", "EVA", "DEF", "REC", "SYN"],
   );
   assert.deepEqual(
     controller.events.map((event) => event.cell.grain),
-    [...Array(7).fill("Figure"), "Pattern"],
+    [...Array(1).fill("Ground"), ...Array(7).fill("Figure"), "Pattern"],
   );
 });
 

@@ -13,6 +13,8 @@ import styles from "../chat.module.scss";
 import {
   foldGraphOnEntity,
   hypergraphScopeId,
+  isNodeVisible,
+  isEdgeVisible,
   type GraphTerrainSnapshot,
 } from "../../client/eo-hypergraph";
 import type { TerrainCardProps } from "./types";
@@ -82,9 +84,25 @@ export function NetworkCard({ session, params, onNavigate }: TerrainCardProps) {
   // for a chat-sized graph) on every render is the same standing the
   // existing EOT Graph tab's inline foldGraphOnEntity call already has.
   const snap = foldGraphOnEntity(scopeId, foldEntity, { limit: 80 });
+  // Enabled-source/conversation filter, applied here rather than baked into
+  // foldGraphOnEntity itself — the fold is a pure read of the graph as
+  // admitted, and "which docs the reader currently wants counted" is UI
+  // state (session.eoSources[].enabled / session.eoConversationEnabled),
+  // not something the graph layer should need to know about.
+  const visibleSnap: GraphTerrainSnapshot | null = snap && {
+    ...snap,
+    nodes: snap.nodes.filter((n) => isNodeVisible(scopeId, n.id, session)),
+    edges: snap.edges.filter((e) => isEdgeVisible(scopeId, e.edge, session)),
+  };
+  const hiddenNodeCount = snap
+    ? snap.nodes.length - visibleSnap!.nodes.length
+    : 0;
+  const hiddenEdgeCount = snap
+    ? snap.edges.length - visibleSnap!.edges.length
+    : 0;
   const { nodes, links } = useMemo(
-    () => (snap ? layout(snap) : { nodes: [], links: [] }),
-    [snap],
+    () => (visibleSnap ? layout(visibleSnap) : { nodes: [], links: [] }),
+    [visibleSnap],
   );
 
   if (!snap) {
@@ -153,6 +171,23 @@ export function NetworkCard({ session, params, onNavigate }: TerrainCardProps) {
         {snap.edgeCount} edge{snap.edgeCount === 1 ? "" : "s"} total
         {foldEntity ? ` · folded on "${foldEntity}"` : ""}
       </div>
+      {(nodes.length < snap.matchedNodeCount - hiddenNodeCount ||
+        links.length < snap.matchedEdgeCount - hiddenEdgeCount) && (
+        <div className={styles["terrain-hint"]}>
+          showing {nodes.length} of {snap.matchedNodeCount} matched node
+          {snap.matchedNodeCount === 1 ? "" : "s"} / {links.length} of{" "}
+          {snap.matchedEdgeCount} matched edge
+          {snap.matchedEdgeCount === 1 ? "" : "s"} — narrow the search above to
+          see more of this graph
+        </div>
+      )}
+      {(hiddenNodeCount > 0 || hiddenEdgeCount > 0) && (
+        <div className={styles["terrain-hint"]}>
+          {hiddenNodeCount} node{hiddenNodeCount === 1 ? "" : "s"} /{" "}
+          {hiddenEdgeCount} edge{hiddenEdgeCount === 1 ? "" : "s"} hidden — from
+          a disabled source or conversation toggle in Sources
+        </div>
+      )}
     </div>
   );
 }

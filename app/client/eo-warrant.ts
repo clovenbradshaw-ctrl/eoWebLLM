@@ -766,3 +766,38 @@ export function warrantLogLine(
     (demand.mustUnfold.length ? `; unfold ${demand.mustUnfold.join(", ")}` : "")
   );
 }
+
+// ── The mouth: the horizon law, made a named budget ───────────────────────
+
+export interface Mouth<T> {
+  working: T[];
+  /** How many items were withheld — never silent truncation. */
+  withheld: number;
+  withheld_ids: T[];
+}
+
+/**
+ * The mouth — how much of the material reaches a single generation. The same
+ * budget the engine draws (`eoreader6/packages/engine/holon/task-log.js`'s
+ * `foldToWorkingSet`): `k` defaults to 7, the top of the 4–7 Ericsson–Kintsch
+ * Long-Term Working Memory range, and it is a declared argument, never a
+ * default a caller discovered. The horizon law says no operation reads the
+ * whole — this function is the shape of that: bounded output, and whatever was
+ * withheld is reported by name, never silently dropped.
+ */
+export function foldToMouth<T>(
+  ranked: readonly T[],
+  {
+    k = 7,
+    id = (x: T) => String(x),
+  }: { k?: number; id?: (x: T) => string } = {},
+): Mouth<T> {
+  if (!Number.isInteger(k) || k < 1)
+    throw new TypeError("foldToMouth: k must be a positive integer");
+  const working = ranked.slice(0, k);
+  return {
+    working,
+    withheld: Math.max(0, ranked.length - k),
+    withheld_ids: ranked.slice(k),
+  };
+}

@@ -470,10 +470,18 @@ export function produce(log, rules, { maxSteps = 64 } = {}) {
   let current = log;
   let steps = 0;
   let closed = false;
+  // Per-step trace — see its own doc below for why this exists: the closure
+  // test is a TERMINAL bit (changed / didn't), and collapses "converging
+  // slowly," "drifting," and "genuinely done" into one undifferentiated
+  // signal until `max-steps-guard` trips. This is the raw material a caller
+  // needs to tell those apart, without this module guessing a threshold it
+  // has not measured.
+  const trace = [];
 
   while (steps < maxSteps) {
     const tasks = projectTasks(current);
     const before = foldDigest(tasks);
+    const entriesBefore = current.entries.length;
 
     for (const op of OPERATOR_ORDER) {
       const rule = rules[op];
@@ -497,7 +505,19 @@ export function produce(log, rules, { maxSteps = 64 } = {}) {
     }
 
     steps += 1;
-    if (foldDigest(projectTasks(current)) === before) {
+    const foldChanged = foldDigest(projectTasks(current)) !== before;
+    // `entriesAdded` and `foldChanged` are DIFFERENT facts, and their
+    // disagreement is itself a finding: entries added with the fold
+    // unchanged is production CHURNING — rules kept firing (e.g.
+    // re-proposing an already-live task) without moving the actual state.
+    // Silent in the old entries.length-only comparison this replaced; visible
+    // here rather than guessed away.
+    trace.push({
+      step: steps,
+      entriesAdded: current.entries.length - entriesBefore,
+      foldChanged,
+    });
+    if (!foldChanged) {
       closed = true;
       break;
     }
@@ -527,6 +547,32 @@ export function produce(log, rules, { maxSteps = 64 } = {}) {
     // machinery is named after) may legally happen: between fixpoint
     // computations, never inside one.
     fixpoint: closed,
+    // The wayfinding reading, stated plainly because it is the actual reason
+    // this exists: `closed`/`halted_by` are a sighting of the destination —
+    // you only get one, at the exact step it happens, or at the guard.
+    // `trace` is the bearing log — how much moved, each step, on the way
+    // there.
+    //
+    // MEASURED, not assumed: `entriesAdded` shrinking toward zero is NOT a
+    // universal signature of converging — a branching production (SEG
+    // fanning a frontier of several eligible tasks out in parallel) grows
+    // `entriesAdded` for as many steps as the frontier is still widening
+    // (measured here: [2, 4, 0] for a 4-item evidence set split to leaves —
+    // width outpacing per-branch shrinkage before the tree bottoms out), and
+    // that is healthy, bounded convergence, not drift. The one signal this
+    // trace actually supports without inventing a threshold: whether
+    // `foldChanged` ever reaches `false` at all. It doing so is convergence,
+    // however the per-step shape got there; every step holding `true` all
+    // the way to `max-steps-guard` is the honest "this may not be
+    // converging" a bare `steps >= maxSteps` cannot distinguish from "was one
+    // step short." `entriesAdded > 0` with `foldChanged: false` on the SAME
+    // step is a third, different fact — churn: a rule fired and appended
+    // something, but nothing it appended changed the live fold (e.g.
+    // re-proposing an already-live task verbatim). This module states the
+    // bearing; it does not decide when to stop believing it — no threshold
+    // is picked here that has not been measured, the same discipline
+    // `deriveLevels` already holds for existence-dependency.
+    trace,
   };
 }
 

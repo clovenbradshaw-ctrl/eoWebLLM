@@ -36,33 +36,46 @@ export function AtmosphereCard({ session }: TerrainCardProps) {
               would have — no shift yet.
             </div>
           ) : (
-            <div className={styles["terrain-shift-list"]}>
-              {tier.recentShifts.map((s, i) => (
-                <div key={i} className={styles["terrain-shift"]}>
-                  <span className={styles["terrain-shift-at"]}>at {s.at}</span>
-                  {typeof s.surprise === "number"
-                    ? ` · surprise ${s.surprise.toFixed(3)}`
-                    : ""}
-                  {s.reZero ? (
-                    <span className={styles["terrain-shift-rezero"]}>
-                      {" "}
-                      · re-zero
-                    </span>
-                  ) : null}
-                  {s.censored ? (
-                    <span className={styles["terrain-shift-censored"]}>
-                      {" "}
-                      · censored ({s.censored})
-                    </span>
-                  ) : null}
-                  {s.forms?.length ? (
-                    <div className={styles["terrain-shift-forms"]}>
-                      {s.forms.slice(0, 6).join(", ")}
-                    </div>
-                  ) : null}
+            <>
+              {tier.shifts > tier.recentShifts.length && (
+                <div className={styles["terrain-hint"]}>
+                  showing the {tier.recentShifts.length} most recent of{" "}
+                  {tier.shifts} shifts
                 </div>
-              ))}
-            </div>
+              )}
+              <div className={styles["terrain-shift-list"]}>
+                {tier.recentShifts.map((s, i) => (
+                  <div key={i} className={styles["terrain-shift"]}>
+                    <span className={styles["terrain-shift-at"]}>
+                      at {s.at}
+                    </span>
+                    {typeof s.surprise === "number"
+                      ? ` · surprise ${s.surprise.toFixed(3)}`
+                      : ""}
+                    {s.reZero ? (
+                      <span className={styles["terrain-shift-rezero"]}>
+                        {" "}
+                        · re-zero
+                      </span>
+                    ) : null}
+                    {s.censored ? (
+                      <span className={styles["terrain-shift-censored"]}>
+                        {" "}
+                        · censored ({s.censored})
+                      </span>
+                    ) : null}
+                    {s.forms?.length ? (
+                      <div className={styles["terrain-shift-forms"]}>
+                        {s.forms.slice(0, 6).join(", ")}
+                        {s.forms.length > 6
+                          ? ` (+${s.forms.length - 6} more)`
+                          : ""}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </>
           )}
         </>
       )}

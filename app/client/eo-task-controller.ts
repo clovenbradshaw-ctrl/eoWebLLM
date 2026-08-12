@@ -104,8 +104,13 @@ export interface TaskDefinition {
 }
 
 export interface TaskRecord extends TaskDefinition {
-  status: "pending" | "running" | "completed" | "dropped";
+  status: "pending" | "running" | "completed" | "held";
   result?: string;
+  // Why a task was held rather than completed. A task held by its own failed
+  // review is `review-held`; a task held only because a prerequisite was held
+  // is `prerequisite-held:<id>`. The reason is what makes re-entry legal —
+  // `reopenHeldTask` un-holds dependents held only by the reopened task.
+  heldReason?: string;
   // Holonic nesting: a running task MAY open its own sub-plan, itself a
   // full TaskController with its own SEG/CON/.../SYN closure. A task is a
   // whole (its own controller closes it) and can also be a part (one
@@ -117,11 +122,13 @@ export interface TaskRecord extends TaskDefinition {
 export interface TaskEvent {
   seq: number;
   kind:
+    | "clearing"
     | "propose"
     | "bind"
     | "start"
     | "complete"
-    | "drop"
+    | "hold"
+    | "reopen"
     | "close"
     | "descend"
     | "ascend";
@@ -130,10 +137,17 @@ export interface TaskEvent {
   detail: string;
 }
 
+export type HaltReason = "operational-closure" | "open-gaps-remain";
+
 export interface TaskController {
   tasks: TaskRecord[];
   events: TaskEvent[];
   closed: boolean;
+  // Why the controller stopped. `operational-closure`: nothing is open and
+  // nothing is held. `open-gaps-remain`: held refusals keep `closed` false by
+  // design — the same halt the engine's `produce()` draws, where an unanswered
+  // refusal is a real outcome, never a deletion.
+  halted_by: HaltReason;
 }
 
 function uniqueId(id: string, used: Set<string>) {
@@ -174,7 +188,22 @@ function event(
 export function createTaskController(
   definitions: TaskDefinition[],
 ): TaskController {
-  const controller: TaskController = { tasks: [], events: [], closed: false };
+  const controller: TaskController = {
+    tasks: [],
+    events: [],
+    closed: false,
+    halted_by: "operational-closure",
+  };
+  // NUL · Void · Clearing — the E. coli methylation reset. Every branch opens
+  // by erasing its own baseline so the next difference is measurable against a
+  // rebuilt nothing. The fold begins with a cleared ground, one event, one
+  // cell, no second mechanism. It is the first event of every controller.
+  event(
+    controller,
+    "clearing",
+    cellFor("NUL", "Ground"),
+    "ground cleared — a fresh baseline for this branch",
+  );
   const used = new Set<string>();
   const aliases = new Map<string, string>();
   for (const definition of definitions.slice(0, 6)) {
@@ -342,55 +371,124 @@ export function finishTask(
       task.id,
     );
   }
-  task.status = accepted ? "completed" : "dropped";
-  task.result = result;
-  event(
-    controller,
-    accepted ? "complete" : "drop",
-    cellFor(accepted ? "EVA" : "REC", "Figure"),
-    accepted ? "task result passed review" : "task result failed review",
-    task.id,
-  );
-  // A dependent task cannot legally execute after a prerequisite was dropped.
-  // Close that branch explicitly rather than leaving a controller with no
-  // legal next task but a forever-open pending set.
+  // Witness gate: ink or hold, never drop. A task whose result failed review
+  // is HELD — the result is kept on record, censored, and re-enterable via
+  // `reopenHeldTask`. `REC · Figure`: the return with witness, not the bin.
+  // A difference that made no difference is not testimony, and a refusal is a
+  // result, never a deletion.
+  if (accepted) {
+    task.status = "completed";
+    task.result = result;
+    task.heldReason = undefined;
+    event(
+      controller,
+      "complete",
+      cellFor("EVA", "Figure"),
+      "task result passed review",
+      task.id,
+    );
+  } else {
+    task.status = "held";
+    task.result = result;
+    task.heldReason = "review-held";
+    event(
+      controller,
+      "hold",
+      cellFor("REC", "Figure"),
+      "task result held — censored, not erased: witness on return",
+      task.id,
+    );
+  }
+  // A dependent task cannot legally execute after a prerequisite was held. It
+  // is HELD too — not killed. A held branch is a living gap that re-entry can
+  // reopen; the reason records exactly which prerequisite holds it.
   let changed = true;
   while (changed) {
     changed = false;
     for (const pending of controller.tasks.filter(
       (candidate) => candidate.status === "pending",
     )) {
-      const blocked = pending.dependsOn!.some(
+      const blocking = pending.dependsOn!.find(
         (id) =>
           controller.tasks.find((candidate) => candidate.id === id)?.status ===
-          "dropped",
+          "held",
       );
-      if (blocked) {
-        pending.status = "dropped";
+      if (blocking) {
+        pending.status = "held";
         pending.result = "not run: a prerequisite did not pass review";
+        pending.heldReason = `prerequisite-held:${blocking}`;
         event(
           controller,
-          "drop",
+          "hold",
           cellFor("REC", "Figure"),
-          "task became illegal because a prerequisite was dropped",
+          `task held because a prerequisite was held (${blocking})`,
           pending.id,
         );
         changed = true;
       }
     }
   }
+  // Closure, engine-flavoured: a controller with no open task but a held gap
+  // is NOT closed — `halted_by` reports the refusal the way
+  // eoreader6/packages/engine/holon/task-log.js's `produce()` reports it
+  // ("open-gaps-remain" keeps `closed` false by design).
   if (
     controller.tasks.every(
-      (t) => t.status === "completed" || t.status === "dropped",
+      (t) => t.status === "completed" || t.status === "held",
     )
   ) {
-    controller.closed = true;
+    const heldGaps = controller.tasks.filter((t) => t.status === "held");
+    controller.closed = heldGaps.length === 0;
+    controller.halted_by = heldGaps.length
+      ? "open-gaps-remain"
+      : "operational-closure";
     event(
       controller,
       "close",
       cellFor("SYN", "Pattern"),
-      "operational closure — no open task remains",
+      heldGaps.length
+        ? "operational closure with held gaps — refusals remain open"
+        : "operational closure — no open task remains",
     );
+  }
+}
+
+/**
+ * Re-enter a held task (REC — reset is the point, witness on return). The
+ * held task returns to `pending`, and any dependent held only by it
+ * (`prerequisite-held:<id>`) returns to `pending` too. A task held by its own
+ * review stays held until it is explicitly reopened; a prerequisite that is
+ * still held keeps its dependents held.
+ */
+export function reopenHeldTask(controller: TaskController, taskId: string) {
+  const task = controller.tasks.find((t) => t.id === taskId);
+  if (!task || task.status !== "held")
+    throw new TypeError(`task ${JSON.stringify(taskId)} is not held`);
+  task.status = "pending";
+  task.heldReason = undefined;
+  event(
+    controller,
+    "reopen",
+    cellFor("REC", "Figure"),
+    "held task re-entered — the reset that returns, witness on return",
+    task.id,
+  );
+  controller.closed = false;
+  controller.halted_by = "operational-closure";
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const held of controller.tasks.filter((t) => t.status === "held")) {
+      const reason = held.heldReason;
+      if (!reason || !reason.startsWith("prerequisite-held:")) continue;
+      const prereqId = reason.slice("prerequisite-held:".length);
+      const prereq = controller.tasks.find((t) => t.id === prereqId);
+      if (!prereq || prereq.status !== "held") {
+        held.status = "pending";
+        held.heldReason = undefined;
+        changed = true;
+      }
+    }
   }
 }
 
@@ -405,8 +503,10 @@ export function controllerAudit(
   path: string[] = [],
 ): {
   closed: boolean;
+  halted_by: HaltReason;
   legalNext: string | null;
   incomplete: string[];
+  held: string[];
   incoherent: { seq: number; reason: string | null; path: string[] }[];
 } {
   const incoherent = controller.events.flatMap((e) => {
@@ -416,18 +516,25 @@ export function controllerAudit(
   const incomplete = controller.tasks
     .filter((t) => t.status === "pending" || t.status === "running")
     .map((t) => [...path, t.id].join("/"));
+  // Held gaps are audited, not hidden: a refusal is a result.
+  const held = controller.tasks
+    .filter((t) => t.status === "held")
+    .map((t) => [...path, t.id].join("/"));
 
   for (const task of controller.tasks) {
     if (!task.subplan) continue;
     const nested = controllerAudit(task.subplan, [...path, task.id]);
     incoherent.push(...nested.incoherent);
     incomplete.push(...nested.incomplete);
+    held.push(...nested.held);
   }
 
   return {
     closed: controller.closed,
+    halted_by: controller.halted_by,
     legalNext: nextLegalTask(controller)?.id ?? null,
     incomplete,
+    held,
     incoherent,
   };
 }

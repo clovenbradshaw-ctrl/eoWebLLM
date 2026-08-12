@@ -102,6 +102,7 @@ import {
   Clock,
   Check,
   ShareNetwork,
+  DotsThreeVertical,
 } from "@phosphor-icons/react";
 import { ingestFile } from "../client/eo-source-ingest";
 import { toEOTReader, reReadSource, ledgerStats } from "../client/eo-reading";
@@ -111,6 +112,8 @@ import {
   foldGraphOnEntity,
   hypergraphTiersSnapshot,
   hypergraphScopeId,
+  ensureHypergraphHydrated,
+  describeHypergraphMovement,
   type GraphTerrainSnapshot,
   type TierTerrainSnapshot,
 } from "../client/eo-hypergraph";
@@ -130,6 +133,9 @@ import type { GroundingReport, Snippet } from "../client/eo-citation-check";
 import type { CitationEntry } from "../client/eo-citation-check";
 import { TerrainPanel } from "./terrain-panel";
 import type { TerrainCardRef } from "./terrain/types";
+import { chipReasonText } from "./terrain/grounding-chip";
+import type { GroundingSpan } from "../client/eo-grounding-spans";
+import { CiteySprite } from "./citey";
 
 const eotDot = (id: string) => id.replace(/\s+/g, "_").replace(/::/g, ".");
 
@@ -440,6 +446,7 @@ export function SessionConfigModel(props: { onClose: () => void }) {
                 <TemplateAvatar
                   avatar={session.template.avatar}
                   model={config.modelConfig.model}
+                  name={session.template.name}
                 />
               </div>
             </Popover>
@@ -809,9 +816,11 @@ function TracePanel(props: {
   running: boolean;
   defaultOpen?: boolean;
   children: React.ReactNode;
+  id?: string;
 }) {
   return (
     <details
+      id={props.id}
       open={props.defaultOpen ?? props.running}
       className={styles["trace-panel"]}
     >
@@ -920,7 +929,7 @@ function PlanPanel(props: { trace: PlanTrace }) {
 // why the turn routed to System 1 or System 2. This is the panel a reader
 // opens when an answer looks ungrounded — it says, in the turn's own numbers,
 // whether anything outside the model bore on the question at all.
-function WarrantPanel(props: { trace: WarrantTrace }) {
+function WarrantPanel(props: { trace: WarrantTrace; id?: string }) {
   const t = props.trace;
   const headline =
     t.system === "system2"
@@ -930,6 +939,7 @@ function WarrantPanel(props: { trace: WarrantTrace }) {
       : "answered from general knowledge";
   return (
     <TracePanel
+      id={props.id}
       label={
         <>
           <Scales size={13} className={styles["trace-panel-glyph"]} />
@@ -984,6 +994,48 @@ function WarrantPanel(props: { trace: WarrantTrace }) {
         </div>
       ))}
     </TracePanel>
+  );
+}
+
+// Citey, surfaced only when it has something to say — one unresolved span
+// per message (contradicted takes priority over an unconfirmed "owned"
+// span), in plain language, never DEF/EVA/REC vocabulary. The full record
+// this is a teaser for already exists as WarrantPanel below; clicking here
+// opens and scrolls to it rather than duplicating its content.
+function CiteyNote(props: {
+  spans?: GroundingSpan[];
+  citations?: CitationEntry[];
+  warrantPanelId: string;
+}) {
+  const flagged = props.spans?.find(
+    (s) => s.state === "contradicted" || s.state === "owned",
+  );
+  if (!flagged) return null;
+
+  const citation =
+    flagged.state === "sourced" && flagged.supportingCitationIndexes.length
+      ? props.citations?.find(
+          (c) => c.index === flagged.supportingCitationIndexes[0],
+        )
+      : undefined;
+
+  return (
+    <div
+      className={styles["citey-note"]}
+      role="button"
+      tabIndex={0}
+      onClick={() => {
+        const panel = document.getElementById(props.warrantPanelId);
+        if (!panel) return;
+        (panel as HTMLDetailsElement).open = true;
+        panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }}
+    >
+      <CiteySprite size={22} groundingState="gap" />
+      <div className={styles["citey-note-text"]}>
+        <b>Citey:</b> {chipReasonText(flagged, citation)}
+      </div>
+    </div>
   );
 }
 
@@ -1249,6 +1301,7 @@ function ChatInner() {
 
   const [showExport, setShowExport] = useState(false);
   const [showEoLog, setShowEoLog] = useState(false);
+  const [showHeaderMenu, setShowHeaderMenu] = useState(false);
   // The terminal's active click-to-fold target, if any (see
   // renderEotEntryText below): a name pulled from a log line's own
   // quoted text, narrowing the terminal to only the lines that name it.
@@ -1800,6 +1853,34 @@ function ChatInner() {
           chatStore.registerEoSource(source);
           for (const line of logLines)
             chatStore.pushEoLog(line.channel, line.text);
+          // Admit into the hypergraph right away — a source used to sit
+          // registered-but-ungrounded (Network/Entity/etc. all reporting
+          // "no graph yet") until the reader's first chat turn happened to
+          // trigger ensureHypergraphHydrated's own re-scan. A reader who
+          // opens Terrain right after uploading should see the graph a
+          // source actually produced, not "add a source to start one" for
+          // a source that's already sitting right above it.
+          if (source.textReadable) {
+            try {
+              const bytes = await readRawSource(source.id);
+              const text = new TextDecoder("utf-8", { fatal: true }).decode(
+                bytes,
+              );
+              const movements = ensureHypergraphHydrated(
+                hypergraphScopeId(session),
+                [{ id: source.id, text }],
+                [],
+              );
+              for (const m of movements)
+                chatStore.pushEoLog(
+                  "hypergraph",
+                  describeHypergraphMovement(m),
+                );
+            } catch {
+              // Best-effort — the source still registers and will be
+              // picked up by the next message's own re-scan either way.
+            }
+          }
           succeeded++;
           lastSucceededName = file.name;
         } catch (err) {
@@ -1950,49 +2031,13 @@ function ChatInner() {
           </div>
           <div className="window-header-sub-title">
             {Locale.Chat.SubTitle(session.messages.length)}
+            {session.template.name &&
+              session.template.name !== DEFAULT_TOPIC && (
+                <> &middot; responding as {session.template.name}</>
+              )}
           </div>
         </div>
         <div className="window-actions">
-          {!isMobileScreen && (
-            <div className="window-action-button">
-              <IconButton
-                icon={<RenameIcon />}
-                onClick={() => setShowEditPromptModal(true)}
-              />
-            </div>
-          )}
-          <div className="window-action-button">
-            <IconButton
-              icon={<ShareIcon />}
-              title={Locale.Chat.Actions.Share}
-              onClick={() => {
-                const params = new URLSearchParams({
-                  model: config.modelConfig.model,
-                  temperature: config.modelConfig.temperature.toString(),
-                  top_p: config.modelConfig.top_p.toString(),
-                  max_tokens: config.modelConfig.max_tokens.toString(),
-                  presence_penalty:
-                    config.modelConfig.presence_penalty.toString(),
-                  frequency_penalty:
-                    config.modelConfig.frequency_penalty.toString(),
-                  // template: chatStore.currentSession().template;
-                });
-                const shareUrl = new URL(
-                  `${window.location.origin}${window.location.pathname}?${params}`,
-                );
-                copyToClipboard(shareUrl.href);
-              }}
-            />
-          </div>
-          <div className="window-action-button">
-            <IconButton
-              icon={<ExportIcon />}
-              title={Locale.Chat.Actions.Export}
-              onClick={() => {
-                setShowExport(true);
-              }}
-            />
-          </div>
           <div className="window-action-button">
             <IconButton
               icon={<ShareNetwork size={16} />}
@@ -2018,30 +2063,98 @@ function ChatInner() {
               onClick={() => setShowSources((v) => !v)}
             />
           </div>
+          {/* Rename/Share/Export/EOT-log/Maximize used to each get their own
+              always-visible icon (7 buttons total on desktop) — collapsed
+              into one overflow menu since Terrain/Sources are the two a
+              reader actually reaches for during a session; the rest are
+              occasional or dev-facing. Rename doubles as a no-op here since
+              clicking the title itself already opens the same modal
+              (window-header-main-title's onClickCapture above) — kept in
+              the menu anyway since a reader scanning a menu for "rename"
+              shouldn't have to already know that secondary affordance. */}
           <div className="window-action-button">
-            <IconButton
-              icon={<TerminalWindow size={17} />}
-              title="EOT — system log"
-              onClick={() =>
-                setShowEoLog((v) => {
-                  if (!v) closeTerrainPanel();
-                  return !v;
-                })
+            <Popover
+              open={showHeaderMenu}
+              onClose={() => setShowHeaderMenu(false)}
+              content={
+                <div className={styles["header-menu"]}>
+                  <div
+                    className={styles["header-menu-item"]}
+                    onClick={() => {
+                      setShowHeaderMenu(false);
+                      setShowEditPromptModal(true);
+                    }}
+                  >
+                    <RenameIcon /> Rename
+                  </div>
+                  <div
+                    className={styles["header-menu-item"]}
+                    onClick={() => {
+                      setShowHeaderMenu(false);
+                      const params = new URLSearchParams({
+                        model: config.modelConfig.model,
+                        temperature: config.modelConfig.temperature.toString(),
+                        top_p: config.modelConfig.top_p.toString(),
+                        max_tokens: config.modelConfig.max_tokens.toString(),
+                        presence_penalty:
+                          config.modelConfig.presence_penalty.toString(),
+                        frequency_penalty:
+                          config.modelConfig.frequency_penalty.toString(),
+                      });
+                      const shareUrl = new URL(
+                        `${window.location.origin}${window.location.pathname}?${params}`,
+                      );
+                      copyToClipboard(shareUrl.href);
+                    }}
+                  >
+                    <ShareIcon /> {Locale.Chat.Actions.Share}
+                  </div>
+                  <div
+                    className={styles["header-menu-item"]}
+                    onClick={() => {
+                      setShowHeaderMenu(false);
+                      setShowExport(true);
+                    }}
+                  >
+                    <ExportIcon /> {Locale.Chat.Actions.Export}
+                  </div>
+                  <div
+                    className={styles["header-menu-item"]}
+                    onClick={() => {
+                      setShowHeaderMenu(false);
+                      setShowEoLog((v) => {
+                        if (!v) closeTerrainPanel();
+                        return !v;
+                      });
+                    }}
+                  >
+                    <TerminalWindow size={17} /> EOT — system log
+                  </div>
+                  {showMaxIcon && (
+                    <div
+                      className={styles["header-menu-item"]}
+                      onClick={() => {
+                        setShowHeaderMenu(false);
+                        config.update(
+                          (config) =>
+                            (config.tightBorder = !config.tightBorder),
+                        );
+                      }}
+                    >
+                      {config.tightBorder ? <MinIcon /> : <MaxIcon />}{" "}
+                      {config.tightBorder ? "Restore window" : "Maximize"}
+                    </div>
+                  )}
+                </div>
               }
-            />
-          </div>
-          {showMaxIcon && (
-            <div className="window-action-button">
+            >
               <IconButton
-                icon={config.tightBorder ? <MinIcon /> : <MaxIcon />}
-                onClick={() => {
-                  config.update(
-                    (config) => (config.tightBorder = !config.tightBorder),
-                  );
-                }}
+                icon={<DotsThreeVertical size={18} />}
+                title="More"
+                onClick={() => setShowHeaderMenu((v) => !v)}
               />
-            </div>
-          )}
+            </Popover>
+          </div>
         </div>
       </div>
 
@@ -2278,6 +2391,28 @@ function ChatInner() {
           >
             <Paperclip size={14} /> {uploadingFile ? "Adding…" : "Add sources"}
           </button>
+          <div className={styles["source-item"]}>
+            <label className={styles["source-row"]}>
+              <input
+                type="checkbox"
+                checked={session.eoConversationEnabled !== false}
+                onChange={() =>
+                  chatStore.updateCurrentSession((current) => {
+                    current.eoConversationEnabled =
+                      current.eoConversationEnabled === false;
+                  })
+                }
+              />
+              <span className={styles["source-row-body"]}>
+                <strong>This conversation</strong>
+                <small>
+                  {session.messages.length} message
+                  {session.messages.length === 1 ? "" : "s"} · admitted into the
+                  same graph as an uploaded source
+                </small>
+              </span>
+            </label>
+          </div>
           <div className={styles["source-list"]}>
             {!session.eoSources?.length ? (
               <div className={styles["source-empty"]}>
@@ -2387,6 +2522,7 @@ function ChatInner() {
                                     message.model || config.modelConfig.model
                                   }
                                   streamedText={getMessageTextContent(message)}
+                                  name={session.template.name}
                                 />
                               )}
                             </>
@@ -2540,7 +2676,10 @@ function ChatInner() {
                                 </div>
                               )}
                               {!isUser && message.warrantTrace && (
-                                <WarrantPanel trace={message.warrantTrace} />
+                                <WarrantPanel
+                                  trace={message.warrantTrace}
+                                  id={`warrant-${message.id ?? i}`}
+                                />
                               )}
                               {!isUser && message.planTrace && (
                                 <PlanPanel trace={message.planTrace} />
@@ -2577,6 +2716,13 @@ function ChatInner() {
                                 groundingCitations={message.groundingCitations}
                                 onNavigateTerrain={openTerrainCard}
                               />
+                              {!isUser && (
+                                <CiteyNote
+                                  spans={shiftedGroundingSpans}
+                                  citations={message.groundingCitations}
+                                  warrantPanelId={`warrant-${message.id ?? i}`}
+                                />
+                              )}
                             </>
                           );
                         })()}

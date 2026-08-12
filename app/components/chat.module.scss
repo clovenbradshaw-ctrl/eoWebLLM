@@ -320,7 +320,12 @@
   display: flex;
   flex-direction: column;
   flex: 1;
-  min-width: 0;
+  // A floor, not 0 — at 0 a docked terrain/source panel wide enough to
+  // starve this column (a narrow window, or the panel's own
+  // MIN_TERRAIN_PANEL_WIDTH not accounting for how little space is left)
+  // used to collapse it well below any word's own width, so ordinary text
+  // wrapped one character per line instead of overflowing sanely.
+  min-width: 220px;
 }
 
 .chat-body {
@@ -378,17 +383,21 @@
 }
 
 .terrain-panel-tabs {
-  display: flex;
-  flex-wrap: wrap;
+  // 9 kinds, laid out row-major over the engine's own Domain × Grain
+  // matrix (TERRAIN_CARD_KINDS in terrain/types.ts) — 3 columns so the
+  // grid IS the matrix: Existence / Structure / Interpretation rows,
+  // Ground / Figure / Pattern columns.
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
   gap: 2px;
   padding: 8px 10px;
   border-bottom: var(--border-in-light);
 }
 
 .terrain-tab {
-  flex: 1 0 auto;
   padding: 4px 8px;
   font-size: 11px;
+  text-align: center;
   color: var(--black);
   opacity: 0.6;
   border: var(--border-in-light);
@@ -1126,7 +1135,7 @@ input.eot-graph-search {
 
 .chat-message-status {
   font-size: 12px;
-  color: #aaa;
+  color: var(--light-gray);
   line-height: 1.5;
   margin-top: 5px;
 }
@@ -1247,6 +1256,36 @@ input.eot-graph-search {
   opacity: 0.65;
   word-break: break-word;
   white-space: normal;
+}
+
+// Citey's inline note — appears once per message, only when there's an
+// unresolved span, teasing the full WarrantPanel trace below it rather
+// than duplicating it. Clickable, not a hover tooltip: the reasoning has
+// to be discoverable, not stumbled on.
+.citey-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 12px;
+  max-width: 52ch;
+  border-radius: 9px;
+  background: var(--eo-citey-soft);
+  cursor: pointer;
+
+  &:hover {
+    background: color-mix(in srgb, var(--eo-citey) 24%, var(--eo-citey-soft));
+  }
+}
+
+.citey-note-text {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--black);
+
+  b {
+    color: var(--eo-citey);
+  }
 }
 
 .chat-message-item-image-multi {
@@ -1418,6 +1457,42 @@ input.eot-graph-search {
   display: flex;
   flex-direction: column;
   gap: 7px;
+}
+
+// The header's overflow menu — Rename/Share/Export/EOT-log/Maximize,
+// collapsed out of the always-visible toolbar (see chat.tsx's
+// window-actions header). Popover (ui-lib.tsx) supplies positioning/the
+// click-outside-to-close overlay; this is only the menu's own content.
+.header-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--white);
+  border: var(--border-in-light);
+  border-radius: 10px;
+  box-shadow: var(--card-shadow);
+}
+
+.header-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--black);
+  cursor: pointer;
+
+  svg {
+    width: 15px;
+    height: 15px;
+    flex: 0 0 auto;
+  }
+
+  &:hover {
+    background: var(--hover-color);
+  }
 }
 
 .source-row {

@@ -6,6 +6,12 @@
 // own header insists on: "an interface-layer legality check, never a
 // classifier").
 //
+// Also verifies the seed's witness gate (SEED-SPEC.md Δ1/Δ5): every controller
+// opens with a NUL · Void · Clearing event, a failed review HOLDS rather than
+// drops, dependents of a held task are held not killed, a held task can be
+// re-entered, and a controller with held gaps is not closed (halted_by =
+// "open-gaps-remain").
+//
 // Run: node --experimental-strip-types --test scripts/test-task-controller-recursion.mjs
 
 import { test } from "node:test";
@@ -17,7 +23,20 @@ import {
   openSubplan,
   controllerAudit,
   coherence,
+  reopenHeldTask,
 } from "../app/client/eo-task-controller.ts";
+
+test("every controller opens by clearing its ground on NUL · Void · Clearing", () => {
+  const top = createTaskController([{ id: "research", goal: "research the topic" }]);
+  const first = top.events[0];
+  assert.equal(first.kind, "clearing");
+  assert.deepEqual(
+    { op: first.cell.operation, grain: first.cell.grain },
+    { op: "NUL", grain: "Ground" },
+  );
+  assert.equal(first.cell.terrain, "Void");
+  assert.equal(first.cell.stance, "Clearing");
+});
 
 test("a task cannot complete while its sub-plan is still open", () => {
   const top = createTaskController([{ id: "research", goal: "research the topic" }]);
@@ -29,24 +48,73 @@ test("a task cannot complete while its sub-plan is still open", () => {
   );
 });
 
-test("a task CAN complete once its sub-plan closes, and drop is never blocked by an open sub-plan", () => {
+test("a task CAN complete once its sub-plan closes, and holding is never blocked by an open sub-plan", () => {
   const top = createTaskController([{ id: "research", goal: "research the topic" }]);
   startTask(top, "research");
   const sub = openSubplan(top, "research", [{ id: "gather", goal: "gather sources" }]);
   startTask(sub, "gather");
   finishTask(sub, "gather", "gathered", true);
   assert.equal(sub.closed, true, "precondition: the sub-plan is fully closed");
+  assert.equal(sub.halted_by, "operational-closure");
 
   finishTask(top, "research", "done", true);
   assert.equal(top.tasks[0].status, "completed");
 
-  // The drop path is not gated on subplan closure -- abandoning a branch
-  // does not claim it finished.
+  // The hold path is not gated on subplan closure -- holding a branch does
+  // not claim it finished. And holding is never dropping: the result is kept.
   const top2 = createTaskController([{ id: "research", goal: "research the topic" }]);
   startTask(top2, "research");
   openSubplan(top2, "research", [{ id: "gather", goal: "gather sources" }]);
   assert.doesNotThrow(() => finishTask(top2, "research", "abandoned", false));
-  assert.equal(top2.tasks[0].status, "dropped");
+  assert.equal(top2.tasks[0].status, "held");
+  assert.equal(top2.tasks[0].result, "abandoned");
+  assert.equal(top2.tasks[0].heldReason, "review-held");
+});
+
+test("a held task holds its dependents, and reopening the prerequisite un-holds them", () => {
+  const top = createTaskController([
+    { id: "gather", goal: "gather sources" },
+    { id: "write", goal: "write it up", dependsOn: ["gather"] },
+  ]);
+  startTask(top, "gather");
+  finishTask(top, "gather", "inconclusive", false);
+  assert.equal(top.tasks[0].status, "held");
+  // The dependent was never killed — it is held by the prerequisite, and its
+  // result is kept as the reason, not erased.
+  assert.equal(top.tasks[1].status, "held");
+  assert.equal(top.tasks[1].heldReason, "prerequisite-held:gather");
+  // A controller whose only work is held is NOT closed: the refusal remains
+  // open (engine semantics: open-gaps-remain).
+  assert.equal(top.closed, false);
+  assert.equal(top.halted_by, "open-gaps-remain");
+
+  // Re-entry (REC — reset is the point, witness on return): reopening the
+  // prerequisite returns BOTH tasks to pending, and the controller reopens.
+  reopenHeldTask(top, "gather");
+  assert.equal(top.tasks[0].status, "pending");
+  assert.equal(top.tasks[0].heldReason, undefined);
+  assert.equal(top.tasks[1].status, "pending");
+  assert.equal(top.closed, false);
+  assert.equal(top.halted_by, "operational-closure");
+});
+
+test("a task held by its own review stays held until explicitly reopened", () => {
+  const top = createTaskController([
+    { id: "a", goal: "alpha" },
+    { id: "b", goal: "beta", dependsOn: ["a"] },
+  ]);
+  startTask(top, "a");
+  finishTask(top, "a", "failed", false); // review-held
+  assert.equal(top.tasks[1].status, "held"); // prerequisite-held:a
+  // Reopening b un-holds b and only b — a is held by its own review, not by
+  // anything b can release.
+  reopenHeldTask(top, "b");
+  assert.equal(top.tasks[1].status, "pending");
+  assert.equal(top.tasks[1].heldReason, undefined);
+  assert.equal(top.tasks[0].status, "held");
+  assert.equal(top.tasks[0].heldReason, "review-held");
+  // And a non-held task cannot be reopened.
+  assert.throws(() => reopenHeldTask(top, "b"), /is not held/);
 });
 
 test("descend/ascend land on the declared cells, structurally, never guessed from task text", () => {

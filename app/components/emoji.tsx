@@ -5,7 +5,6 @@ import EmojiPicker, {
 } from "emoji-picker-react";
 
 import { Model } from "../store";
-import { CiteySprite } from "./citey";
 
 export function getEmojiUrl(unified: string, style: EmojiStyle) {
   // Whoever owns this Content Delivery Network (CDN), I am using your CDN to serve emojis
@@ -30,13 +29,34 @@ export function AvatarPicker(props: {
   );
 }
 
+// A model reply's identity is the persona answering, not Citey — Citey
+// isn't a character, it's the templated annotator that edits the reply
+// afterward (see eo-grounding-spans.ts's header comment). It surfaces
+// inline, next to whatever it has something to say about (CiteyNote in
+// chat.tsx), never here.
+function initialsOf(name?: string): string {
+  const words = (name ?? "").trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "AI";
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return (words[0][0] + words[1][0]).toUpperCase();
+}
+
+export function ModelAvatar(props: { name?: string }) {
+  return (
+    <div className="user-avatar model-avatar">
+      <span>{initialsOf(props.name)}</span>
+    </div>
+  );
+}
+
 export function Avatar(props: {
   model?: Model;
   avatar?: string;
   streamedText?: string;
+  name?: string;
 }) {
   if (props.model) {
-    return <CiteySprite text={props.streamedText ?? ""} size={48} />;
+    return <ModelAvatar name={props.name} />;
   }
 
   return (

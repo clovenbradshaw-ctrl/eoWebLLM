@@ -1,40 +1,48 @@
+// A small, flush app-control button — the icon is the whole button until
+// you touch it. No resting background/border/shadow (that's what read as a
+// row of separate cards); hover/active are the only states that show any
+// chrome, and even then it's a soft tint, not a boxed button.
 .icon-button {
-  background-color: var(--white);
+  background-color: transparent;
   border-radius: 7px;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 8px;
+  padding: 6px;
 
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
   overflow: hidden;
   user-select: none;
   outline: none;
   border: none;
   color: var(--black);
+  opacity: 0.62;
 
   &[disabled] {
     cursor: not-allowed;
-    opacity: 0.5;
+    opacity: 0.3;
   }
 
   &.primary {
     background-color: var(--primary);
     color: white;
+    opacity: 1;
 
     path {
       fill: white !important;
+    }
+
+    &:hover {
+      opacity: 0.88;
     }
   }
 
   &.danger {
     color: rgba($color: red, $alpha: 0.8);
-    border-color: rgba($color: red, $alpha: 0.5);
-    background-color: rgba($color: red, $alpha: 0.05);
+    opacity: 1;
 
     &:hover {
-      border-color: red;
       background-color: rgba($color: red, $alpha: 0.1);
     }
 
@@ -43,13 +51,10 @@
     }
   }
 
-  &:hover,
-  &:focus {
-    border-color: var(--primary);
-  }
-
-  &:not(.primary):not(.danger):hover {
+  &:not(.primary):not(.danger):hover,
+  &:not(.primary):not(.danger):focus-visible {
     background-color: var(--hover-color);
+    opacity: 1;
   }
 }
 

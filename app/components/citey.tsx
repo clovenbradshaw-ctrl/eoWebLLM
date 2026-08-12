@@ -243,21 +243,45 @@ function Accessory(props: { kind: Accessory; color: string }) {
   }
 }
 
-// The animated sprite — mounted in the avatar slot for every assistant turn.
-// Re-samples `pickState` every ~700ms rather than on every token, so a shape
-// change reads as a deliberate morph instead of a flicker.
-export function CiteySprite(props: { text: string; size?: number }) {
+// Maps a real grounding verdict (see eo-grounding-spans.ts's GroundingState)
+// onto a shape — "confirmed" reads as a settled, backed claim (entails);
+// "gap" reads as still out canvassing for something that wasn't found
+// (context). Used wherever Citey is showing up because it has something to
+// say about a specific span (CiteyNote in chat.tsx), as opposed to the
+// text-shape heuristic below, which has nothing to do with grounding.
+const GROUNDING_STATE_MAP: Record<"confirmed" | "gap", CiteyStateName> = {
+  confirmed: "entails",
+  gap: "context",
+};
+
+// The animated sprite. When `groundingState` is given, its shape is fixed
+// by the real verdict above. Otherwise it falls back to `pickState`,
+// re-sampled every ~700ms rather than on every token so a shape change
+// reads as a deliberate morph instead of a flicker.
+export function CiteySprite(props: {
+  text?: string;
+  size?: number;
+  groundingState?: "confirmed" | "gap";
+}) {
   const size = props.size ?? 48;
-  const [state, setState] = useState<CiteyStateName>("turnstile");
+  const [state, setState] = useState<CiteyStateName>(
+    props.groundingState
+      ? GROUNDING_STATE_MAP[props.groundingState]
+      : "turnstile",
+  );
   const lastSample = useRef(0);
 
   useEffect(() => {
+    if (props.groundingState) {
+      setState(GROUNDING_STATE_MAP[props.groundingState]);
+      return;
+    }
     const now = Date.now();
     if (now - lastSample.current < 700) return;
     lastSample.current = now;
-    const next = pickState(props.text);
+    const next = pickState(props.text ?? "");
     setState((prev) => (prev === next ? prev : next));
-  }, [props.text]);
+  }, [props.text, props.groundingState]);
 
   const d = CITEY_STATES[state];
   const eyes = d.eyes;
