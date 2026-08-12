@@ -598,6 +598,18 @@ export function significantWords(s: string): Set<string> {
   for (const w of String(s || "")
     .toLowerCase()
     .split(/[^\p{L}\p{N}]+/u)) {
+    if (!w) continue;
+    // A run of digits ("482", "2026") is exactly the literal, checkable
+    // evidence this overlap is meant to surface — a dollar figure or date
+    // the reply quoted verbatim from the source. The >=4-char floor exists
+    // to filter noise out of prose vocabulary; it was silently zeroing out
+    // every short numeric token too (most amounts/years are 2-4 digits),
+    // so a reply that reproduced the source's numbers exactly still scored
+    // zero overlap and got shown as "read, but nothing... drew on it."
+    if (/^\p{N}+$/u.test(w)) {
+      if (w.length >= 2) set.add(w);
+      continue;
+    }
     if (w.length >= 4 && !CLAIM_STOPWORDS.has(w)) set.add(w);
   }
   return set;

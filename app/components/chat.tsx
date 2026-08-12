@@ -108,7 +108,12 @@ import {
 } from "@phosphor-icons/react";
 import { ingestFile } from "../client/eo-source-ingest";
 import { toEOTReader, reReadSource, ledgerStats } from "../client/eo-reading";
-import { persistRawSource, readRawSource } from "../client/eo-corpus";
+import {
+  persistRawSource,
+  readRawSource,
+  retrieveCorpus,
+} from "../client/eo-corpus";
+import type { CorpusPassage } from "../client/eo-corpus";
 import {
   hypergraphSnapshot,
   foldGraphOnEntity,
@@ -1094,57 +1099,48 @@ function CiteyNote(props: {
   );
 }
 
-// The same "follow it home" affordance the web panel gives, for the reader's
-// own sources: each byte range the answer was checked against, and the one
-// clause of it the answer actually drew on.
-function SourceCitationsPanel(props: {
+// The facing-page affordance: instead of a collapsed footnote the reader has
+// to open on faith, the literal bytes each citation was checked against sit
+// beside the model's own words for the whole life of the message — the same
+// "follow it home" idea the web panel gives, just never hidden. `clause` is
+// literal source text (see eo-citation-check.ts's bestClause), never a
+// paraphrase, so this column is the one place in the message that is
+// guaranteed byte-exact.
+function FacingPageSourcePanel(props: {
   citations: { ref: string; clause: string | null }[];
+  onOpenSources: () => void;
 }) {
   const used = props.citations.filter((c) => c.clause);
   return (
-    <details
-      style={{
-        margin: "0 0 10px",
-        padding: "8px 12px",
-        borderRadius: 8,
-        border: "1px solid var(--border-in-light)",
-        background: "var(--gray)",
-        fontSize: "13px",
-      }}
-    >
-      <summary
-        style={{
-          cursor: "pointer",
-          color: "var(--black)",
-          opacity: 0.7,
-          userSelect: "none",
-        }}
-      >
-        {`\u{1F4C4} Your sources — ${props.citations.length} passage${props.citations.length === 1 ? "" : "s"} read, ${used.length} drawn on`}
-      </summary>
-      <div
-        style={{
-          marginTop: 8,
-          display: "flex",
-          flexDirection: "column",
-          gap: 8,
-          opacity: 0.85,
-        }}
-      >
+    <aside className={styles["facing-page-source"]}>
+      <div className={styles["facing-page-source-header"]}>
+        <FileText size={13} />
+        {used.length}/{props.citations.length} passage
+        {props.citations.length === 1 ? "" : "s"} drawn on
+      </div>
+      <div className={styles["facing-page-source-list"]}>
         {props.citations.map((c, i) => (
-          <div key={i}>
-            <div style={{ opacity: 0.7, fontFamily: "monospace" }}>{c.ref}</div>
+          <div key={i} className={styles["facing-page-source-item"]}>
+            <div className={styles["facing-page-source-ref"]}>{c.ref}</div>
             {c.clause ? (
-              <div style={{ marginTop: 2 }}>“{c.clause}”</div>
+              <div className={styles["facing-page-source-clause"]}>
+                “{c.clause}”
+              </div>
             ) : (
-              <div style={{ marginTop: 2, opacity: 0.6 }}>
+              <div className={styles["facing-page-source-unused"]}>
                 read, but nothing in the answer drew on it specifically
               </div>
             )}
           </div>
         ))}
       </div>
-    </details>
+      <button
+        className={styles["facing-page-source-open"]}
+        onClick={props.onOpenSources}
+      >
+        Open source panel
+      </button>
+    </aside>
   );
 }
 
@@ -1486,6 +1482,11 @@ function ChatInner() {
     null,
   );
   const [showEditPromptModal, setShowEditPromptModal] = useState(false);
+  const [sourceSearchQuery, setSourceSearchQuery] = useState("");
+  const [sourceSearchResults, setSourceSearchResults] = useState<
+    CorpusPassage[] | null
+  >(null);
+  const [sourceSearching, setSourceSearching] = useState(false);
   const webllm = useContext(WebLLMContext)!;
   const mlcllm = useContext(MLCLLMContext)!;
 
@@ -1581,7 +1582,18 @@ function ChatInner() {
     // message — it used to just early-return here with nothing visible
     // happening — it's queued instead, and chat.ts's onUserInput sends it
     // automatically once the in-flight turn's isGenerating clears.
-    if (isStreaming || session.isGenerating) {
+    if (
+      isStreaming ||
+      session.isGenerating ||
+      (session.queuedInputs?.length ?? 0) > 0
+    ) {
+      // The third condition covers a turn whose own onFinish/onError threw
+      // before reaching its flushQueuedInput call — isGenerating clears
+      // (webllm.ts's onFinish is now wrapped so that always happens), but
+      // nothing else was ever going to pick the orphaned entry back up.
+      // Joining the back of the line instead of sending straight through
+      // keeps order intact and, via flushQueuedInput below, drains
+      // whatever was stuck.
       chatStore.queueUserInput(userInput, attachImages);
       setAttachImages([]);
       localStorage.setItem(LAST_INPUT_KEY, userInput);
@@ -1589,6 +1601,9 @@ function ChatInner() {
       setPromptHints([]);
       if (!isMobileScreen) inputRef.current?.focus();
       setAutoScroll(true);
+      if (!isStreaming && !session.isGenerating) {
+        chatStore.flushQueuedInput(llm);
+      }
       return;
     }
 
@@ -1599,6 +1614,37 @@ function ChatInner() {
     setPromptHints([]);
     if (!isMobileScreen) inputRef.current?.focus();
     setAutoScroll(true);
+  };
+
+  // "Fancy Control F": the same byte-addressed surf that grounds a chat
+  // turn (retrieveCorpus), run directly against a typed query with no
+  // model call in between — a reader who wants to find a passage, not ask
+  // a question about one, gets the literal bytes back instantly instead of
+  // trusting an LLM to reproduce them.
+  const runSourceSearch = async (query: string) => {
+    const q = query.trim();
+    if (!q) {
+      setSourceSearchResults(null);
+      return;
+    }
+    setSourceSearching(true);
+    try {
+      const passages = await retrieveCorpus(q, session.eoSources ?? []);
+      setSourceSearchResults(passages);
+    } finally {
+      setSourceSearching(false);
+    }
+  };
+
+  // Hands a found passage off to a real turn — quoted and attributed, so
+  // the reader's own question follows it rather than the model having to
+  // relocate the passage itself.
+  const askAboutPassage = (passage: CorpusPassage) => {
+    setShowSources(false);
+    setUserInput(
+      `About this passage from "${passage.source.name}" (bytes ${passage.byteStart}-${passage.byteEnd}):\n\n"${passage.text}"\n\n`,
+    );
+    setTimeout(() => inputRef.current?.focus(), 0);
   };
 
   const onPromptSelect = (prompt: RenderPompt) => {
@@ -1966,10 +2012,13 @@ function ChatInner() {
       }
       const failed = files.length - succeeded;
       if (succeeded > 0) {
+        const dest = sessionProject
+          ? `"${sessionProject.name}" — visible to every chat in this project`
+          : "this chat's source corpus";
         showToast(
           succeeded === 1
-            ? `${lastSucceededName} added to this chat's source corpus`
-            : `${succeeded} file(s) added to this chat's source corpus`,
+            ? `${lastSucceededName} added to ${dest}`
+            : `${succeeded} file(s) added to ${dest}`,
         );
       }
       if (failed > 0) {
@@ -2146,12 +2195,48 @@ function ChatInner() {
               }}
             />
           </div>
-          <div className="window-action-button">
+          <div
+            className="window-action-button"
+            style={{
+              position: "relative",
+              // Room for the badge below to hang off the button's own
+              // corner without bleeding into the next icon — window-actions
+              // only puts 2px between buttons, not enough on its own.
+              marginRight: session.eoSources?.length ? 6 : 0,
+            }}
+          >
             <IconButton
               icon={<Paperclip size={16} />}
-              title="Sources — this chat's local corpus"
+              title={
+                session.eoSources?.length
+                  ? `Sources — ${session.eoSources.length} attached to this chat`
+                  : "Sources — this chat's local corpus"
+              }
               onClick={() => setShowSources((v) => !v)}
             />
+            {!!session.eoSources?.length && (
+              <span
+                style={{
+                  position: "absolute",
+                  top: -3,
+                  right: -3,
+                  minWidth: 13,
+                  height: 13,
+                  padding: "0 3px",
+                  borderRadius: 7,
+                  background: "var(--primary)",
+                  color: "white",
+                  fontSize: 9,
+                  lineHeight: "13px",
+                  textAlign: "center",
+                  pointerEvents: "none",
+                  border: "1.5px solid var(--white)",
+                  boxSizing: "content-box",
+                }}
+              >
+                {session.eoSources.length}
+              </span>
+            )}
           </div>
           <div className="window-action-button">
             <IconButton
@@ -2503,6 +2588,58 @@ function ChatInner() {
           >
             <Paperclip size={14} /> {uploadingFile ? "Adding…" : "Add sources"}
           </button>
+          {!!session.eoSources?.length && (
+            <div className={styles["source-search"]}>
+              <input
+                type="text"
+                placeholder="Search your sources — real text, no model"
+                value={sourceSearchQuery}
+                onChange={(e) => {
+                  setSourceSearchQuery(e.target.value);
+                  if (!e.target.value.trim()) setSourceSearchResults(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") runSourceSearch(sourceSearchQuery);
+                }}
+              />
+              <button
+                onClick={() => runSourceSearch(sourceSearchQuery)}
+                disabled={sourceSearching || !sourceSearchQuery.trim()}
+              >
+                {sourceSearching ? "…" : "Search"}
+              </button>
+            </div>
+          )}
+          {sourceSearchResults && (
+            <div className={styles["source-search-results"]}>
+              {sourceSearchResults.length === 0 ? (
+                <div className={styles["source-empty"]}>
+                  No matches for &quot;{sourceSearchQuery.trim()}&quot; in your
+                  enabled sources.
+                </div>
+              ) : (
+                sourceSearchResults.map((passage, i) => (
+                  <div key={i} className={styles["source-search-result"]}>
+                    <div className={styles["source-search-result-ref"]}>
+                      {passage.source.name}
+                      <span>
+                        #{passage.byteStart}-{passage.byteEnd}
+                      </span>
+                    </div>
+                    <div className={styles["source-search-result-text"]}>
+                      “{passage.text}”
+                    </div>
+                    <button
+                      className={styles["source-search-result-ask"]}
+                      onClick={() => askAboutPassage(passage)}
+                    >
+                      Ask about this
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
           <div className={styles["source-item"]}>
             <label className={styles["source-row"]}>
               <input
@@ -2617,30 +2754,69 @@ function ChatInner() {
                   over its words.
                 </div>
                 <div className={styles["chat-empty-hero-pills"]}>
-                  {[
-                    {
-                      icon: <FileText size={15} />,
-                      text: "Summarize a document",
-                      fill: "Summarize the document I attached.",
-                    },
-                    {
-                      icon: <Scales size={15} />,
-                      text: "Compare two sources",
-                      fill: "Compare what my attached sources say about ",
-                    },
-                    {
-                      icon: <MagnifyingGlass size={15} />,
-                      text: "Check a claim",
-                      fill: "Check this claim against my attached sources: ",
-                    },
-                  ].map((pill) => (
+                  {(() => {
+                    const sourceCount = session.eoSources?.length ?? 0;
+                    const names = (session.eoSources ?? []).map((s) => s.name);
+                    return [
+                      {
+                        icon: <FileText size={15} />,
+                        text: "Summarize a document",
+                        // No source yet: the pill's real job is getting one
+                        // attached, not prefilling a sentence about a file
+                        // that doesn't exist. One source: name it, so the
+                        // reader isn't typing back what they just uploaded.
+                        run: () => {
+                          if (sourceCount === 0) {
+                            uploadFile();
+                            return;
+                          }
+                          setUserInput(
+                            sourceCount === 1
+                              ? `Summarize "${names[0]}".`
+                              : "Summarize the document I attached.",
+                          );
+                          inputRef.current?.focus();
+                        },
+                      },
+                      {
+                        icon: <Scales size={15} />,
+                        text: "Compare two sources",
+                        // Comparing needs a second source to exist — fewer
+                        // than two, the action IS adding one, same as above.
+                        run: () => {
+                          if (sourceCount < 2) {
+                            uploadFile();
+                            return;
+                          }
+                          const [a, b] = names.slice(-2);
+                          setUserInput(
+                            `Compare what "${a}" and "${b}" say about `,
+                          );
+                          inputRef.current?.focus();
+                        },
+                      },
+                      {
+                        icon: <MagnifyingGlass size={15} />,
+                        text: "Check a claim",
+                        // A claim check is a literal search first, a
+                        // question second — open the real search-in-source
+                        // panel (byte-exact, no model) instead of a free
+                        // text field the reader has to describe the claim
+                        // into blind.
+                        run: () => {
+                          if (sourceCount === 0) {
+                            uploadFile();
+                            return;
+                          }
+                          setShowSources(true);
+                        },
+                      },
+                    ];
+                  })().map((pill) => (
                     <div
                       key={pill.text}
                       className={styles["chat-empty-hero-pill"]}
-                      onClick={() => {
-                        setUserInput(pill.fill);
-                        inputRef.current?.focus();
-                      }}
+                      onClick={pill.run}
                     >
                       {pill.icon}
                       {pill.text}
@@ -2838,87 +3014,94 @@ function ChatInner() {
                           {Locale.Chat.Typing}
                         </div>
                       )}
-                      <div className={styles["chat-message-item"]}>
-                        {!isUser && message.viaCalculator ? (
-                          <CalculatorReadout message={message} />
-                        ) : (
-                          (() => {
-                            const fullText = getMessageTextContent(message);
-                            const { thinking, rest, open } = !isUser
-                              ? splitThinking(fullText)
-                              : {
-                                  thinking: null as string | null,
-                                  rest: fullText,
-                                  open: false,
-                                };
-                            // groundingSpans' [start,end) are offsets into the
-                            // FULL text chat.ts ran buildGroundingSpans against
-                            // (fullText above), not `rest` — splitThinking only
-                            // ever removes a PREFIX (the <think> block, plus
-                            // leading whitespace), so `rest` is always an exact
-                            // suffix of fullText, and this length difference is
-                            // the exact shift, with no need to re-derive
-                            // splitThinking's own <think>-close-tag arithmetic.
-                            const spanShift = fullText.length - rest.length;
-                            const shiftedGroundingSpans =
-                              !isUser &&
-                              message.groundingSpans &&
-                              spanShift >= 0
-                                ? message.groundingSpans
-                                    .map((s) => ({
-                                      ...s,
-                                      start: s.start - spanShift,
-                                      end: s.end - spanShift,
-                                    }))
-                                    .filter(
-                                      (s) =>
-                                        s.start >= 0 && s.end <= rest.length,
+                      <div
+                        className={`${styles["chat-message-item"]} ${
+                          !isUser && message.sourceCitations?.length
+                            ? styles["chat-message-item-facing"]
+                            : ""
+                        }`}
+                      >
+                        <div className={styles["message-main"]}>
+                          {!isUser && message.viaCalculator ? (
+                            <CalculatorReadout message={message} />
+                          ) : (
+                            (() => {
+                              const fullText = getMessageTextContent(message);
+                              const { thinking, rest, open } = !isUser
+                                ? splitThinking(fullText)
+                                : {
+                                    thinking: null as string | null,
+                                    rest: fullText,
+                                    open: false,
+                                  };
+                              // groundingSpans' [start,end) are offsets into the
+                              // FULL text chat.ts ran buildGroundingSpans against
+                              // (fullText above), not `rest` — splitThinking only
+                              // ever removes a PREFIX (the <think> block, plus
+                              // leading whitespace), so `rest` is always an exact
+                              // suffix of fullText, and this length difference is
+                              // the exact shift, with no need to re-derive
+                              // splitThinking's own <think>-close-tag arithmetic.
+                              const spanShift = fullText.length - rest.length;
+                              const shiftedGroundingSpans =
+                                !isUser &&
+                                message.groundingSpans &&
+                                spanShift >= 0
+                                  ? message.groundingSpans
+                                      .map((s) => ({
+                                        ...s,
+                                        start: s.start - spanShift,
+                                        end: s.end - spanShift,
+                                      }))
+                                      .filter(
+                                        (s) =>
+                                          s.start >= 0 && s.end <= rest.length,
+                                      )
+                                  : undefined;
+                              const thinkingOpen = open && !!message.streaming;
+                              let thinkingSeconds: number | undefined;
+                              if (thinking) {
+                                const key = String(message.id ?? i);
+                                let rec = thinkingTimesRef.current.get(key);
+                                if (!rec) {
+                                  rec = { start: Date.now() };
+                                  thinkingTimesRef.current.set(key, rec);
+                                }
+                                if (!thinkingOpen && rec.end === undefined) {
+                                  rec.end = Date.now();
+                                }
+                                thinkingSeconds = rec.end
+                                  ? Math.max(
+                                      1,
+                                      Math.round((rec.end - rec.start) / 1000),
                                     )
-                                : undefined;
-                            const thinkingOpen = open && !!message.streaming;
-                            let thinkingSeconds: number | undefined;
-                            if (thinking) {
-                              const key = String(message.id ?? i);
-                              let rec = thinkingTimesRef.current.get(key);
-                              if (!rec) {
-                                rec = { start: Date.now() };
-                                thinkingTimesRef.current.set(key, rec);
+                                  : undefined;
                               }
-                              if (!thinkingOpen && rec.end === undefined) {
-                                rec.end = Date.now();
-                              }
-                              thinkingSeconds = rec.end
-                                ? Math.max(
-                                    1,
-                                    Math.round((rec.end - rec.start) / 1000),
-                                  )
-                                : undefined;
-                            }
-                            return (
-                              <>
-                                {thinking && (
-                                  <ThinkingPanel
-                                    thinking={thinking}
-                                    open={thinkingOpen}
-                                    elapsedSeconds={thinkingSeconds}
-                                  />
-                                )}
-                                {!isUser && message.calculatorVerified && (
-                                  <div
-                                    className={
-                                      styles["calculator-verified-badge"]
-                                    }
-                                    title="The model only read the question into an expression — mathjs computed the value, not the model"
-                                  >
-                                    <Calculator size={12} weight="bold" />
-                                    {
-                                      message.calculatorVerified.expression
-                                    } = {message.calculatorVerified.formatted}{" "}
-                                    verified by calculator, question read by
-                                    model
-                                  </div>
-                                )}
-                                {/* System 2 badge ("⚖ System 2 · responseKind") hidden
+                              return (
+                                <>
+                                  {thinking && (
+                                    <ThinkingPanel
+                                      thinking={thinking}
+                                      open={thinkingOpen}
+                                      elapsedSeconds={thinkingSeconds}
+                                    />
+                                  )}
+                                  {!isUser && message.calculatorVerified && (
+                                    <div
+                                      className={
+                                        styles["calculator-verified-badge"]
+                                      }
+                                      title="The model only read the question into an expression — mathjs computed the value, not the model"
+                                    >
+                                      <Calculator size={12} weight="bold" />
+                                      {
+                                        message.calculatorVerified.expression
+                                      } = {message.calculatorVerified.formatted}{" "}
+                                      verified by calculator, question read by
+                                      model
+                                    </div>
+                                  )}
+                                  {/* System 2 badge ("⚖ System 2 · responseKind") hidden
                                   per feedback, same treatment as the Warrant/Plan
                                   panels below — message.responseKind is still set,
                                   just not surfaced as a line above the reply.
@@ -2936,7 +3119,7 @@ function ChatInner() {
                                 </div>
                               )}
                               */}
-                                {/* Warrant/Plan trace panels hidden per feedback — the
+                                  {/* Warrant/Plan trace panels hidden per feedback — the
                                   per-message "Warrant — System 1..." / "Plan — ..."
                                   lines above the reply. Data is still collected
                                   (message.warrantTrace/planTrace); CiteyNote's
@@ -2952,113 +3135,118 @@ function ChatInner() {
                                 <PlanPanel trace={message.planTrace} />
                               )}
                               */}
-                                {!isUser && message.sourceCitations?.length ? (
-                                  <SourceCitationsPanel
-                                    citations={message.sourceCitations}
+                                  {!isUser &&
+                                    message.webResults !== undefined && (
+                                      <WebSearchPanel
+                                        results={message.webResults}
+                                        query={message.webQuery}
+                                        groundingReport={
+                                          message.groundingReport
+                                        }
+                                        snippets={message.webSnippets}
+                                      />
+                                    )}
+                                  <Markdown
+                                    content={rest}
+                                    loading={
+                                      (message.preview || message.streaming) &&
+                                      message.content.length === 0 &&
+                                      !isUser
+                                    }
+                                    onContextMenu={(e) =>
+                                      onRightClick(e, message)
+                                    }
+                                    onDoubleClickCapture={() => {
+                                      if (!isMobileScreen) return;
+                                      setUserInput(
+                                        getMessageTextContent(message),
+                                      );
+                                    }}
+                                    fontSize={fontSize}
+                                    parentRef={scrollRef}
+                                    defaultShow={i >= messages.length - 6}
+                                    groundingSpans={
+                                      config.groundingDisplayEnabled
+                                        ? shiftedGroundingSpans
+                                        : undefined
+                                    }
+                                    groundingCitations={
+                                      config.groundingDisplayEnabled
+                                        ? message.groundingCitations
+                                        : undefined
+                                    }
+                                    onOpenCitation={(span, citation) =>
+                                      setOpenCitation({
+                                        content: rest,
+                                        spans: shiftedGroundingSpans ?? [],
+                                        citations:
+                                          message.groundingCitations ?? [],
+                                        span,
+                                        citation,
+                                      })
+                                    }
+                                    entityMentionIds={entityMentionIds}
+                                    onEntityClick={(entity) =>
+                                      openTerrainCard({
+                                        kind: "entity",
+                                        params: { entity },
+                                      })
+                                    }
                                   />
-                                ) : null}
-                                {!isUser &&
-                                  message.webResults !== undefined && (
-                                    <WebSearchPanel
-                                      results={message.webResults}
-                                      query={message.webQuery}
-                                      groundingReport={message.groundingReport}
-                                      snippets={message.webSnippets}
-                                    />
-                                  )}
-                                <Markdown
-                                  content={rest}
-                                  loading={
-                                    (message.preview || message.streaming) &&
-                                    message.content.length === 0 &&
-                                    !isUser
-                                  }
-                                  onContextMenu={(e) =>
-                                    onRightClick(e, message)
-                                  }
-                                  onDoubleClickCapture={() => {
-                                    if (!isMobileScreen) return;
-                                    setUserInput(
-                                      getMessageTextContent(message),
-                                    );
-                                  }}
-                                  fontSize={fontSize}
-                                  parentRef={scrollRef}
-                                  defaultShow={i >= messages.length - 6}
-                                  groundingSpans={
-                                    config.groundingDisplayEnabled
-                                      ? shiftedGroundingSpans
-                                      : undefined
-                                  }
-                                  groundingCitations={
-                                    config.groundingDisplayEnabled
-                                      ? message.groundingCitations
-                                      : undefined
-                                  }
-                                  onOpenCitation={(span, citation) =>
-                                    setOpenCitation({
-                                      content: rest,
-                                      spans: shiftedGroundingSpans ?? [],
-                                      citations:
-                                        message.groundingCitations ?? [],
-                                      span,
-                                      citation,
-                                    })
-                                  }
-                                  entityMentionIds={entityMentionIds}
-                                  onEntityClick={(entity) =>
-                                    openTerrainCard({
-                                      kind: "entity",
-                                      params: { entity },
-                                    })
-                                  }
-                                />
-                                {!isUser && config.groundingDisplayEnabled && (
-                                  <CiteyNote
-                                    spans={shiftedGroundingSpans}
-                                    citations={message.groundingCitations}
-                                    warrantPanelId={`warrant-${message.id ?? i}`}
-                                  />
-                                )}
-                              </>
-                            );
-                          })()
-                        )}
-                        {getMessageImages(message).length == 1 && (
-                          <Image
-                            className={styles["chat-message-item-image"]}
-                            src={getMessageImages(message)[0].url}
-                            width={getMessageImages(message)[0].width}
-                            height={getMessageImages(message)[0].height}
-                            alt=""
-                          />
-                        )}
-                        {getMessageImages(message).length > 1 && (
-                          <div
-                            className={styles["chat-message-item-images"]}
-                            style={
-                              {
-                                "--image-count":
-                                  getMessageImages(message).length,
-                              } as React.CSSProperties
-                            }
-                          >
-                            {getMessageImages(message).map((image, index) => {
-                              return (
-                                <Image
-                                  className={
-                                    styles["chat-message-item-image-multi"]
-                                  }
-                                  key={index}
-                                  src={image.url}
-                                  width={image.width}
-                                  height={image.height}
-                                  alt=""
-                                />
+                                  {!isUser &&
+                                    config.groundingDisplayEnabled && (
+                                      <CiteyNote
+                                        spans={shiftedGroundingSpans}
+                                        citations={message.groundingCitations}
+                                        warrantPanelId={`warrant-${message.id ?? i}`}
+                                      />
+                                    )}
+                                </>
                               );
-                            })}
-                          </div>
-                        )}
+                            })()
+                          )}
+                          {getMessageImages(message).length == 1 && (
+                            <Image
+                              className={styles["chat-message-item-image"]}
+                              src={getMessageImages(message)[0].url}
+                              width={getMessageImages(message)[0].width}
+                              height={getMessageImages(message)[0].height}
+                              alt=""
+                            />
+                          )}
+                          {getMessageImages(message).length > 1 && (
+                            <div
+                              className={styles["chat-message-item-images"]}
+                              style={
+                                {
+                                  "--image-count":
+                                    getMessageImages(message).length,
+                                } as React.CSSProperties
+                              }
+                            >
+                              {getMessageImages(message).map((image, index) => {
+                                return (
+                                  <Image
+                                    className={
+                                      styles["chat-message-item-image-multi"]
+                                    }
+                                    key={index}
+                                    src={image.url}
+                                    width={image.width}
+                                    height={image.height}
+                                    alt=""
+                                  />
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                        {!isUser && message.sourceCitations?.length ? (
+                          <FacingPageSourcePanel
+                            citations={message.sourceCitations}
+                            onOpenSources={() => setShowSources(true)}
+                          />
+                        ) : null}
                       </div>
                       {/* Per-message timestamp hidden per feedback — the
                           "System Prompt" context-marker label stays (it's
@@ -3168,7 +3356,7 @@ function ChatInner() {
               {isStreaming ? (
                 <IconButton
                   icon={<StopIcon />}
-                  text={Locale.Chat.InputActions.Stop}
+                  title={Locale.Chat.InputActions.Stop}
                   className={styles["chat-input-send"]}
                   type="primary"
                   onClick={() => onUserStop()}
@@ -3176,7 +3364,7 @@ function ChatInner() {
               ) : (
                 <IconButton
                   icon={<SendWhiteIcon />}
-                  text={Locale.Chat.Send}
+                  title={Locale.Chat.Send}
                   className={styles["chat-input-send"]}
                   type="primary"
                   onClick={() => onSubmit(userInput)}

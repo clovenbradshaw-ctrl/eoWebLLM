@@ -1287,6 +1287,107 @@ input.eot-graph-search {
   transition: all ease 0.3s;
 }
 
+// A reply grounded in the reader's own sources gets the raw bytes it was
+// checked against sitting beside it for as long as the message is on
+// screen — not a collapsed footnote the reader has to open on faith. Only
+// this container widens; a plain reply keeps the normal bubble width.
+.chat-message-item-facing {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+
+  .message-main {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+}
+
+.chat-message-container:has(.chat-message-item-facing) {
+  max-width: min(920px, 100%);
+}
+
+.facing-page-source {
+  flex: 0 0 280px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  border-radius: 8px;
+  border: var(--border-in-light);
+  background: var(--white);
+  font-size: 12px;
+}
+
+.facing-page-source-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  color: var(--black);
+  opacity: 0.75;
+  margin-bottom: 8px;
+}
+
+.facing-page-source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.facing-page-source-item {
+  padding-bottom: 8px;
+  border-bottom: var(--border-in-light);
+
+  &:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+}
+
+.facing-page-source-ref {
+  font-family: monospace;
+  font-size: 10px;
+  color: var(--light-gray);
+  margin-bottom: 3px;
+  word-break: break-all;
+}
+
+.facing-page-source-clause {
+  line-height: 1.5;
+  color: var(--black);
+}
+
+.facing-page-source-unused {
+  line-height: 1.5;
+  color: var(--light-gray);
+  opacity: 0.8;
+}
+
+.facing-page-source-open {
+  margin-top: 10px;
+  padding: 6px 9px;
+  border: var(--border-in-light);
+  border-radius: 6px;
+  background: var(--second);
+  color: var(--black);
+  font-size: 11px;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+@media only screen and (max-width: 768px) {
+  .chat-message-item-facing {
+    flex-direction: column;
+  }
+
+  .facing-page-source {
+    flex-basis: auto;
+    width: 100%;
+  }
+}
+
 .chat-message-item-image {
   width: 100%;
   margin-top: 10px;
@@ -1648,6 +1749,90 @@ input.eot-graph-search {
   display: flex;
   flex-direction: column;
   gap: 7px;
+}
+
+.source-search {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 10px;
+
+  input {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 9px;
+    border: var(--border-in-light);
+    border-radius: 7px;
+    background: var(--white);
+    color: var(--black);
+    font-size: 12px;
+    font-family: inherit;
+  }
+
+  button {
+    flex-shrink: 0;
+    padding: 6px 10px;
+    border: var(--border-in-light);
+    border-radius: 7px;
+    background: var(--second);
+    color: var(--black);
+    font-size: 12px;
+    cursor: pointer;
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+  }
+}
+
+.source-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0 0 12px;
+}
+
+.source-search-result {
+  padding: 8px 9px;
+  border: var(--border-in-light);
+  border-radius: 8px;
+  background: var(--gray);
+}
+
+.source-search-result-ref {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--black);
+
+  span {
+    font-weight: 400;
+    font-family: monospace;
+    color: var(--light-gray);
+  }
+}
+
+.source-search-result-text {
+  margin: 4px 0 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--black);
+  opacity: 0.85;
+}
+
+.source-search-result-ask {
+  padding: 4px 8px;
+  border: none;
+  border-radius: 6px;
+  background: var(--primary);
+  color: white;
+  font-size: 11px;
+  cursor: pointer;
+
+  &:hover {
+    opacity: 0.88;
+  }
 }
 
 // The header's overflow menu — Rename/Share/Export/EOT-log/Project,
