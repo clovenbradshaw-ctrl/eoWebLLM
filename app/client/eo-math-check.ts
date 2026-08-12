@@ -155,6 +155,49 @@ export function computeMath(expression: string, currency: boolean): MathResult {
   }
 }
 
+// ── direct calculator bypass ─────────────────────────────────────────
+//
+// The extract-then-correct pass above still lets the model produce (and,
+// with thinking on, visibly reason through) the arithmetic itself before
+// mathjs's answer overrides it — for a turn that is NOTHING BUT a
+// calculation ("17 * 23", "what's 4*125?") that's pure theater: there is
+// no reading comprehension step for the model to earn its keep on. This
+// is the strict, no-model-call gate for that case: only a bare expression
+// (optionally wrapped in "what is"/"calculate"/etc.) qualifies — anything
+// with an un-stripped word left over falls through to the normal turn.
+const CALC_WRAPPER_RE =
+  /^(?:what(?:'s| is)|calculate|compute|solve|evaluate)\s*[:\-]?\s*/i;
+const CALC_EXPR_ONLY_RE = /^[\d\s+\-*/().,%]+$/;
+
+export interface DirectCalculation extends MathResult {
+  expression: string;
+}
+
+/** No model involved at all, not even the extractor above — a plain regex
+ * strip plus mathjs. Returns null for anything that isn't purely a bare
+ * arithmetic expression once the wrapper phrase and trailing "?" are gone. */
+export function tryDirectCalculation(
+  question: string,
+): DirectCalculation | null {
+  let q = String(question || "").trim();
+  if (!q) return null;
+  q = q
+    .replace(CALC_WRAPPER_RE, "")
+    .replace(/\?+\s*$/, "")
+    .trim();
+  q = q
+    .replace(/×/g, "*")
+    .replace(/÷/g, "/")
+    .replace(/\btimes\b/gi, "*")
+    .replace(/\bplus\b/gi, "+")
+    .replace(/\bminus\b/gi, "-")
+    .replace(/\bdivided by\b/gi, "/");
+  if (!q || !/\d/.test(q) || !CALC_EXPR_ONLY_RE.test(q)) return null;
+  const result = computeMath(q, false);
+  if (!result.ok) return null;
+  return { ...result, expression: q };
+}
+
 // ── system-block directive ──────────────────────────────────────────
 
 /** Handed to the model as a fact, not a task — it states the number, it never computes it. */

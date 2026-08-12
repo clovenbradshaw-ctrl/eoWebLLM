@@ -9,11 +9,11 @@
    body to change shape as different kinds of content go by.
    ============================================================ */
 
-import { useEffect, useRef, useState } from "react";
+import { CSSProperties, useEffect, useRef, useState } from "react";
 import styles from "./citey.module.scss";
 
 export type CiteyStateName = "turnstile" | "entails" | "asserted" | "context";
-type Accessory = "reading-glasses" | "laurel" | "mortarboard" | "cap";
+type Accessory = "laurel" | "mortarboard" | "cap" | "none";
 
 const CITEY_STATES: Record<
   CiteyStateName,
@@ -27,12 +27,13 @@ const CITEY_STATES: Record<
   // ⊢ "entails / follows from" — the default, resting shape. It's the
   // simplest glyph in the set (one stem, one arm) and the most fitting one
   // for a mascot named after citing: it's the logic symbol for "this is
-  // backed by that." Reading glasses fit a citation assistant's baseline.
+  // backed by that." No accessory — bare-faced is the resting look; every
+  // other state adds something on top of it.
   turnstile: {
     glyph: "⊢",
     color: "#7C74DE",
     eyes: ["r1c0", "r1c1"],
-    accessory: "reading-glasses",
+    accessory: "none",
   },
   // ⊨ a strong claim, delivered with total confidence ("always", "never",
   // "must", an exclamation) — dictator energy, so he gets the laurel.
@@ -91,20 +92,8 @@ function Accessory(props: { kind: Accessory; color: string }) {
     strokeLinejoin: "round" as const,
   };
   switch (props.kind) {
-    case "reading-glasses":
-      // Lenses sized/spaced to match where the eye images actually sit
-      // (each eye renders at ~44% of the sprite's width with a 7px gap,
-      // which is wider than it looks from the viewBox alone) — verified
-      // against the real rendered eye positions, not just eyeballed.
-      return (
-        <svg viewBox="0 0 120 32" className={styles["citey-glasses"]}>
-          <g fill="none" {...stroke}>
-            <rect x="2" y="2" width="50" height="26" rx="10" />
-            <rect x="68" y="2" width="50" height="26" rx="10" />
-            <path d="M52 14 Q60 6 68 14" />
-          </g>
-        </svg>
-      );
+    case "none":
+      return null;
     case "laurel": {
       // A Roman laurel crown — two branches of leaves meeting at a center
       // berry. Three bold leaves per side (not five small ones) so the
@@ -254,16 +243,27 @@ const GROUNDING_STATE_MAP: Record<"confirmed" | "gap", CiteyStateName> = {
   gap: "context",
 };
 
+const IDLE_CYCLE_ORDER: CiteyStateName[] = [
+  "turnstile",
+  "asserted",
+  "context",
+  "entails",
+];
+
 // The animated sprite. When `groundingState` is given, its shape is fixed
-// by the real verdict above. Otherwise it falls back to `pickState`,
-// re-sampled every ~700ms rather than on every token so a shape change
-// reads as a deliberate morph instead of a flicker.
+// by the real verdict above. When `text` is given, it falls back to
+// `pickState`, re-sampled every ~700ms rather than on every token so a
+// shape change reads as a deliberate morph instead of a flicker. With
+// neither (a purely decorative use, e.g. the header's Citey toggle) he
+// idles through all four shapes on his own, so the morph — his main bit of
+// character — is visible even when he isn't wired to anything.
 export function CiteySprite(props: {
   text?: string;
   size?: number;
   groundingState?: "confirmed" | "gap";
 }) {
   const size = props.size ?? 48;
+  const idle = !props.groundingState && props.text === undefined;
   const [state, setState] = useState<CiteyStateName>(
     props.groundingState
       ? GROUNDING_STATE_MAP[props.groundingState]
@@ -276,12 +276,23 @@ export function CiteySprite(props: {
       setState(GROUNDING_STATE_MAP[props.groundingState]);
       return;
     }
+    if (idle) {
+      const id = setInterval(() => {
+        setState(
+          (prev) =>
+            IDLE_CYCLE_ORDER[
+              (IDLE_CYCLE_ORDER.indexOf(prev) + 1) % IDLE_CYCLE_ORDER.length
+            ],
+        );
+      }, 2200);
+      return () => clearInterval(id);
+    }
     const now = Date.now();
     if (now - lastSample.current < 700) return;
     lastSample.current = now;
     const next = pickState(props.text ?? "");
     setState((prev) => (prev === next ? prev : next));
-  }, [props.text, props.groundingState]);
+  }, [props.text, props.groundingState, idle]);
 
   const d = CITEY_STATES[state];
   const eyes = d.eyes;
@@ -289,37 +300,44 @@ export function CiteySprite(props: {
   return (
     <div
       className={styles["citey-sprite"]}
-      style={{ width: size, height: size }}
+      style={
+        {
+          width: size,
+          height: size,
+          "--citey-scale": size / 48,
+        } as CSSProperties
+      }
     >
-      <svg
-        viewBox="0 0 150 180"
-        width={size}
-        height={size}
-        className={styles["citey-bob"]}
-        style={{ overflow: "visible" }}
-      >
-        <g className={styles["citey-boil"]}>
-          <path
-            key={state}
-            className={styles["citey-morph"]}
-            d={BODY_PATHS[d.glyph]}
-            fill="none"
-            stroke={d.color}
-            strokeWidth={16}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </g>
-      </svg>
-      <div className={styles["citey-eyes"]}>
-        <div className={styles["citey-blink"]}>
-          <div className={styles["citey-eye-wander"]}>
-            <img src={EYE_BASE + eyes[0] + ".png"} draggable={false} alt="" />
-            <img src={EYE_BASE + eyes[1] + ".png"} draggable={false} alt="" />
+      <div className={styles["citey-bob"]}>
+        <svg
+          viewBox="0 0 150 180"
+          width={size}
+          height={size}
+          style={{ overflow: "visible", display: "block" }}
+        >
+          <g className={styles["citey-boil"]}>
+            <path
+              key={state}
+              className={styles["citey-morph"]}
+              d={BODY_PATHS[d.glyph]}
+              fill="none"
+              stroke={d.color}
+              strokeWidth={16}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </g>
+        </svg>
+        <div className={styles["citey-eyes"]}>
+          <div className={styles["citey-blink"]}>
+            <div className={styles["citey-eye-wander"]}>
+              <img src={EYE_BASE + eyes[0] + ".png"} draggable={false} alt="" />
+              <img src={EYE_BASE + eyes[1] + ".png"} draggable={false} alt="" />
+            </div>
           </div>
         </div>
+        <Accessory kind={d.accessory} color={d.color} />
       </div>
-      <Accessory kind={d.accessory} color={d.color} />
     </div>
   );
 }

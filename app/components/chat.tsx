@@ -103,6 +103,7 @@ import {
   Check,
   ShareNetwork,
   DotsThreeVertical,
+  Calculator,
 } from "@phosphor-icons/react";
 import { ingestFile } from "../client/eo-source-ingest";
 import { toEOTReader, reReadSource, ledgerStats } from "../client/eo-reading";
@@ -753,12 +754,6 @@ export function ChatActions(props: {
         selected={!!session.webSearchEnabled}
       />
       <ChatAction
-        onClick={() => chatStore.toggleGroundingDisplay()}
-        text="Grounding Citations"
-        icon={<Scales size={16} />}
-        selected={session.groundingDisplayEnabled !== false}
-      />
-      <ChatAction
         onClick={props.uploadFile}
         text="Attach File"
         icon={
@@ -824,13 +819,29 @@ function TracePanel(props: {
   label: React.ReactNode;
   running: boolean;
   defaultOpen?: boolean;
+  // Auto-reveal the body the moment `running` goes true (Claude's live
+  // "watch it reason" behavior). Off by default: the panel starts closed
+  // and stays closed until the reader clicks it — every re-render while
+  // streaming would otherwise re-force `open` on a naively controlled
+  // <details>, fighting a reader who'd just clicked to close it. Real
+  // local state + onToggle below is what makes a manual click stick.
+  autoOpen?: boolean;
   children: React.ReactNode;
   id?: string;
 }) {
+  const [open, setOpen] = useState(props.defaultOpen ?? false);
+  const autoOpenedRef = useRef(false);
+  useEffect(() => {
+    if (props.running && props.autoOpen && !autoOpenedRef.current) {
+      autoOpenedRef.current = true;
+      setOpen(true);
+    }
+  }, [props.running, props.autoOpen]);
   return (
     <details
       id={props.id}
-      open={props.defaultOpen ?? props.running}
+      open={open}
+      onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
       className={styles["trace-panel"]}
     >
       <summary className={styles["trace-panel-summary"]}>
@@ -850,13 +861,23 @@ function TracePanel(props: {
   );
 }
 
-// A collapsible reasoning panel, like Claude's extended-thinking display:
-// collapsed by default once the answer has started, auto-expanded while the
-// model is still inside the <think> block so a reader can watch it reason
-// live instead of staring at a spinner.
-function ThinkingPanel(props: { thinking: string; open: boolean }) {
+// A collapsible reasoning panel. Starts closed and stays closed — the
+// reader clicks "Thinking…" to watch it live, same as it stays closed to
+// read it after the fact via "Thought for Ns". It never auto-opens itself
+// (ChatGPT's default, not Claude's live-reveal one — feedback was the
+// raw <think> stream reappearing unprompted read as noise, not signal).
+function ThinkingPanel(props: {
+  thinking: string;
+  open: boolean;
+  elapsedSeconds?: number;
+}) {
+  const label = props.open
+    ? "Thinking…"
+    : props.elapsedSeconds
+      ? `Thought for ${props.elapsedSeconds}s`
+      : "Reasoning";
   return (
-    <TracePanel label="Reasoning" running={props.open} defaultOpen={props.open}>
+    <TracePanel label={label} running={props.open}>
       <div
         style={{
           whiteSpace: "pre-wrap",
@@ -866,6 +887,30 @@ function ThinkingPanel(props: { thinking: string; open: boolean }) {
         {props.thinking.trim()}
       </div>
     </TracePanel>
+  );
+}
+
+// A bare arithmetic question (see eo-math-check.ts's tryDirectCalculation,
+// wired in chat.ts's onUserInput) never reaches the model at all — mathjs
+// answers it directly. Rendered deliberately unlike a normal reply (no
+// Markdown bubble prose, no avatar-adjacent chat styling) so a reader can
+// tell at a glance this number came from a calculator, not a generation.
+function CalculatorReadout(props: { message: ChatMessage }) {
+  return (
+    <div className={styles["calculator-readout"]}>
+      <div
+        className={styles["calculator-readout-badge"]}
+        title="Used calculator, not LLM"
+      >
+        <Calculator size={14} weight="bold" />
+      </div>
+      <div className={styles["calculator-readout-expr"]}>
+        {props.message.calculatorExpression} ={" "}
+        <span className={styles["calculator-readout-value"]}>
+          {getMessageTextContent(props.message)}
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -1404,6 +1449,14 @@ function ChatInner() {
   const [userInput, setUserInput] = useState("");
   const { submitKey, shouldSubmit } = useSubmitHandler();
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Per-message <think>-block timing, for ThinkingPanel's "Thought for Ns"
+  // label (Claude/ChatGPT's pattern) — start is stamped the first render a
+  // message has a thinking block, end the first render it closes. A plain
+  // ref (not state) since freezing the number doesn't need a re-render of
+  // its own; the message's own streaming updates already re-render this.
+  const thinkingTimesRef = useRef<Map<string, { start: number; end?: number }>>(
+    new Map(),
+  );
   const isScrolledToBottom = scrollRef?.current
     ? Math.abs(
         scrollRef.current.scrollHeight -
@@ -1515,7 +1568,20 @@ function ChatInner() {
     // `session.isGenerating` now spans that whole tail, so checking both is
     // what actually keeps a second submit from landing mid-turn and
     // corrupting the in-flight message with an overlapping revision pass.
-    if (isStreaming || session.isGenerating) return;
+    // A turn in flight no longer silently swallows the reader's next
+    // message — it used to just early-return here with nothing visible
+    // happening — it's queued instead, and chat.ts's onUserInput sends it
+    // automatically once the in-flight turn's isGenerating clears.
+    if (isStreaming || session.isGenerating) {
+      chatStore.queueUserInput(userInput, attachImages);
+      setAttachImages([]);
+      localStorage.setItem(LAST_INPUT_KEY, userInput);
+      setUserInput("");
+      setPromptHints([]);
+      if (!isMobileScreen) inputRef.current?.focus();
+      setAutoScroll(true);
+      return;
+    }
 
     chatStore.onUserInput(userInput, llm, attachImages);
     setAttachImages([]);
@@ -2061,6 +2127,21 @@ function ChatInner() {
               icon={<Paperclip size={16} />}
               title="Sources — this chat's local corpus"
               onClick={() => setShowSources((v) => !v)}
+            />
+          </div>
+          <div className="window-action-button">
+            <IconButton
+              icon={<CiteySprite size={18} />}
+              title={
+                config.groundingDisplayEnabled ? "Hide Citey" : "Show Citey"
+              }
+              onClick={() =>
+                config.update(
+                  (config) =>
+                    (config.groundingDisplayEnabled =
+                      !config.groundingDisplayEnabled),
+                )
+              }
             />
           </div>
           {/* Rename/Share/Export/EOT-log/Maximize used to each get their own
@@ -2655,44 +2736,89 @@ function ChatInner() {
                         </div>
                       )}
                       <div className={styles["chat-message-item"]}>
-                        {(() => {
-                          const fullText = getMessageTextContent(message);
-                          const { thinking, rest, open } = !isUser
-                            ? splitThinking(fullText)
-                            : {
-                                thinking: null as string | null,
-                                rest: fullText,
-                                open: false,
-                              };
-                          // groundingSpans' [start,end) are offsets into the
-                          // FULL text chat.ts ran buildGroundingSpans against
-                          // (fullText above), not `rest` — splitThinking only
-                          // ever removes a PREFIX (the <think> block, plus
-                          // leading whitespace), so `rest` is always an exact
-                          // suffix of fullText, and this length difference is
-                          // the exact shift, with no need to re-derive
-                          // splitThinking's own <think>-close-tag arithmetic.
-                          const spanShift = fullText.length - rest.length;
-                          const shiftedGroundingSpans =
-                            !isUser && message.groundingSpans && spanShift >= 0
-                              ? message.groundingSpans
-                                  .map((s) => ({
-                                    ...s,
-                                    start: s.start - spanShift,
-                                    end: s.end - spanShift,
-                                  }))
-                                  .filter(
-                                    (s) => s.start >= 0 && s.end <= rest.length,
+                        {!isUser && message.viaCalculator ? (
+                          <CalculatorReadout message={message} />
+                        ) : (
+                          (() => {
+                            const fullText = getMessageTextContent(message);
+                            const { thinking, rest, open } = !isUser
+                              ? splitThinking(fullText)
+                              : {
+                                  thinking: null as string | null,
+                                  rest: fullText,
+                                  open: false,
+                                };
+                            // groundingSpans' [start,end) are offsets into the
+                            // FULL text chat.ts ran buildGroundingSpans against
+                            // (fullText above), not `rest` — splitThinking only
+                            // ever removes a PREFIX (the <think> block, plus
+                            // leading whitespace), so `rest` is always an exact
+                            // suffix of fullText, and this length difference is
+                            // the exact shift, with no need to re-derive
+                            // splitThinking's own <think>-close-tag arithmetic.
+                            const spanShift = fullText.length - rest.length;
+                            const shiftedGroundingSpans =
+                              !isUser &&
+                              message.groundingSpans &&
+                              spanShift >= 0
+                                ? message.groundingSpans
+                                    .map((s) => ({
+                                      ...s,
+                                      start: s.start - spanShift,
+                                      end: s.end - spanShift,
+                                    }))
+                                    .filter(
+                                      (s) =>
+                                        s.start >= 0 && s.end <= rest.length,
+                                    )
+                                : undefined;
+                            const thinkingOpen = open && !!message.streaming;
+                            let thinkingSeconds: number | undefined;
+                            if (thinking) {
+                              const key = String(message.id ?? i);
+                              let rec = thinkingTimesRef.current.get(key);
+                              if (!rec) {
+                                rec = { start: Date.now() };
+                                thinkingTimesRef.current.set(key, rec);
+                              }
+                              if (!thinkingOpen && rec.end === undefined) {
+                                rec.end = Date.now();
+                              }
+                              thinkingSeconds = rec.end
+                                ? Math.max(
+                                    1,
+                                    Math.round((rec.end - rec.start) / 1000),
                                   )
-                              : undefined;
-                          return (
-                            <>
-                              {thinking && (
-                                <ThinkingPanel
-                                  thinking={thinking}
-                                  open={open && !!message.streaming}
-                                />
-                              )}
+                                : undefined;
+                            }
+                            return (
+                              <>
+                                {thinking && (
+                                  <ThinkingPanel
+                                    thinking={thinking}
+                                    open={thinkingOpen}
+                                    elapsedSeconds={thinkingSeconds}
+                                  />
+                                )}
+                                {!isUser && message.calculatorVerified && (
+                                  <div
+                                    className={
+                                      styles["calculator-verified-badge"]
+                                    }
+                                    title="The model only read the question into an expression — mathjs computed the value, not the model"
+                                  >
+                                    <Calculator size={12} weight="bold" />
+                                    {
+                                      message.calculatorVerified.expression
+                                    } = {message.calculatorVerified.formatted}{" "}
+                                    verified by calculator, question read by
+                                    model
+                                  </div>
+                                )}
+                                {/* System 2 badge ("⚖ System 2 · responseKind") hidden
+                                  per feedback, same treatment as the Warrant/Plan
+                                  panels below — message.responseKind is still set,
+                                  just not surfaced as a line above the reply.
                               {!isUser && message.responseKind && (
                                 <div
                                   style={{
@@ -2706,7 +2832,8 @@ function ChatInner() {
                                   {`\u{2696} System 2 · ${message.responseKind.replace(/-/g, " ")}`}
                                 </div>
                               )}
-                              {/* Warrant/Plan trace panels hidden per feedback — the
+                              */}
+                                {/* Warrant/Plan trace panels hidden per feedback — the
                                   per-message "Warrant — System 1..." / "Plan — ..."
                                   lines above the reply. Data is still collected
                                   (message.warrantTrace/planTrace); CiteyNote's
@@ -2722,71 +2849,78 @@ function ChatInner() {
                                 <PlanPanel trace={message.planTrace} />
                               )}
                               */}
-                              {!isUser && message.sourceCitations?.length ? (
-                                <SourceCitationsPanel
-                                  citations={message.sourceCitations}
+                                {!isUser && message.sourceCitations?.length ? (
+                                  <SourceCitationsPanel
+                                    citations={message.sourceCitations}
+                                  />
+                                ) : null}
+                                {!isUser &&
+                                  message.webResults !== undefined && (
+                                    <WebSearchPanel
+                                      results={message.webResults}
+                                      query={message.webQuery}
+                                      groundingReport={message.groundingReport}
+                                      snippets={message.webSnippets}
+                                    />
+                                  )}
+                                <Markdown
+                                  content={rest}
+                                  loading={
+                                    (message.preview || message.streaming) &&
+                                    message.content.length === 0 &&
+                                    !isUser
+                                  }
+                                  onContextMenu={(e) =>
+                                    onRightClick(e, message)
+                                  }
+                                  onDoubleClickCapture={() => {
+                                    if (!isMobileScreen) return;
+                                    setUserInput(
+                                      getMessageTextContent(message),
+                                    );
+                                  }}
+                                  fontSize={fontSize}
+                                  parentRef={scrollRef}
+                                  defaultShow={i >= messages.length - 6}
+                                  groundingSpans={
+                                    config.groundingDisplayEnabled
+                                      ? shiftedGroundingSpans
+                                      : undefined
+                                  }
+                                  groundingCitations={
+                                    config.groundingDisplayEnabled
+                                      ? message.groundingCitations
+                                      : undefined
+                                  }
+                                  onOpenCitation={(span, citation) =>
+                                    setOpenCitation({
+                                      content: rest,
+                                      spans: shiftedGroundingSpans ?? [],
+                                      citations:
+                                        message.groundingCitations ?? [],
+                                      span,
+                                      citation,
+                                    })
+                                  }
+                                  entityMentionIds={entityMentionIds}
+                                  onEntityClick={(entity) =>
+                                    openTerrainCard({
+                                      kind: "entity",
+                                      params: { entity },
+                                    })
+                                  }
                                 />
-                              ) : null}
-                              {!isUser && message.webResults !== undefined && (
-                                <WebSearchPanel
-                                  results={message.webResults}
-                                  query={message.webQuery}
-                                  groundingReport={message.groundingReport}
-                                  snippets={message.webSnippets}
-                                />
-                              )}
-                              <Markdown
-                                content={rest}
-                                loading={
-                                  (message.preview || message.streaming) &&
-                                  message.content.length === 0 &&
-                                  !isUser
-                                }
-                                onContextMenu={(e) => onRightClick(e, message)}
-                                onDoubleClickCapture={() => {
-                                  if (!isMobileScreen) return;
-                                  setUserInput(getMessageTextContent(message));
-                                }}
-                                fontSize={fontSize}
-                                parentRef={scrollRef}
-                                defaultShow={i >= messages.length - 6}
-                                groundingSpans={
-                                  session.groundingDisplayEnabled === false
-                                    ? undefined
-                                    : shiftedGroundingSpans
-                                }
-                                groundingCitations={
-                                  session.groundingDisplayEnabled === false
-                                    ? undefined
-                                    : message.groundingCitations
-                                }
-                                onOpenCitation={(span, citation) =>
-                                  setOpenCitation({
-                                    content: rest,
-                                    spans: shiftedGroundingSpans ?? [],
-                                    citations: message.groundingCitations ?? [],
-                                    span,
-                                    citation,
-                                  })
-                                }
-                                entityMentionIds={entityMentionIds}
-                                onEntityClick={(entity) =>
-                                  openTerrainCard({
-                                    kind: "entity",
-                                    params: { entity },
-                                  })
-                                }
-                              />
-                              {!isUser && (
-                                <CiteyNote
-                                  spans={shiftedGroundingSpans}
-                                  citations={message.groundingCitations}
-                                  warrantPanelId={`warrant-${message.id ?? i}`}
-                                />
-                              )}
-                            </>
-                          );
-                        })()}
+                                {!isUser && config.groundingDisplayEnabled && (
+                                  <CiteyNote
+                                    spans={shiftedGroundingSpans}
+                                    citations={message.groundingCitations}
+                                    warrantPanelId={`warrant-${message.id ?? i}`}
+                                  />
+                                )}
+                              </>
+                            );
+                          })()
+                        )}
                         {getMessageImages(message).length == 1 && (
                           <Image
                             className={styles["chat-message-item-image"]}
@@ -2844,6 +2978,20 @@ function ChatInner() {
               prompts={promptHints}
               onPromptSelect={onPromptSelect}
             />
+
+            {(session.queuedInputs?.length ?? 0) > 0 && (
+              <div
+                style={{
+                  fontSize: 12,
+                  opacity: 0.6,
+                  padding: "0 10px",
+                }}
+              >
+                {session.queuedInputs!.length === 1
+                  ? "1 message queued — will send once this reply finishes"
+                  : `${session.queuedInputs!.length} messages queued — will send once this reply finishes`}
+              </div>
+            )}
 
             <ChatActions
               uploadFile={uploadFile}

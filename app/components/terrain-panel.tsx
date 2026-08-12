@@ -6,6 +6,7 @@ import CloseIcon from "../icons/close.svg";
 import LeftIcon from "../icons/left.svg";
 import type { ChatSession } from "../store";
 import { useAppConfig, useChatStore } from "../store";
+import { useMobileScreen } from "../utils";
 import {
   DEFAULT_TERRAIN_PANEL_WIDTH,
   MAX_TERRAIN_PANEL_WIDTH,
@@ -42,6 +43,7 @@ import { getMessageTextContent } from "../utils";
 
 function useDragTerrainPanel() {
   const config = useAppConfig();
+  const isMobileScreen = useMobileScreen();
   const startX = useRef(0);
   const startWidth = useRef(
     config.terrainPanelWidth ?? DEFAULT_TERRAIN_PANEL_WIDTH,
@@ -79,7 +81,13 @@ function useDragTerrainPanel() {
 
   return {
     onDragStart,
-    width: limit(config.terrainPanelWidth ?? DEFAULT_TERRAIN_PANEL_WIDTH),
+    // Docked-column dragging assumes room beside the chat column to dock
+    // into; on a narrow viewport there isn't any (the fixed 320-640px
+    // range was observed squeezing chat text down to one word per line).
+    // Same "100vw on mobile" escape hatch sidebar.tsx already uses.
+    width: isMobileScreen
+      ? "100vw"
+      : limit(config.terrainPanelWidth ?? DEFAULT_TERRAIN_PANEL_WIDTH),
   };
 }
 

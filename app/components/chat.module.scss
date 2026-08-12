@@ -1187,6 +1187,53 @@ input.eot-graph-search {
   font-size: 13px;
 }
 
+// Deliberately NOT styled like a chat bubble/Markdown reply — a direct
+// mathjs answer (see chat.tsx's CalculatorReadout) should read as a
+// calculator readout, not as the model talking.
+.calculator-readout {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px dashed var(--border-in-light);
+  background: var(--gray);
+}
+
+.calculator-readout-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.55;
+}
+
+.calculator-readout-expr {
+  font-family: var(--font-mono, monospace);
+  font-size: 16px;
+}
+
+.calculator-readout-value {
+  font-weight: 600;
+}
+
+// Disclosure for the OTHER math path (chat.ts's defineMathSpec pass) — the
+// model DID run, only to read the question into an expression; mathjs
+// still computed the value. Small and inline, not a full readout swap like
+// .calculator-readout above, since the model's own full reply still
+// surrounds it.
+.calculator-verified-badge {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  opacity: 0.55;
+  font-family: var(--font-mono, monospace);
+}
+
 .trace-panel-summary {
   cursor: pointer;
   color: var(--black);

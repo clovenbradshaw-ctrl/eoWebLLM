@@ -81,6 +81,49 @@ const PATTERNS = [
     verb: "email-is",
     re: /\bmy email(?:'s| is)\s+([\w.+-]+@[\w-]+\.[\w.-]+)/i,
   },
+  // Below: the same closed-set, high-value discipline extended to a second
+  // domain this app's own live QA surfaced as sparse — trip/task planning
+  // turns ("my budget is $2000", "I'm traveling with my partner Elena",
+  // "we're going to Lisbon", "I love hiking"). eoreader6's own graph
+  // extraction (eo-hypergraph.ts's admitOnce) is capitalisation-gated and
+  // skips a sentence's own first token as naming evidence
+  // (engine/perceiver/text/surfaces.js) — sound for recurring names across
+  // a long document, but it means a short, one-off chat turn whose only
+  // named thing is a lowercase common noun ("budget") or sits at the start
+  // of the sentence never produces a node at all. These patterns are this
+  // same self-facts channel's existing answer to that gap (a received
+  // prior, not a re-derivation of eoreader6's own proper-noun detector),
+  // just no longer limited to name/location/employer/age/email.
+  {
+    verb: "budget-is",
+    re: /\bmy\s+budget(?:'s| is)\s+(?:about\s+|around\s+)?(\$[\d,]+(?:\.\d+)?|[\d,]+(?:\.\d+)?\s*(?:dollars|usd))/i,
+  },
+  {
+    verb: "traveling-to",
+    // Stops before a trailing time phrase ("next month", "this weekend",
+    // "tomorrow") in addition to CLAUSE_END's own boundaries — otherwise a
+    // destination greedily swallows the temporal clause that follows it
+    // ("going to Lisbon next month" would otherwise capture "Lisbon next
+    // month" as the place name).
+    re: new RegExp(
+      String.raw`\b(?:traveling|travelling|going|headed|heading|flying)\s+to\s+([A-Za-z][\w'.-]*(?:\s+[A-Za-z][\w'.-]*){0,3}?)(?=[.,;!?]|\s+and\b|\s+but\b|\s+i'?m\b|\s+i\s|\s+(?:next|this|tomorrow|tonight|later|soon)\b|$)`,
+      "i",
+    ),
+  },
+  {
+    verb: "traveling-with",
+    re: new RegExp(
+      String.raw`\b(?:traveling|travelling|going)\s+with\s+(?:my\s+)?(?:partner|friend|wife|husband|girlfriend|boyfriend|colleague|sister|brother|family|kids|son|daughter)?\s*([A-Za-z][\w'-]*(?:\s+[A-Za-z][\w'-]*){0,2}?)${CLAUSE_END}`,
+      "i",
+    ),
+  },
+  {
+    verb: "prefers",
+    re: new RegExp(
+      String.raw`\bi\s+(?:like|love|enjoy|prefer)\s+([a-zA-Z][\w'-]*(?:\s+[a-zA-Z][\w'-]*){0,3}?)${CLAUSE_END}`,
+      "i",
+    ),
+  },
 ];
 
 // A trailing function word swept in by a greedy-ish match ("frank," / "frank
@@ -155,6 +198,10 @@ const VERB_LABEL = {
   "works-at": "works at",
   "age-is": "age",
   "email-is": "email",
+  "budget-is": "budget",
+  "traveling-to": "traveling to",
+  "traveling-with": "traveling with",
+  prefers: "prefers",
 };
 
 /**

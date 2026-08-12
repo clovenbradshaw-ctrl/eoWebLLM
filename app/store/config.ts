@@ -77,6 +77,12 @@ export type ConfigType = {
   cacheType: CacheType;
   logLevel: LogLevel;
   enableThinking: boolean;
+  // Global DISPLAY-ONLY toggle for Citey's inline grounding chips/citation
+  // badges (see chat.ts's per-session groundingDisplayEnabled, which this
+  // replaced — it's an app-wide preference, not a per-chat one, same as
+  // enableThinking above). checkGrounding/System 2 escalation are never
+  // touched by this flag; it only suppresses what a reader sees.
+  groundingDisplayEnabled: boolean;
   modelConfig: ModelConfig;
 };
 
@@ -127,6 +133,13 @@ export const DEFAULT_CONFIG: ConfigType = {
   cacheType: CacheType.Cache,
   logLevel: "INFO",
   enableThinking: false,
+  // Default OFF: every claim underlined and chipped on a brand new chat
+  // reads as overwhelming at first look. The toggle (Settings, or the
+  // "Hide Citey"/"Show Citey" input-toolbar action) is right there for a
+  // reader who wants it on — this only changes what a reader sees by
+  // default, never checkGrounding/System 2 itself (see this field's own
+  // comment above).
+  groundingDisplayEnabled: false,
 
   modelConfig: DEFAULT_MODEL_CONFIG,
 };

@@ -28,6 +28,32 @@ import {
 } from "./terrain/entity-mention";
 import { EntityMentionChip } from "./terrain/entity-mention-chip";
 import type { OnOpenCitation } from "./terrain/types";
+import { visit } from "unist-util-visit";
+import type { Root, Text } from "mdast";
+
+// A grounding/entity sentinel pair split across two mdast text nodes by
+// markdown syntax inside it (e.g. bold/list markers) is documented in both
+// grounding-chip.tsx and entity-mention.tsx as staying "inert plain text,
+// never a crash" — but the sentinel characters are Private Use Area
+// codepoints (-), invisible in the source font, so "inert plain
+// text" actually rendered as visible tofu/replacement-box glyphs bleeding
+// into the reader's message (observed on money-range text like
+// "$1,950-$600"). remarkGroundingChips/remarkEntityMentions already consume
+// every FULLY matched pair before this runs; anything left is by
+// construction an orphaned half of a split pair, safe to drop outright
+// rather than show as garbage.
+const STRAY_SENTINEL_RE = /[-]/g;
+
+function remarkStripStraySentinels() {
+  return (tree: Root) => {
+    visit(tree, "text", (node: Text) => {
+      if (STRAY_SENTINEL_RE.test(node.value)) {
+        STRAY_SENTINEL_RE.lastIndex = 0;
+        node.value = node.value.replace(STRAY_SENTINEL_RE, "");
+      }
+    });
+  };
+}
 
 export function Mermaid(props: { code: string }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -114,12 +140,32 @@ export const PreCode = (props: { children: any }) => {
   );
 };
 
+// A grounding/entity sentinel pair (see remarkStripStraySentinels above)
+// wrapped around the digits right after a "$" — e.g. a dollar figure that's
+// also a recognized entity mention — puts an invisible PUA open-marker
+// between the "$" and its digit, so the naive text[i+1] check below never
+// sees the digit and leaves the "$" unescaped, which KaTeX then tries to
+// parse as inline math (observed: "ParseError" garbage on money ranges like
+// "$1,950-$600" where one side got entity-wrapped). Skip past a run of
+// sentinel-open + index-digits + sentinel-sep before checking for a digit.
+const SENTINEL_OPENERS = ["", ""];
+const SENTINEL_SEPS = ["", ""];
+
+function skipSentinelWrapper(text: string, i: number): number {
+  if (!SENTINEL_OPENERS.includes(text[i])) return i;
+  let j = i + 1;
+  while (j < text.length && text[j] >= "0" && text[j] <= "9") j += 1;
+  if (j < text.length && SENTINEL_SEPS.includes(text[j])) return j + 1;
+  return i;
+}
+
 function escapeDollarNumber(text: string) {
   let escapedText = "";
 
   for (let i = 0; i < text.length; i += 1) {
     let char = text[i];
-    const nextChar = text[i + 1] || " ";
+    const nextIndex = skipSentinelWrapper(text, i + 1);
+    const nextChar = text[nextIndex] || " ";
 
     if (char === "$" && nextChar >= "0" && nextChar <= "9") {
       char = "\\$";
@@ -194,6 +240,7 @@ function MarkDownContent(props: {
         RemarkBreaks,
         remarkGroundingChips,
         remarkEntityMentions,
+        remarkStripStraySentinels,
       ] as PluggableList,
     [],
   );

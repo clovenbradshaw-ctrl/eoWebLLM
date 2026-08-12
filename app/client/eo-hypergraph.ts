@@ -717,9 +717,25 @@ export function ensureHypergraphHydrated(
     const m = admitOnce(w, `source:${s.id}`, s.text);
     if (m) movements.push(m);
   }
+  // Mirrors admitHypergraphTurn's own reasoning below: eoreader6's
+  // proper-noun relation extractor (packages/engine/perceiver/text/
+  // surfaces.js) skips a sentence's first token and requires capitalised
+  // multi-word surfaces — sound for narrative documents, but it routinely
+  // finds nothing in ordinary short chat turns ("My name is Marcus",
+  // "Priya's date conflict"). admitHypergraphTurn compensates for the
+  // LIVE turn by also running extractSelfFacts/admitSelfFacts; this bulk
+  // backfill path used to skip that compensation entirely, so a session
+  // hydrated from history (every turn already in session.messages when a
+  // chat is opened or re-loaded, not just the one being typed right now)
+  // fell back to eoreader6's raw admission alone and silently produced a
+  // graph with (near) zero nodes/edges for conversations full of exactly
+  // the self-stated facts this feature exists to capture. Every historical
+  // turn now gets the same self-facts pass the live turn always got.
   for (const t of turns) {
     const m = admitOnce(w, `turn:${t.id}`, t.content);
     if (m) movements.push(m);
+    const facts = extractSelfFacts(t.content);
+    if (facts.length) admitSelfFacts(chatSessionId, facts);
   }
   return movements;
 }
@@ -838,7 +854,7 @@ const THOUGHT_SYSTEM_PROMPT = `You are a background note-writer for a chat assis
 
 Write ONE OR TWO PLAIN SENTENCES of background orientation the assistant might find useful — never a list, never a citation, never a quotation. If nothing here actually helps answer the question, reply with exactly: NONE.`;
 
-function buildThoughtUserPrompt(
+export function buildThoughtUserPrompt(
   nav: HypergraphNavigation,
   question: string,
 ): string {

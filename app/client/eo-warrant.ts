@@ -547,7 +547,7 @@ export interface TurnRoute {
   /** True when this route was reached with no model call. */
   mechanical: boolean;
   /** Where in the turn the route was decided. */
-  stage: "pre-answer" | "draft-review" | "response-set" | "probe";
+  stage: "pre-answer" | "draft-review" | "response-set" | "probe" | "define";
 }
 
 function route(
