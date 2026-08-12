@@ -3537,7 +3537,8 @@ export const useChatStore = createPersistStore(
               onError(err) {
                 // Aborted by a real turn, or the engine failed the warmup —
                 // either way the half-streamed warmup must not linger in the
-                // transcript; BOT_HELLO's render-time injection covers the gap.
+                // transcript. No placeholder covers the gap; the session
+                // just opens with an empty transcript.
                 get().updateCurrentSession((s) => {
                   s.messages = s.messages.filter((m) => m.id !== greeting.id);
                 });

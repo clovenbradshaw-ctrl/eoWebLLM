@@ -36,7 +36,6 @@ import {
   ChatMessage,
   SubmitKey,
   useChatStore,
-  BOT_HELLO,
   createMessage,
   useAppConfig,
   DEFAULT_TOPIC,
@@ -1689,14 +1688,9 @@ function ChatInner() {
     return session.template.hideContext ? [] : session.template.context.slice();
   }, [session.template.context, session.template.hideContext]);
 
-  if (context.length === 0 && session.messages.length === 0) {
-    // Brand-new session with nothing real in the transcript yet — show the
-    // static hello as a placeholder. The moment the model's own startup
-    // greeting streams in (runStartupGreeting), or the reader sends the first
-    // message, the placeholder is replaced by real content.
-    const copiedHello = Object.assign({}, BOT_HELLO);
-    context.push(copiedHello);
-  }
+  // No static hello placeholder here: the greeting only appears once the
+  // model has loaded and runStartupGreeting actually asks it to say hello,
+  // streaming that real message into session.messages.
 
   // preview messages
   const renderMessages = useMemo(() => {
