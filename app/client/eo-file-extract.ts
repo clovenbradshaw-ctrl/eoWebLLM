@@ -754,7 +754,7 @@ const KIND_LABEL: Record<string, string> = {
   binary: "File",
 };
 
-function extOf(name: string): string {
+export function extOf(name: string): string {
   const base = String(name || "")
     .replace(/^.*[/\\]/, "")
     .toLowerCase();

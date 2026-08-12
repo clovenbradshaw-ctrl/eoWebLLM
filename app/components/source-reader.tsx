@@ -6,6 +6,8 @@ import { toEOTReader } from "../client/eo-reading";
 import { MODIFIER_SCOPE_CURRENT_LENS } from "../client/eo-binary/modifier-order-lens.js";
 import { readDocument } from "../client/eo-binary/reading.js";
 import { isGap } from "../client/eo-binary/nul.js";
+import { kindOf, extOf } from "../client/eo-file-extract";
+import { Markdown } from "./markdown";
 
 // source-reader.tsx — the Fold/Events/Raw reader for one EoSource, factored
 // out of chat.tsx's per-session source panel so the project document
@@ -199,6 +201,37 @@ export function SourceReaderTrigger(props: { state: SourceReaderState }) {
   );
 }
 
+// The Raw tab used to dump every text source through one flat <pre>,
+// whatever it was. Markdown source reads better rendered as markdown, and
+// code reads better syntax-highlighted -- both for free by handing the text
+// to the same Markdown component chat messages already use (markdown.tsx),
+// fencing code in its own language so rehype-highlight picks it up. Data/
+// text/anything else (json, csv, logs, ...) stays a plain <pre>: fencing it
+// as a "language" rehype-highlight doesn't know is no improvement, and
+// running arbitrary source text through the markdown parser risks it being
+// misread as markdown syntax.
+const MARKDOWN_EXTS = new Set(["md", "markdown", "mdx"]);
+
+function RawTextView(props: { name: string; mimeType: string; text: string }) {
+  const { kind } = kindOf(props.name, props.mimeType);
+  const ext = extOf(props.name);
+  if (kind === "text" && MARKDOWN_EXTS.has(ext)) {
+    return (
+      <div className={styles["source-reading-body"]}>
+        <Markdown content={props.text} />
+      </div>
+    );
+  }
+  if (kind === "code") {
+    return (
+      <div className={styles["source-reading-body"]}>
+        <Markdown content={"```" + ext + "\n" + props.text + "\n```"} />
+      </div>
+    );
+  }
+  return <pre className={styles["source-reading-body"]}>{props.text}</pre>;
+}
+
 /** The Fold/Events/Raw tabbed body -- rendered only while expanded. */
 export function SourceReaderPanel(props: {
   source: EoSource;
@@ -270,7 +303,11 @@ export function SourceReaderPanel(props: {
             />
           </div>
         ) : (
-          <pre className={styles["source-reading-body"]}>{state.raw.text}</pre>
+          <RawTextView
+            name={source.name}
+            mimeType={source.mimeType}
+            text={state.raw.text}
+          />
         )
       ) : state.ledgerLoading ? (
         <div className={styles["source-reading-body"]}>Loading ledger…</div>
