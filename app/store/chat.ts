@@ -338,6 +338,15 @@ export interface ChatSession {
   // per-conversation webSearch toggle.
   webSearchEnabled?: boolean;
 
+  // DISPLAY-ONLY toggle, deliberately not a computation toggle: checkGrounding
+  // and the System 2 escalation it can trigger (chat.ts's onUserInput) run
+  // UNCHANGED either way — answer safety/quality never depends on this.
+  // false only suppresses the inline "Citey: ..." chip (grounding-chip.tsx)
+  // and citation badges a reader sees, for a reader who finds the per-claim
+  // annotations distracting. Undefined/true (the default) preserves the
+  // exact behavior this app had before the toggle existed.
+  groundingDisplayEnabled?: boolean;
+
   // set by an uploaded file (see app/client/eo-binary-structure.ts); consumed
   // and cleared by the next onUserInput call, same one-shot handoff pattern
   // as the instruction gate's per-turn system block.
@@ -1618,6 +1627,16 @@ export const useChatStore = createPersistStore(
       toggleWebSearch() {
         get().updateCurrentSession((session) => {
           session.webSearchEnabled = !session.webSearchEnabled;
+        });
+      },
+
+      // See groundingDisplayEnabled's own comment: this flips a DISPLAY
+      // flag only. checkGrounding/System 2 escalation are never touched by
+      // this action or by reading this flag anywhere else in the store.
+      toggleGroundingDisplay() {
+        get().updateCurrentSession((session) => {
+          session.groundingDisplayEnabled =
+            session.groundingDisplayEnabled === false ? true : false;
         });
       },
 

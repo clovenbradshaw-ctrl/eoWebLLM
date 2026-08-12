@@ -754,6 +754,12 @@ export function ChatActions(props: {
         selected={!!session.webSearchEnabled}
       />
       <ChatAction
+        onClick={() => chatStore.toggleGroundingDisplay()}
+        text="Grounding Citations"
+        icon={<Scales size={16} />}
+        selected={session.groundingDisplayEnabled !== false}
+      />
+      <ChatAction
         onClick={props.uploadFile}
         text="Attach File"
         icon={
@@ -2734,8 +2740,16 @@ function ChatInner() {
                                 fontSize={fontSize}
                                 parentRef={scrollRef}
                                 defaultShow={i >= messages.length - 6}
-                                groundingSpans={shiftedGroundingSpans}
-                                groundingCitations={message.groundingCitations}
+                                groundingSpans={
+                                  session.groundingDisplayEnabled === false
+                                    ? undefined
+                                    : shiftedGroundingSpans
+                                }
+                                groundingCitations={
+                                  session.groundingDisplayEnabled === false
+                                    ? undefined
+                                    : message.groundingCitations
+                                }
                                 onOpenCitation={(span, citation) =>
                                   setOpenCitation({
                                     content: rest,
