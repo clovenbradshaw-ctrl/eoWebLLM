@@ -25,6 +25,7 @@ import {
   SourceReaderTrigger,
   SourceReaderPanel,
 } from "./source-reader";
+import { SourceReadAloudButton } from "./read-aloud";
 
 // The project-wide take on chat.tsx's per-session source panel: instead of
 // one session's own eoSources, this shows projectSources() -- the union of
@@ -180,6 +181,10 @@ function DocumentRow(props: { source: EoSource }) {
           </small>
         </span>
         <SourceReaderTrigger state={reader} />
+        <SourceReadAloudButton
+          source={source}
+          className={docStyles["document-row-speak"]}
+        />
       </label>
       <SourceReaderPanel source={source} state={reader} />
     </div>

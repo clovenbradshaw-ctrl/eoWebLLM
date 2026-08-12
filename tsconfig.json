@@ -1,8 +1,16 @@
 {
   "compilerOptions": {
     "target": "ES2015",
-    "types": ["@serwist/next/typings", "@webgpu/types"],
-    "lib": ["dom", "dom.iterable", "esnext", "webworker"],
+    "types": [
+      "@serwist/next/typings",
+      "@webgpu/types"
+    ],
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext",
+      "webworker"
+    ],
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
@@ -21,7 +29,9 @@
       }
     ],
     "paths": {
-      "@/*": ["./*"]
+      "@/*": [
+        "./*"
+      ]
     }
   },
   "include": [
@@ -29,7 +39,10 @@
     "**/*.ts",
     "**/*.tsx",
     ".next/types/**/*.ts",
-    "app/calcTextareaHeight.ts"
+    "app/calcTextareaHeight.ts",
+    ".next-crispr-test/types/**/*.ts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules"
+  ]
 }

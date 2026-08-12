@@ -98,3 +98,32 @@
 
   small { color: var(--light-gray); font-size: 10px; line-height: 1.35; }
 }
+
+.document-row-speak {
+  flex-shrink: 0;
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+  padding: 3px 7px;
+  border: var(--border-in-light);
+  border-radius: 6px;
+  background: var(--white);
+  color: var(--black);
+  font-size: 10px;
+  cursor: pointer;
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
+  &:hover {
+    background: var(--second);
+  }
+
+  svg {
+    flex-shrink: 0;
+  }
+}

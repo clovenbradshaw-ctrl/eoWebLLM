@@ -99,7 +99,7 @@ export const metadata: Metadata = {
 
 const cspHeader = `
     default-src 'self';
-    script-src 'self' 'unsafe-eval' 'unsafe-inline';
+    script-src 'self' 'unsafe-eval' 'unsafe-inline' https://esm.sh;
     worker-src 'self';
     connect-src 'self' blob: data: https: http:;
     style-src 'self' 'unsafe-inline';

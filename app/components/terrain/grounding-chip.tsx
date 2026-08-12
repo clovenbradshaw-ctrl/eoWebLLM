@@ -3,7 +3,6 @@ import type { Root, Text } from "mdast";
 
 import type { GroundingSpan } from "../../client/eo-grounding-spans";
 import type { CitationEntry } from "../../client/eo-citation-check";
-import type { OnNavigate } from "./types";
 
 // Renders eo-grounding-spans.ts's already-computed, already-resolved
 // GroundingSpan[] (sourced/owned/checking/contradicted, per message) as
@@ -139,6 +138,8 @@ export function chipReasonText(
       );
     case "sourced":
       return citation?.text ?? "Backed by material gathered this turn.";
+    case "echoed":
+      return "Echoes wording from a source without every word matching verbatim.";
     case "checking":
       return "Not checked against anything yet.";
     default:
@@ -151,57 +152,105 @@ export function GroundingChip(props: {
   children?: React.ReactNode;
   spans: GroundingSpan[];
   citations?: CitationEntry[];
-  onNavigate?: OnNavigate;
+  /** Numbering built by buildCitationNumbering, keyed by citation index —
+   *  renders a footnote-style [n] after a chip whose citation has one. */
+  citationNumbers?: Map<number, number>;
+  /** Opens the citation modal (verbatim snip + mechanical check) for a
+   *  sourced/echoed span with a resolvable citation. Field navigation for a
+   *  corpus-backed citation is offered inside the modal itself (via
+   *  corpusFieldTarget) rather than as a second, competing click target. */
+  onOpenCitation?: (span: GroundingSpan, citation: CitationEntry) => void;
 }) {
   const idx = Number(props["data-span-index"]);
   const span = Number.isFinite(idx) ? props.spans[idx] : undefined;
   if (!span) return <>{props.children}</>;
 
-  const citation =
-    span.state === "sourced" && span.supportingCitationIndexes.length
-      ? props.citations?.find(
-          (c) => c.index === span.supportingCitationIndexes[0],
-        )
-      : undefined;
-  // Only a corpus ref ("sourceName#byteStart-byteEnd") resolves to a Field
-  // card — a web citation's source_id is a URL, which Field (byte-addressed
-  // OPFS reads) can't open. Clickable exactly when there's somewhere real
-  // for the click to land.
-  const corpusMatch = citation?.source_id.match(/^(.*)#(\d+)-(\d+)$/);
-  const clickable =
-    span.state === "sourced" && !!corpusMatch && !!props.onNavigate;
+  const hasCitationLink =
+    (span.state === "sourced" || span.state === "echoed") &&
+    span.supportingCitationIndexes.length > 0;
+  const citation = hasCitationLink
+    ? props.citations?.find(
+        (c) => c.index === span.supportingCitationIndexes[0],
+      )
+    : undefined;
+  // A corpus ref ("sourceName#byteStart-byteEnd") used to be the only thing
+  // that made a chip clickable, jumping straight to the Field card — a web
+  // citation's source_id is a URL, which Field (byte-addressed OPFS reads)
+  // can't open. The citation modal has no such restriction, so it's the
+  // primary click target whenever a citation is resolvable; Field
+  // navigation (via corpusFieldTarget) is offered inside the modal as a
+  // secondary action instead of competing with it for the same click.
+  const clickable = !!citation && !!props.onOpenCitation;
 
   const stateClass =
     span.state === "contradicted"
       ? "eo-chip-contradicted"
       : span.state === "sourced"
         ? "eo-chip-sourced"
-        : span.state === "checking"
-          ? "eo-chip-checking"
-          : "eo-chip-owned";
+        : span.state === "echoed"
+          ? "eo-chip-echoed"
+          : span.state === "checking"
+            ? "eo-chip-checking"
+            : "eo-chip-owned";
 
   const title = chipReasonText(span, citation);
+  const citationNumber = citation
+    ? props.citationNumbers?.get(citation.index)
+    : undefined;
 
   return (
     <span
       className={`eo-chip ${stateClass}${clickable ? " eo-chip-clickable" : ""}`}
       title={title}
       onClick={
-        clickable
-          ? () =>
-              props.onNavigate!({
-                kind: "field",
-                params: {
-                  sourceName: corpusMatch![1],
-                  byteStart: corpusMatch![2],
-                  byteEnd: corpusMatch![3],
-                },
-              })
-          : undefined
+        clickable ? () => props.onOpenCitation!(span, citation!) : undefined
       }
     >
       {props.children}
-      {span.state === "owned" && <span className="eo-chip-owned-tag">gap</span>}
+      {citationNumber !== undefined && (
+        <sup className="eo-chip-cite-number">[{citationNumber}]</sup>
+      )}
     </span>
   );
+}
+
+/** Numbers each distinct citation in document order of first appearance
+ *  across a message's spans — footnote-style, matching the citation-modal
+ *  wiring. A span without a resolvable citation gets no number. Shared
+ *  between the chip's own render and anything else that needs to say
+ *  "citation [n] is the one attached to source X" (e.g. a "sources used"
+ *  summary), the same "one function, two call sites" pattern chipReasonText
+ *  already establishes. */
+export function buildCitationNumbering(
+  spans: GroundingSpan[],
+  citations: CitationEntry[] | undefined,
+): Map<number, number> {
+  const numbering = new Map<number, number>();
+  if (!citations?.length) return numbering;
+  const ordered = [...spans]
+    .filter(
+      (s) =>
+        (s.state === "sourced" || s.state === "echoed") &&
+        s.supportingCitationIndexes.length > 0,
+    )
+    .sort((a, b) => a.start - b.start);
+  for (const span of ordered) {
+    const citationIndex = span.supportingCitationIndexes[0];
+    if (!citations.some((c) => c.index === citationIndex)) continue;
+    if (!numbering.has(citationIndex)) {
+      numbering.set(citationIndex, numbering.size + 1);
+    }
+  }
+  return numbering;
+}
+
+/** The corpus field-card target for a citation, if it has one — split out
+ *  of the click handler so the citation modal can offer the same "open in
+ *  Field" secondary action GroundingChip used to perform directly. */
+export function corpusFieldTarget(
+  citation: CitationEntry | undefined,
+): { sourceName: string; byteStart: string; byteEnd: string } | null {
+  const m = citation?.source_id.match(/^(.*)#(\d+)-(\d+)$/);
+  if (!m) return null;
+  return { sourceName: m[1], byteStart: m[2], byteEnd: m[3] };
 }

@@ -20,8 +20,14 @@ import {
   wrapGroundingSpans,
   remarkGroundingChips,
   GroundingChip,
+  buildCitationNumbering,
 } from "./terrain/grounding-chip";
-import type { OnNavigate } from "./terrain/types";
+import {
+  wrapEntityMentions,
+  remarkEntityMentions,
+} from "./terrain/entity-mention";
+import { EntityMentionChip } from "./terrain/entity-mention-chip";
+import type { OnOpenCitation } from "./terrain/types";
 
 export function Mermaid(props: { code: string }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -147,21 +153,38 @@ function MarkDownContent(props: {
   content: string;
   groundingSpans?: GroundingSpan[];
   groundingCitations?: CitationEntry[];
-  onNavigateTerrain?: OnNavigate;
+  onOpenCitation?: OnOpenCitation;
+  entityMentionIds?: string[];
+  onEntityClick?: (entity: string) => void;
 }) {
+  const citationNumbers = useMemo(
+    () =>
+      buildCitationNumbering(
+        props.groundingSpans ?? [],
+        props.groundingCitations,
+      ),
+    [props.groundingSpans, props.groundingCitations],
+  );
+
   const escapedContent = useMemo(() => {
     // Sentinel-wrap FIRST, against the raw content the spans' own [start,end)
     // offsets were computed against in chat.ts — then escape. escapeDollarNumber
     // /escapeBrackets are insertion-only and only touch `$<digit>`/`\[...\]`/
     // `\(...\)` patterns, which the sentinel markers don't produce, so this
     // ordering needs no offset translation between raw and escaped coordinates.
+    // Entity mentions wrap AFTER grounding spans and against that output, so
+    // a mention inside a grounding chip is skipped by construction
+    // (entity-mention.tsx) rather than nested.
     return escapeBrackets(
       escapeDollarNumber(
-        wrapGroundingSpans(props.content, props.groundingSpans),
+        wrapEntityMentions(
+          wrapGroundingSpans(props.content, props.groundingSpans),
+          props.entityMentionIds,
+        ),
       ),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.content, props.groundingSpans]);
+  }, [props.content, props.groundingSpans, props.entityMentionIds]);
 
   const remarkPlugins = useMemo(
     () =>
@@ -170,6 +193,7 @@ function MarkDownContent(props: {
         RemarkGfm,
         RemarkBreaks,
         remarkGroundingChips,
+        remarkEntityMentions,
       ] as PluggableList,
     [],
   );
@@ -207,10 +231,26 @@ function MarkDownContent(props: {
                 {...chipProps}
                 spans={props.groundingSpans}
                 citations={props.groundingCitations}
-                onNavigate={props.onNavigateTerrain}
+                citationNumbers={citationNumbers}
+                onOpenCitation={props.onOpenCitation}
               />
             ) : (
               <>{chipProps.children}</>
+            ),
+          // Same escape hatch, for remarkEntityMentions's synthetic
+          // "eo-entity" elements (entity mentions in message text → the
+          // Terrain Entity card). Renders inert when the call site passed
+          // neither an entity list nor a click handler (exporter previews
+          // etc. — navigation is a live-chat affordance only).
+          "eo-entity": (entityProps: any) =>
+            props.onEntityClick && props.entityMentionIds?.length ? (
+              <EntityMentionChip
+                {...entityProps}
+                entities={props.entityMentionIds}
+                onEntityClick={props.onEntityClick}
+              />
+            ) : (
+              <>{entityProps.children}</>
             ),
         } as any
       }
@@ -231,7 +271,9 @@ export function Markdown(
     defaultShow?: boolean;
     groundingSpans?: GroundingSpan[];
     groundingCitations?: CitationEntry[];
-    onNavigateTerrain?: OnNavigate;
+    onOpenCitation?: OnOpenCitation;
+    entityMentionIds?: string[];
+    onEntityClick?: (entity: string) => void;
   } & React.DOMAttributes<HTMLDivElement>,
 ) {
   const mdRef = useRef<HTMLDivElement>(null);
@@ -254,7 +296,9 @@ export function Markdown(
           content={props.content}
           groundingSpans={props.groundingSpans}
           groundingCitations={props.groundingCitations}
-          onNavigateTerrain={props.onNavigateTerrain}
+          onOpenCitation={props.onOpenCitation}
+          entityMentionIds={props.entityMentionIds}
+          onEntityClick={props.onEntityClick}
         />
       )}
     </div>

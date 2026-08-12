@@ -39,6 +39,7 @@ export enum StoreKey {
   Update = "chat-update",
   Sync = "sync",
   GithubSync = "github-sync-store",
+  Coding = "coding-store",
 }
 
 // eoWebLLM GitHub App (https://github.com/apps/eowebllm) — public Client ID,

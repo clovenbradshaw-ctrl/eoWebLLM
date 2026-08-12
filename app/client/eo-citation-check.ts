@@ -668,3 +668,66 @@ export function snipCitations(
     return { index: c.index, clause: best.clause, score: best.hits };
   });
 }
+
+// ── Mechanical consistency check: the citation modal's "does this line up"
+// pass ─────────────────────────────────────────────────────────────────────
+//
+// Deliberately narrow, same discipline as checkGrounding above: this checks
+// two cheap textual features a short verbatim/near-verbatim overlap can
+// most easily hide a mismatch behind — polarity (did a "not" get dropped or
+// added) and numbers (did the reply assert a figure the source clause never
+// states) — never whether the two sentences mean the same thing. That's a
+// semantic judgment this file has no way to make, and the UI showing this
+// result must say so, not imply more than a word/number diff was checked.
+
+const NEGATION_WORDS = new Set([
+  "not",
+  "no",
+  "never",
+  "without",
+  "neither",
+  "nor",
+  "n't",
+]);
+
+function negationCount(s: string): number {
+  const lower = ` ${String(s || "").toLowerCase()} `;
+  let count = 0;
+  for (const w of NEGATION_WORDS) {
+    if (w === "n't") {
+      count += (lower.match(/n't/g) || []).length;
+    } else if (lower.includes(` ${w} `)) {
+      count++;
+    }
+  }
+  return count;
+}
+
+export interface ConsistencyCheck {
+  /** True when the two sentences' negation-word counts disagree in a way
+   *  that could flip polarity — a cheap parity check, not a real polarity
+   *  parser (double negatives, "not uncommon", etc. can still slip past). */
+  negationMismatch: boolean;
+  /** Numbers the reply sentence states that the source sentence's own
+   *  number set doesn't contain — empty when every reply number is present
+   *  in the source (or the reply states no numbers at all). */
+  unsupportedNumbers: string[];
+}
+
+/**
+ * Compare a reply sentence against the source sentence a citation modal is
+ * showing as its "snip", on exactly the two mechanical features described
+ * above. Pure, zero model/network calls — same tier as buildGroundingSpans.
+ */
+export function checkConsistency(
+  replySentence: string,
+  sourceSentence: string,
+): ConsistencyCheck {
+  const negationMismatch =
+    negationCount(replySentence) > 0 !== negationCount(sourceSentence) > 0;
+  const sourceNumbers = numberSet(sourceSentence);
+  const unsupportedNumbers = [...numberSet(replySentence)].filter(
+    (n) => !sourceNumbers.has(n),
+  );
+  return { negationMismatch, unsupportedNumbers };
+}

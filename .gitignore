@@ -54,4 +54,5 @@ public/worker-*.js
 # local tool artifacts / working notes, not app code
 .claude/
 .next-stress/
+.next-crispr-test/
 research/

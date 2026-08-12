@@ -45,6 +45,14 @@ import {
   hasExplicitSearchIntent,
 } from "../client/eo-tool-router";
 import {
+  extractComparisonPhrase,
+  searchGithubArchetype,
+  pickLicensedCandidate,
+} from "../client/eo-prior-art";
+import { cloneRepo, listFiles, readFileText } from "../client/eo-repo-clone";
+import { checkCoherence, filterCodeFiles } from "../client/eo-coherence-check";
+import { ingestFile } from "../client/eo-source-ingest";
+import {
   defineAnswerSpec,
   evaluateCompliance,
   reconcileDraft,
@@ -273,6 +281,12 @@ export type EoLogKind =
   | "error"
   | "web"
   | "file"
+  // The prior-art pipeline (eo-prior-art.ts / eo-repo-clone.ts /
+  // eo-coherence-check.ts): every stage — search, clone, coherence-check,
+  // ingest — logs here whether it hit or missed. CRISPR.md's provenance
+  // law (L2e, "absence is auditable") carried over: a miss at any stage is
+  // a visible record, not a silent fallthrough.
+  | "prior-art"
   // The warrant decision: what could carry a claim this turn, what was folded
   // away, and which system the turn routed to. Its own kind because it is the
   // line a reader checks when an answer looks ungrounded.
@@ -323,6 +337,15 @@ export interface ChatSession {
   // is searched before it reaches the model, same shape as eochat's
   // per-conversation webSearch toggle.
   webSearchEnabled?: boolean;
+
+  // DISPLAY-ONLY toggle, deliberately not a computation toggle: checkGrounding
+  // and the System 2 escalation it can trigger (chat.ts's onUserInput) run
+  // UNCHANGED either way — answer safety/quality never depends on this.
+  // false only suppresses the inline "Citey: ..." chip (grounding-chip.tsx)
+  // and citation badges a reader sees, for a reader who finds the per-claim
+  // annotations distracting. Undefined/true (the default) preserves the
+  // exact behavior this app had before the toggle existed.
+  groundingDisplayEnabled?: boolean;
 
   // set by an uploaded file (see app/client/eo-binary-structure.ts); consumed
   // and cleared by the next onUserInput call, same one-shot handoff pattern
@@ -453,6 +476,13 @@ const EO_DESK_WINDOW_MARGIN_TURNS = 2;
 // JSON. Give it more slack before treating it as failed; a slow verdict
 // still fails open (see the try/catch around planTools in onUserInput).
 const EO_ROUTER_TIMEOUT_MS = 45000;
+
+// Bounds how many of a cloned repo's real code files get ingested in one
+// turn — same context-economy discipline as everything else the prior-art
+// pipeline touches (see eo-repo-clone.ts's MAX_LISTED_FILES/MAX_FILE_BYTES):
+// every ingested source is a permanent addition to the corpus a small local
+// model has to be able to surf over, not a one-time cost.
+const MAX_PRIOR_ART_INGEST_FILES = 15;
 
 // The WebLLM engine is single-flight: background calls (fold/summary, topic)
 // must never overlap each other or the streaming answer. eoFoldInFlight guards
@@ -1600,6 +1630,16 @@ export const useChatStore = createPersistStore(
         });
       },
 
+      // See groundingDisplayEnabled's own comment: this flips a DISPLAY
+      // flag only. checkGrounding/System 2 escalation are never touched by
+      // this action or by reading this flag anywhere else in the store.
+      toggleGroundingDisplay() {
+        get().updateCurrentSession((session) => {
+          session.groundingDisplayEnabled =
+            session.groundingDisplayEnabled === false ? true : false;
+        });
+      },
+
       // one-shot handoff from an uploaded file (see eo-binary-structure.ts)
       // into the next turn's context; call sites append across multiple
       // files uploaded before a send, then onUserInput consumes and clears it.
@@ -1842,6 +1882,125 @@ export const useChatStore = createPersistStore(
                 `web: search failed — ${(err as Error).message}`,
               );
             }
+          }
+        }
+
+        // Prior-art pipeline (CRISPR.md's retrieve-before-hand-coding
+        // pipeline, ported from eochat — see CRISPR-AGENT-LOOP-HANDOFF.md):
+        // triggered by a MECHANICAL condition on the message text, never an
+        // LLM JSON tool-call decision — the same "physics" precedent as
+        // hasExplicitSearchIntent above, just for a different capability. A
+        // reader who compares their ask to a named existing kind ("like
+        // Hacker News but for dolphins") gets a real, licensed
+        // implementation searched, cloned, coherence-checked, and ingested
+        // as grounded, citable source material — never invented structure
+        // from nothing. Every stage logs whether it hit or missed
+        // (CRISPR.md's L2e, "absence is auditable") — a miss at ANY stage
+        // (no archetype found, no license, incoherent clone) is a real,
+        // visible record, and the pipeline simply stops there; it never
+        // falls back to silently answering as if nothing was tried.
+        const comparisonPhrase = extractComparisonPhrase(userContent);
+        if (comparisonPhrase) {
+          try {
+            const { candidates, error: searchError } =
+              await searchGithubArchetype(comparisonPhrase);
+            if (searchError) {
+              get().pushEoLog(
+                "prior-art",
+                `search failed for "${comparisonPhrase}" — ${searchError}`,
+              );
+            } else if (!candidates.length) {
+              get().pushEoLog(
+                "prior-art",
+                `no known archetype for "${comparisonPhrase}" — building from scratch is the honest next step`,
+              );
+            } else {
+              get().pushEoLog(
+                "prior-art",
+                `search: "${comparisonPhrase}" -> ${candidates.length} candidate(s), top: ${candidates[0].repo} (${candidates[0].stars} stars, ${candidates[0].license})`,
+              );
+              const licensed = pickLicensedCandidate(candidates);
+              if (!licensed) {
+                get().pushEoLog(
+                  "prior-art",
+                  `no candidate has an allowed license — refusing to clone (CRISPR.md L2)`,
+                );
+              } else {
+                const cloneUrl = licensed.url.endsWith(".git")
+                  ? licensed.url
+                  : `${licensed.url}.git`;
+                const { result: cloned, error: cloneError } =
+                  await cloneRepo(cloneUrl);
+                if (cloneError || !cloned) {
+                  get().pushEoLog(
+                    "prior-art",
+                    `clone failed for ${licensed.repo} — ${cloneError}`,
+                  );
+                } else {
+                  const allFiles = await listFiles(cloned);
+                  const codeFiles = filterCodeFiles(allFiles);
+                  const coherence = await checkCoherence(cloned, codeFiles);
+                  get().pushEoLog(
+                    "prior-art",
+                    `cloned ${licensed.repo}: ${allFiles.length} file(s), coherence: ${
+                      coherence.coherent
+                        ? "coherent"
+                        : `${coherence.isolated.length} isolated file(s)`
+                    }`,
+                  );
+                  if (!coherence.coherent) {
+                    get().pushEoLog(
+                      "prior-art",
+                      `refusing to ingest an incoherent pile — isolated: ${coherence.isolated.slice(0, 5).join(", ")}`,
+                    );
+                  } else {
+                    let ingestedCount = 0;
+                    for (const relPath of codeFiles.slice(
+                      0,
+                      MAX_PRIOR_ART_INGEST_FILES,
+                    )) {
+                      const { text, error: readError } = await readFileText(
+                        cloned,
+                        relPath,
+                      );
+                      if (readError || text === null) {
+                        get().pushEoLog(
+                          "prior-art",
+                          `skipped ${relPath} — ${readError}`,
+                        );
+                        continue;
+                      }
+                      try {
+                        const file = new File(
+                          [text],
+                          `${licensed.repo.replace("/", "__")}/${relPath}`,
+                          { type: "text/plain" },
+                        );
+                        const { source, logLines } = await ingestFile(file);
+                        get().registerEoSource(source);
+                        for (const line of logLines)
+                          get().pushEoLog(line.channel, line.text);
+                        ingestedCount++;
+                      } catch (err) {
+                        get().pushEoLog(
+                          "prior-art",
+                          `ingest failed for ${relPath} — ${(err as Error).message}`,
+                        );
+                      }
+                    }
+                    get().pushEoLog(
+                      "prior-art",
+                      `ingested ${ingestedCount}/${codeFiles.length} file(s) from ${licensed.repo} — now part of the answerable corpus, cited like any other source`,
+                    );
+                  }
+                }
+              }
+            }
+          } catch (err) {
+            get().pushEoLog(
+              "prior-art",
+              `pipeline failed — ${(err as Error).message}`,
+            );
           }
         }
 
@@ -2571,12 +2730,22 @@ export const useChatStore = createPersistStore(
               }
 
               // Mechanical citation surface: the talker was never told
-              // citations exist, so strip any [n] it wrote anyway. The real
-              // source list is attached as structured data (webResults),
-              // not text — the UI renders it as a clickable panel (see
-              // WebSearchPanel in chat.tsx) instead of a markdown footer the
-              // reader has to scroll past the answer to find.
-              //
+              // citations exist, so strip any [n] it wrote anyway — whether
+              // it drew on web results or on numbered corpus passages
+              // (formatCorpusContext in eo-corpus.ts numbers those the same
+              // way). The real source list is attached as structured data
+              // (webResults / sourceCitations below), not text — the UI
+              // renders it as a clickable panel (see WebSearchPanel /
+              // SourceCitationsPanel in chat.tsx) instead of a markdown
+              // footer the reader has to scroll past the answer to find.
+              // Stripping used to be gated on turnWebQuery alone, which left
+              // corpus-cited turns' raw [1]/[2] text unstripped since
+              // formatCorpusContext numbers passages the same way a web
+              // search does.
+              if (turnWebQuery || corpusPassages.length) {
+                message = stripCitationBrackets(message);
+              }
+
               // LAWS.md L2e — absence is auditable: a search that ran and
               // found nothing must render differently from a turn that never
               // searched at all, or the reader can't tell "checked, nothing
@@ -2585,7 +2754,6 @@ export const useChatStore = createPersistStore(
               // a zero-result search still surfaces as a disclosed gap.
               const webCitations: CitationEntry[] = [];
               if (turnWebQuery) {
-                message = stripCitationBrackets(message);
                 botMessage.webResults = turnWebResults;
                 botMessage.webQuery = turnWebQuery;
                 webCitations.push(
@@ -3302,6 +3470,90 @@ export const useChatStore = createPersistStore(
         set(() => ({ sessions }));
       },
 
+      // Startup warmup ("prime the pump"): once home.tsx's usePreloadModel has
+      // downloaded and loaded the model, run ONE tiny inference — ask the model
+      // to greet the reader — so the first real turn doesn't pay the engine's
+      // cold-start latency (first-call compile, KV-cache warm), and a brand-new
+      // session opens with the model's OWN words instead of the static BOT_HELLO
+      // render-time injection. Same single-flight discipline as every background
+      // call here: eoEngineBusy is set, so a reader who starts typing a real
+      // question has onUserInput abort this warmup (see the eoEngineBusy check
+      // before llm.chat) rather than collide on the engine.
+      async runStartupGreeting(llm: LLMApi) {
+        const session = get().currentSession();
+        // Never interrupt a real turn, never double-fire alongside a background
+        // call, and never drop a greeting into a conversation already underway.
+        if (session.isGenerating || eoEngineBusy || session.messages.length > 0)
+          return;
+
+        const greeting = createMessage({
+          role: "assistant",
+          streaming: true,
+          content: "",
+        });
+        get().updateCurrentSession((s) => {
+          s.messages = s.messages.concat([greeting]);
+        });
+
+        const modelConfig = useAppConfig.getState().modelConfig;
+        eoEngineBusy = true;
+        try {
+          await new Promise<void>((resolve) => {
+            llm.chat({
+              messages: [
+                createMessage({
+                  role: "system",
+                  content:
+                    "You are a helpful assistant about to open a conversation. Say a short, warm greeting to the reader — one or two sentences, no preamble, no markdown, no quotes.",
+                }),
+                createMessage({ role: "user", content: "Say hello." }),
+              ],
+              config: {
+                ...modelConfig,
+                cache: useAppConfig.getState().cacheType,
+                stream: true,
+                enable_thinking: useAppConfig.getState().enableThinking,
+              },
+              onUpdate(message) {
+                greeting.content = message;
+                // Shallow-copy the array so the transcript re-renders on every
+                // chunk (same pattern onUserInput's streaming onUpdate uses).
+                get().updateCurrentSession((s) => {
+                  s.messages = s.messages.concat();
+                });
+              },
+              onFinish(message) {
+                greeting.streaming = false;
+                greeting.content = message;
+                get().updateCurrentSession((s) => {
+                  s.messages = s.messages.concat();
+                });
+                get().pushEoLog(
+                  "task",
+                  "greeting: model warmed up and said hello on cold start",
+                );
+                resolve();
+              },
+              onError(err) {
+                // Aborted by a real turn, or the engine failed the warmup —
+                // either way the half-streamed warmup must not linger in the
+                // transcript; BOT_HELLO's render-time injection covers the gap.
+                get().updateCurrentSession((s) => {
+                  s.messages = s.messages.filter((m) => m.id !== greeting.id);
+                });
+                get().pushEoLog(
+                  "error",
+                  `greeting warmup dropped — ${(err as Error)?.message ?? err}`,
+                );
+                resolve();
+              },
+            });
+          });
+        } finally {
+          eoEngineBusy = false;
+        }
+      },
+
       updateStat(message: ChatMessage) {
         get().updateCurrentSession((session) => {
           session.stat.charCount += message.content.length;
@@ -3356,3 +3608,10 @@ export const useChatStore = createPersistStore(
     },
   },
 );
+
+// Dev-only hook: expose the store on `window` so an external e2e driver can
+// observe message/generation state without DOM-sniffing. No-op in production
+// builds for consumers (module is only ever imported client-side here).
+if (typeof window !== "undefined") {
+  (window as any).__CHAT_STORE__ = useChatStore;
+}
