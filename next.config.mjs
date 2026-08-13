@@ -30,11 +30,15 @@ console.log("[Next] build with chunk: ", !disableChunk);
 // loads kokoro-js from esm.sh at runtime and spins up its own nested worker
 // for threaded WASM (see that file's header comment) — without both origins
 // here that nested worker is CSP-blocked and TTS silently falls back to slow
-// single-threaded WASM or fails outright.
+// single-threaded WASM or fails outright. onnxruntime-web's threaded-WASM
+// backend then dynamically imports its actual .mjs/.wasm files from
+// cdn.jsdelivr.net (not esm.sh), so that origin needs the same script-src/
+// worker-src allowance or backend init fails with "no available backend
+// found" and TTS never produces audio.
 const cspHeader = `
     default-src 'self';
-    script-src 'self' 'unsafe-eval' 'unsafe-inline' https://esm.sh;
-    worker-src 'self' blob: https://esm.sh;
+    script-src 'self' 'unsafe-eval' 'unsafe-inline' https://esm.sh https://cdn.jsdelivr.net;
+    worker-src 'self' blob: https://esm.sh https://cdn.jsdelivr.net;
     connect-src 'self' blob: data: https: http:;
     style-src 'self' 'unsafe-inline';
     img-src 'self' blob: data: https:;

@@ -97,14 +97,14 @@ export const metadata: Metadata = {
   },
 };
 
-// worker-src needs blob: + esm.sh alongside script-src (see next.config.mjs's
-// matching comment) — this meta-tag CSP is the one that actually applies to
-// the static-exported build GitHub Pages serves, since next.config.mjs's
-// headers() only runs in non-export mode.
+// worker-src needs blob: + esm.sh + cdn.jsdelivr.net alongside script-src
+// (see next.config.mjs's matching comment) — this meta-tag CSP is the one
+// that actually applies to the static-exported build GitHub Pages serves,
+// since next.config.mjs's headers() only runs in non-export mode.
 const cspHeader = `
     default-src 'self';
-    script-src 'self' 'unsafe-eval' 'unsafe-inline' https://esm.sh;
-    worker-src 'self' blob: https://esm.sh;
+    script-src 'self' 'unsafe-eval' 'unsafe-inline' https://esm.sh https://cdn.jsdelivr.net;
+    worker-src 'self' blob: https://esm.sh https://cdn.jsdelivr.net;
     connect-src 'self' blob: data: https: http:;
     style-src 'self' 'unsafe-inline';
     img-src 'self' blob: data: https:;
