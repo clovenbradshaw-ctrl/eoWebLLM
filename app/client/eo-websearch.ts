@@ -33,17 +33,106 @@ function withTimeout(ms: number): AbortSignal {
 
 // A search query must be a noun phrase, not a whole sentence — "what's wrong
 // with my Taylor C709 milkshake machine" fed verbatim to Wikipedia's search
-// matches stray words, not the subject. This strips the common question
-// scaffolding eochat's distillSubject() also strips, without needing that
-// module's essay-prompt-specific rules.
+// matches stray words, not the subject.
+//
+// This version's predecessor said it stripped "the common question scaffolding
+// eochat's distillSubject() also strips, WITHOUT needing that module's
+// essay-prompt-specific rules." That judgment was wrong, and the cost was
+// measured: "write me an essay about dolphins" passed through completely
+// unchanged (no rule here matched "write me an essay about"), reached
+// Wikipedia's search verbatim, and returned Hysterical realism, Margaret
+// St. Clair, Larry Csonka and Gale Garnett — four articles, none about
+// dolphins, ranked on the scaffolding words. Because that result set was
+// non-empty, webSearch returned early and the model was handed a literary
+// genre and an NFL fullback to ground an essay about dolphins in.
+//
+// The essay rules are therefore migrated in from eochat's
+// server/holonic-chat.js::distillSubject + cleanSubjectPhrase, whose own
+// comment records the identical failure from the other side:
+//
+//   "the full 'Write me a 5 page essay about dolphins, after researching
+//    online first.' fed to the search API matches stray words ('essay' →
+//    Voltaire), not the subject."
+//
+// eochat is legacy and frozen; this is a migration, not a dependency. Its
+// order is preserved (trailing clause → politeness → deliverable → direct ask)
+// because each pattern assumes the earlier ones already ran, and this port's
+// own broader leading-scaffold strip is kept as the fallback so queries that
+// already worked keep working.
+//
+// ── DECLARED LIMIT: every rule below is English ──────────────────────────
+//
+// Measured, not assumed. The same request in four languages:
+//
+//   en  "write me an essay about dolphins"        -> "dolphins"
+//   ja  「イルカについてのエッセイを書いてください」  -> UNCHANGED
+//   de  "schreibe mir einen Aufsatz über Delfine"  -> UNCHANGED
+//   ar  "اكتب لي مقالاً عن الدلافين"                 -> UNCHANGED
+//
+// and the consequence is worse than a passthrough, because fetchWikipedia
+// below is hardcoded to en.wikipedia.org. The Japanese sentence returns ZERO
+// hits there, so the DDG fallback runs, returns empty too, and the turn gets
+// no grounding material at all — which the warrant ledger reads as
+// checkedEmpty and reports to the reader as "consulted and came back empty."
+// The reader is told their own answer is unconfirmed, for a reason that lives
+// entirely in this function. Routing to ja.wikipedia.org does not fix it
+// either: the undistilled sentence matches on エッセイ/書いて/ください and
+// returns a musician, a novel, a lyricist and a music genre.
+//
+// This limit is DECLARED rather than repaired because a declared bias is
+// dischargeable and a hidden one is not (eo-constitution II.20, proposed):
+// what is refused is presenting a mechanism as general when it is not. Do NOT
+// "fix" this by adding a German rule list and an Arabic one — that is the same
+// mistake in more languages, and it is the specific repair II.20's own text
+// rules out. The language-neutral replacement is a content-word extraction
+// that does not enumerate scaffolding at all; scripts/test-query-distill.mjs
+// pins the four cases above so the gap stays visible until then.
+function cleanSubjectPhrase(s: string): string {
+  let t = String(s)
+    .trim()
+    .replace(/[.!?;:]+$/g, "")
+    .replace(/^(?:an?|the)\s+/i, "");
+  // "a 5 page essay about dolphins" — the length belongs to the request, not
+  // to the subject, and searching for "dolphins 5 pages" finds nothing.
+  t = t.replace(/\s+(?:of\s+)?\d+\s*(?:pages?|paragraphs?|words?)$/i, "").trim();
+  return t;
+}
+
 export function distillQuery(raw: string): string {
-  let q = String(raw || "").trim();
+  let q = String(raw || "")
+    .trim()
+    .replace(/\s+/g, " ");
+  if (!q) return "";
+
+  // "..., after researching online first." — a trailing instruction about HOW
+  // to answer, never part of what is being asked about.
+  q = q.replace(/,\s*(?:after|then|once|using|while|by|and)\s+[^.]*\.?$/i, "");
+  q = q
+    .replace(/\s+please[.!?]*$/i, "")
+    .replace(/^\s*(?:please|can you|could you|would you|do you think you can)\s+/i, "");
+
+  // A deliverable framing names the ARTIFACT first and the subject after
+  // "about"/"on". This is the rule whose absence produced Larry Csonka.
+  const deliverable = q.match(
+    /\b(?:essay|report|paper|write-?up|summary|article|piece|deep[\s-]?dive|long[\s-]?form)\b[^.]*?\b(?:about|on|covering|regarding|concerning)\s+([^,.;?]+)/i,
+  );
+  if (deliverable) return cleanSubjectPhrase(deliverable[1]).slice(0, 200);
+
+  const ask = q.match(
+    /\b(?:tell me about|what is|what are|what was|explain(?: to me)?|describe)\s+([^,.;?]+)/i,
+  );
+  if (ask) return cleanSubjectPhrase(ask[1]).slice(0, 200);
+
+  // This port's own leading-scaffold strip, kept as the fallback: it covers
+  // forms eochat's two capture patterns do not ("what's", "how do", "why is"),
+  // and "research"/"look up" are here rather than there because
+  // eo-tool-router.ts's hasExplicitSearchIntent routes on those exact words —
+  // so they reach this function attached to the subject and must come off.
   q = q.replace(
-    /^(please\s+)?(what'?s|what\s+is|how\s+(do|can|to)|why\s+(is|does|do)|can\s+you|could\s+you|tell\s+me\s+about|explain|search\s+for|look\s+up|find\s+out\s+about)\s+/i,
+    /^(please\s+)?(what'?s|what\s+is|how\s+(do|can|to)|why\s+(is|does|do)|can\s+you|could\s+you|tell\s+me\s+about|explain|research|search(\s+the\s+web)?\s+for|search|look\s+up|google|find\s+(out\s+)?(about|info(rmation)?\s+(on|about))|find\s+out\s+about)\s+/i,
     "",
   );
-  q = q.replace(/[?!.]+$/, "").trim();
-  return q.slice(0, 200);
+  return cleanSubjectPhrase(q).slice(0, 200);
 }
 
 async function fetchWikipedia(
