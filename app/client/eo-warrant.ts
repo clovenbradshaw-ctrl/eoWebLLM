@@ -48,6 +48,7 @@ export type WarrantChannel =
   | "discourse" // the folded PAST DISCOURSE summary — a paraphrase
   | "rules" // instruction folds in force
   | "hypergraph" // a background model's prose synthesis over the accumulated entity/relation graph — a paraphrase of structure, not a source
+  | "focus" // the running "what this conversation is currently about" — a standing paraphrase, kept open across turns
   | "internal"; // the model's own weights
 
 export type WarrantKind =
@@ -111,6 +112,30 @@ export const CHANNEL_WARRANT: Record<WarrantChannel, ChannelWarrant> = {
     canWarrant: false,
     demandsCheck: true,
     rule: "A HYPERGRAPH THOUGHT is a background model's own synthesis over entities and relations gathered from this conversation and its sources — not a quotation of anything. It can orient you toward what is connected to what. It can never be the evidence for a factual claim: if a claim needs a source, point to the actual passage, not to the thought.",
+  },
+  focus: {
+    // A standing one-line answer to "what is this conversation about right
+    // now", carried across turns and updated as it moves. It exists because a
+    // mid-stream message often names no subject at all — "prove it", "find
+    // examples of that", 「証明して」, «докажи это» — and the subject those
+    // refer to lives in the thread, not in the sentence.
+    //
+    // Its warrant is the weakest kind on purpose. It is a paraphrase of the
+    // thread, one interpretive step from anything anyone actually said, and it
+    // is maintained by a model rather than quoted from a source — so it has
+    // exactly the standing `hypergraph` has and for the same reason. It steers
+    // retrieval, which is what 240-source-scope.md already reserves for a
+    // prior ("its only role is invisible: helping the engine find the passage
+    // the reader's words actually point to"), and it may never be the grounds
+    // for anything.
+    //
+    // Being OPEN is the point: a focus the reader can see is a focus the
+    // reader can correct, and a wrong one that steers silently is the failure
+    // this channel exists to make visible.
+    kind: "paraphrase",
+    canWarrant: false,
+    demandsCheck: true,
+    rule: "IN FOCUS names what this conversation has been about, carried forward from earlier turns so a message that names no subject still has one. It orients retrieval and nothing else. It is a running summary, not a record of what was said: never cite it, never treat it as having established a fact, and if a claim needs what it refers to, go to the passage rather than to this line.",
   },
   internal: {
     kind: "internal",

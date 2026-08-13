@@ -221,8 +221,24 @@ async function fetchWikipedia(
 // read from the other end: the sentence is the level that carries the
 // meaning, and reducing to the bare noun descends below it.
 //
-// So the two backends take different inputs on purpose, and webSearch's
-// `rawQuery` option is how a caller supplies both.
+// There is therefore ONE search function taking ONE query, and that query is
+// the reader's own words, untouched. An earlier version of this migration gave
+// webSearch a second `rawQuery` parameter so the two backends could be fed
+// differently. That was the wrong fix: it made the caller responsible for
+// knowing which backend wanted which shape of input, and it put an
+// English-only reduction on the path every query travels.
+//
+// The distillation belongs INSIDE the backend that needs it. fetchWikipedia
+// calls distillQuery itself, because list=search is a lexical index and cannot
+// read a sentence. Nothing else does, because nothing else needs to. So the
+// query reaches this module in whatever language it was written in, and the
+// only place an English rule touches it is inside the one backend that is
+// already declared English-biased.
+//
+// The omnilingual guarantee at this layer is exactly that narrow and exactly
+// that checkable: nothing between a caller and the search engine inspects,
+// rewrites, or reduces the query. ddgSearchUrl is exported so that is an
+// assertion (scripts/test-ddg-parse.mjs) rather than a claim.
 
 /** Where a CORS-passing relay lives, if one is configured. Deliberately not
  *  defaulted to any host: an unset proxy means this backend does not run and
@@ -300,14 +316,18 @@ export function parseDuckDuckGoHtml(
   return out;
 }
 
+/** The target URL for a query, exported so the "nothing touches the query"
+ *  guarantee is testable offline in any script. */
+export function ddgSearchUrl(query: string): string {
+  return `https://html.duckduckgo.com/html/?q=${encodeURIComponent(String(query ?? ""))}`;
+}
+
 async function fetchDuckDuckGoHtml(
   query: string,
   numResults: number,
   maxChars: number,
 ): Promise<WebSearchResult[]> {
-  const relayed = viaProxy(
-    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
-  );
+  const relayed = viaProxy(ddgSearchUrl(query));
   if (!relayed) return [];
   const resp = await fetch(relayed, { signal: withTimeout(FETCH_TIMEOUT_MS) });
   if (!resp.ok) return [];
@@ -369,33 +389,29 @@ async function fetchDuckDuckGoInstantAnswer(
 // DuckDuckGo's Instant Answer API as breadth fallback when Wikipedia has no
 // article for the query. Both backends return complete text inline — no
 // second cross-origin hop, so both work unmodified from a browser tab.
+/**
+ * The one lookup. `query` is the reader's own words, in whatever language they
+ * wrote them, and nothing here reduces it — see the DDG header above for why a
+ * second "already distilled" parameter was removed rather than kept.
+ */
 export async function webSearch(
   query: string,
   {
     numResults = 4,
     maxChars = 6000,
-    rawQuery,
-  }: { numResults?: number; maxChars?: number; rawQuery?: string } = {},
+  }: { numResults?: number; maxChars?: number } = {},
 ): Promise<WebSearchResult[]> {
   numResults = Math.min(numResults, 10);
 
   // DDG first, but ONLY when a relay is configured — unset, this whole branch
   // is skipped and behaviour is exactly what it was. It leads when available
-  // because it is the one backend that reads a natural-language question:
-  // Wikipedia's list=search, handed the same sentence, ranks on scaffolding
-  // ("write me an essay about dolphins" returned Hysterical realism and Larry
-  // Csonka; the Japanese form returned zero hits at all).
-  //
-  // It gets `rawQuery` when the caller has it, per the measurement in this
-  // file's DDG header: the whole sentence disambiguates and the distilled
-  // subject does not.
+  // because it is the one backend that reads a natural-language question in
+  // any language. Wikipedia's list=search, handed the same sentence, ranks on
+  // scaffolding: "write me an essay about dolphins" returned Hysterical
+  // realism and Larry Csonka, and the Japanese form returned zero hits at all.
   if (searchProxyConfigured()) {
     try {
-      const ddg = await fetchDuckDuckGoHtml(
-        rawQuery || query,
-        numResults,
-        maxChars,
-      );
+      const ddg = await fetchDuckDuckGoHtml(query, numResults, maxChars);
       if (ddg.length > 0) return ddg;
     } catch {
       // fall through — a relay that is down must never block the lookup
