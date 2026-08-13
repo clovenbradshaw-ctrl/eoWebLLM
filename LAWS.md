@@ -116,22 +116,39 @@ and one simple lookup.
 
 ## L4 — "Reading" is the full organ chain, not the shallowest script's slice of it
 
-> **Correction — the blockquote below originally cited `eoreader6/READING-
-> POLICY.md` as canonical and superseding. That file does not exist and
-> never has, in either repo's git history, on any branch (checked
-> 2026-08-13). Whatever wrote this blockquote either described a doc that
-> was planned but never built, or fabricated the citation; either way,
-> nothing should defer to it. The correction itself is real and stands on
-> its own record here, not on a missing file.** Two claims below are wrong
-> and are corrected here: (a) that no assembled reader exists —
-> `packages/host/corpus.js` (`createSession`/`admitChunked`/
-> `sessionReferents`/`sessionRelations`, whose `discoveredCast` chains
-> pronoun binding) plus `packages/host/surfer.js` is exactly that, and is
-> what a reading should run through; (b) that the six stages below are the
-> whole of reading — they omit **retrieval**, and so mis-frame activation
-> decay as memory loss. Activation decays and re-zeros by design; beings are
-> not forgotten, they return on re-mention through retrieval. Never enlarge
-> an activation window to fix a recall failure.
+> **Superseded in part by `eoreader6/READING-POLICY.md`, which is canonical
+> for how reading works.** Two claims below are wrong and are corrected
+> there: (a) that no assembled reader exists — `packages/host/corpus.js`
+> (`createSession`/`admitChunked`/`sessionReferents`/`sessionRelations`, whose
+> `discoveredCast` chains pronoun binding) plus `packages/host/surfer.js` is
+> exactly that, and is what a reading should run through; (b) that the six
+> stages below are the whole of reading — they omit **retrieval**, and so
+> mis-frame activation decay as memory loss. Activation decays and re-zeros by
+> design; beings are not forgotten, they return on re-mention through
+> retrieval. See READING-POLICY.md P1. Never enlarge an activation window to
+> fix a recall failure.
+>
+> **A note on verification (2026-08-13):** an earlier pass through this file
+> declared `READING-POLICY.md` — and, further down, `eoreader6/CLAUDE.md`,
+> `goldens/network/read.mjs`, and `referents/cooccurrence.js::mergeAliasedEntities`
+> — fabricated, on the strength of `git log --all` against eoWebLLM's local
+> `eoreader6` submodule checkout, pinned at commit `aaf358b`, coming back
+> empty for all four. That check was wrong, not the four citations: this
+> Bash environment cannot `git fetch` (network to github.com is blocked;
+> only the `gh` CLI's own API path reaches GitHub), so the local submodule
+> clone is frozen at whatever commit it was pinned to and blind to anything
+> landed upstream since. Checked directly against GitHub via `gh api` — not
+> against the stale local clone — all four are real: `READING-POLICY.md`
+> merged to eoreader6's `main` in PR #62 (`df52fc9`), after the commit
+> eoWebLLM's submodule is pinned to; `CLAUDE.md`, `goldens/network/read.mjs`,
+> and `cooccurrence.js::mergeAliasedEntities` currently exist only on an
+> open, unmerged upstream branch (`claude/network-cooccurrence-golden`, PR
+> #59), not yet on `main` at all. None of the four citations below were
+> fabricated. This note is left in place, rather than silently removed once
+> corrected, for the same reason SEED.md's own growth rule keeps a falsified
+> claim on record instead of erasing it — a verification failure is itself
+> worth being able to find later, especially one caught by an independent
+> review rather than by re-reading the same stale evidence twice.
 
 Asked to characterize `eoreader6`'s ability to "read" a book, a first pass
 described only `goldens/network/read.mjs` — the co-occurrence golden that
@@ -143,15 +160,10 @@ answering a narrower question than the engine can: "Direction and polarity
 also carry — deliberately not scored here … because the four reference
 networks this golden checks against are themselves undirected, untyped
 co-occurrence counts and have no dimension to check direction or a verb
-against" — attributed here to `goldens/network/read.mjs:175-185`, but that
-path has never existed in eoreader6's history (checked 2026-08-13; no
-`goldens/network/` directory ever existed, and this quoted passage does not
-appear anywhere in the repo via full-text search). The underlying claim — a
-co-occurrence golden exists and deliberately doesn't score direction/
-polarity — is plausible and consistent with `goldens/cast/`'s design, but
-this specific citation is fabricated and should not be trusted or re-cited
-until someone locates or rebuilds the real golden it's describing. Describing
-that golden as
+against" (`goldens/network/read.mjs:45-51` on the upstream PR #59 branch
+this golden currently lives on — see the note above L4's opening blockquote;
+the line range is corrected from an earlier, stale `175-185` citation, the
+quoted text itself was always accurate). Describing that golden as
 what `eoreader6` "does" mistook the one organ with a scoreboard for the
 whole instrument. There is also no single function to point to instead —
 `packages/engine`'s only public export (`packages/engine/index.js`) is
@@ -162,13 +174,10 @@ no `read(book)` among them. Every reading script in `scripts/` — `read-
 tiered.mjs`, `read-people.mjs`, `read-ladder.mjs`, `read-paradigm.mjs`,
 `full-golden-layered.mjs`, `chapter-scene-level.mjs`, `terrain-census.mjs`
 — hand-assembles its own subset of organs to ask its own question, and
-a file referred to here as `eoreader6/CLAUDE.md` was said to endorse exactly
-that pattern — a new driver's job is "usually to ask a new QUESTION of that
-pipeline's output, not to rebuild pieces of the pipeline" — but no such file
-has ever existed in eoreader6's history (checked 2026-08-13). The stated
-principle is sound and worth keeping regardless of where it was supposedly
-written down; it just isn't backed by any real file today. So the correction
-below is a definition, not a
+`eoreader6/CLAUDE.md` endorses exactly that pattern: a new driver's job is
+"usually to ask a new QUESTION of that pipeline's output, not to rebuild
+pieces of the pipeline" (currently on the unmerged PR #59 branch — see the
+note above L4's opening blockquote). So the correction below is a definition, not a
 pointer to code that already assembles it — the richest version of reading
 is the full set of organs available to be chained, in the order `read-
 people.mjs` chains them, not any one script's slice.
@@ -193,11 +202,11 @@ based name-variant coreference before any entity exists
 (`surfaces.js::discoverReferents`), and a second pass over admitted
 entities that merges by arrival *shape* — segregation and displacement,
 never string comparison — for exactly the cases spelling-merge is
-conservative about on purpose (`referents/consequence.js::
-identityByConsequence` — corrected 2026-08-13 from a previous citation to
-`referents/cooccurrence.js::mergeAliasedEntities`, a file and function that
-have never existed in eoreader6's history; the arrival-shape merge behavior
-described here is real and lives in `identityByConsequence`). **(4) Typed, directional
+conservative about on purpose (`referents/consequence.js`,
+`referents/cooccurrence.js::mergeAliasedEntities` — the latter a thin
+union-find wrapper that imports and calls the former's `identityByConsequence`
+directly; both real, currently on the unmerged PR #59 branch, see the note
+above L4's opening blockquote). **(4) Typed, directional
 relation.** SVO triples with polarity (`perceiver/text/relations.js`) feed a
 decaying belief graph (`emergence/graph.js`); `emergence/binding.js` then
 tests each pair through a displacement null (is this co-arrival real),

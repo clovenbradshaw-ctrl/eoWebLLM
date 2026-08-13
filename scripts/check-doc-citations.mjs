@@ -3,24 +3,38 @@
 // file/function citations in LAWS.md and eoreader6's NEXT-*.md planning
 // docs still point at something real.
 //
-// Built after an audit found LAWS.md citing `eoreader6/READING-POLICY.md`,
-// `eoreader6/CLAUDE.md`, and `goldens/network/read.mjs` — three files that
-// were never built, ever, in either repo's git history — plus two cases
-// where real behavior was attributed to the wrong file/function
-// (`referents/cooccurrence.js::mergeAliasedEntities` instead of
-// `referents/consequence.js::identityByConsequence`; a "climb-response
-// prompt" attributed to `eo-warrant.ts` instead of `app/store/chat.ts`).
-// None of these were code drifting away from once-true docs — full-history
-// search showed they were never true. A doc that asserts a canonical file
-// is itself a load-bearing artifact people build the next feature on top
-// of, so its claims need the same "re-earned, never grandfathered"
-// discipline SEED.md already applies to code.
+// Built after an audit found LAWS.md citing an `eo-warrant.ts` prompt that
+// lives in `app/store/chat.ts` instead — a real citation attributed to the
+// wrong file. A doc that asserts a canonical file is itself a load-bearing
+// artifact people build the next feature on top of, so its claims need the
+// same "re-earned, never grandfathered" discipline SEED.md already applies
+// to code.
+//
+// IMPORTANT — eoreader6 is a git SUBMODULE, and this environment cannot
+// `git fetch` it (network to github.com is blocked here; only the `gh` CLI's
+// own API path reaches GitHub). This script's eoreader6-rooted checks can
+// therefore only ever see the submodule's currently PINNED commit, not
+// eoreader6's live upstream. A first pass through this exact file wrongly
+// declared `eoreader6/READING-POLICY.md`, `eoreader6/CLAUDE.md`, and
+// `goldens/network/read.mjs` "fabricated" purely because they were missing
+// from that stale local pin — all three are real upstream (one merged to
+// `main` after the pin, two more on an open PR not yet merged at all),
+// confirmed directly against GitHub via `gh api`, not against this
+// checkout. A MISSING-FILE result below under an eoreader6 root is
+// therefore evidence the file isn't in THIS pinned snapshot, never proof
+// it doesn't exist — cross-check with `gh api repos/<org>/eoreader6/contents/<path>`
+// (or bump the submodule) before treating a hit here as a fabricated
+// citation. This is exactly the mistake this tool exists to catch in
+// LAWS.md; it is not exempt from making the same one itself.
 //
 // This is a citation checker, not a content checker: it confirms a cited
-// path exists (and, weakly, that a cited line number is in range, and that
-// a cited `::functionName` appears in the file as a word) — it cannot tell
-// you the quoted PROSE next to a valid citation is accurate. Treat a clean
-// run as "nothing points at thin air," not "every claim was re-verified."
+// path exists in what's locally checked out (and, weakly, that a cited line
+// number is in range, and that a cited `::functionName` appears in the file
+// as a word) — it cannot tell you the quoted PROSE next to a valid citation
+// is accurate, and for eoreader6 paths it cannot tell you the citation is
+// truly fabricated versus just ahead of this pinned submodule commit. Treat
+// a clean run as "nothing points at thin air in what's checked out here,"
+// not "every claim was re-verified against the real world."
 //
 // Usage: node scripts/check-doc-citations.mjs [--verbose]
 
@@ -45,15 +59,24 @@ const VERBOSE = process.argv.includes("--verbose");
 // packages/engine/), and the coarser `engine/...`/`host/...` shorthand
 // matching package.json's own `"./engine"`/`"./host"` export aliases
 // (`engine/holon/task-log.js` meaning packages/engine/holon/task-log.js).
-// All roots are tried; file-exists-in-any counts as found. The NEXT-*.md/
-// CUBE.md docs live inside eoreader6 and cite the same mix of forms.
+// All roots are tried; file-exists-in-any counts as found.
+//
+// The NEXT-*.md docs are discovered dynamically (not a hand-picked list) —
+// an earlier version hardcoded exactly two filenames while its own header
+// claimed to check "eoreader6's NEXT-*.md planning docs" as a class; a
+// third such doc added later would have been silently skipped with the run
+// still reporting a clean pass. `eoreader6Root` is checked for the
+// submodule's own currency below, so a stale root doesn't silently mean
+// "no NEXT-*.md docs to check" either.
 const EOREADER6_ROOTS = [EOREADER6_ROOT, EOREADER6_ENGINE, EOREADER6_PACKAGES];
+const nextDocs = existsSync(EOREADER6_ROOT)
+  ? readdirSync(EOREADER6_ROOT).filter((name) => /^NEXT-.*\.md$/i.test(name))
+  : [];
 const DOCS = [
-  { path: join(WEBLLM_ROOT, "LAWS.md"), roots: [WEBLLM_ROOT, ...EOREADER6_ROOTS] },
-  { path: join(EOREADER6_ROOT, "NEXT-LEVEL1-PROMOTION.md"), roots: EOREADER6_ROOTS },
-  { path: join(EOREADER6_ROOT, "NEXT-EXISTENCE-DEPENDENCY-GROWTH-ARTIFACT.md"), roots: EOREADER6_ROOTS },
-  { path: join(EOREADER6_ROOT, "CUBE.md"), roots: EOREADER6_ROOTS },
-  { path: join(EOREADER6_ROOT, "KERNEL_REBUILD_CHECKPOINT.md"), roots: EOREADER6_ROOTS },
+  { path: join(WEBLLM_ROOT, "LAWS.md"), roots: [WEBLLM_ROOT, ...EOREADER6_ROOTS], eoreader6Rooted: true },
+  ...nextDocs.map((name) => ({ path: join(EOREADER6_ROOT, name), roots: EOREADER6_ROOTS, eoreader6Rooted: true })),
+  { path: join(EOREADER6_ROOT, "CUBE.md"), roots: EOREADER6_ROOTS, eoreader6Rooted: true },
+  { path: join(EOREADER6_ROOT, "KERNEL_REBUILD_CHECKPOINT.md"), roots: EOREADER6_ROOTS, eoreader6Rooted: true },
 ].filter((d) => existsSync(d.path));
 
 // For a bare filename with no directory component (shorthand like
@@ -126,6 +149,7 @@ const resolveCandidates = (relPath, roots) => {
 
 let totalCitations = 0;
 let problems = 0;
+let eoreader6RootedMisses = 0;
 
 for (const doc of DOCS) {
   const text = readFileSync(doc.path, "utf8");
@@ -143,6 +167,7 @@ for (const doc of DOCS) {
     const candidates = resolveCandidates(relPath, doc.roots);
     if (candidates.length === 0) {
       problems++;
+      if (doc.eoreader6Rooted) eoreader6RootedMisses++;
       console.log(`MISSING-FILE   ${relDocPath}: ${full}`);
       continue;
     }
@@ -173,4 +198,12 @@ for (const doc of DOCS) {
 }
 
 console.log(`\n${totalCitations} citation(s) checked across ${DOCS.length} doc(s), ${problems} problem(s) found.`);
+if (eoreader6RootedMisses > 0) {
+  console.log(
+    `${eoreader6RootedMisses} of those are under an eoreader6 root — this checkout is a submodule pinned to one ` +
+    `commit and this environment cannot \`git fetch\` it, so a MISSING-FILE there means "not in this pinned ` +
+    `snapshot," not "confirmed fabricated." Cross-check against GitHub (\`gh api repos/<org>/eoreader6/contents/<path>\`) ` +
+    `before treating any of them as a fabricated citation.`
+  );
+}
 if (problems > 0) process.exit(1);
