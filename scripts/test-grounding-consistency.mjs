@@ -425,3 +425,77 @@ test("an unexamined report still says so in its own counts", () => {
   assert.deepEqual(r.channels, []);
   assert.equal(r.findings.length, 0);
 });
+
+// ── II.8: plural grounds stay parallel ────────────────────────────────────
+
+test("a claim about the reader's document is not validated by an unrelated web hit", async () => {
+  // The measured violation. checkGrounding builds ONE union index across every
+  // citation handed to it, so a figure absent from the reader's own PDF comes
+  // back CLEAN when a web snippet happens to carry the same digits. That is
+  // eo-constitution II.8's first named consequence — "No averaging of grounds"
+  // — and the shape it calls the second death: a merged index cannot disagree
+  // with itself, so the one thing worth reporting is what the merge destroys.
+  const { checkGroundsInParallel } = await import(
+    "../app/client/eo-citation-check.ts"
+  );
+  const yourSources = {
+    name: "your sources",
+    citations: [
+      { index: 1, source_id: "budget.pdf#0-90", text: "The department received 1022900000 for fiscal year 2031." },
+    ],
+  };
+  const theWeb = {
+    name: "the web",
+    citations: [
+      { index: 1, source_id: "https://x/wiki", text: "Unrelated article mentioning 1136000000 in another context." },
+    ],
+  };
+  const claim = "Your document states the budget is 1136000000 for fiscal year 2031.";
+
+  // Merged — what the union index does today.
+  const merged = checkGrounding(
+    claim,
+    [...yourSources.citations, ...theWeb.citations.map((c) => ({ ...c, index: 2 }))],
+    { channels: ["your sources", "the web"] },
+  );
+  assert.equal(merged.clean, true, "precondition: the merge reports this fabrication as clean");
+
+  // Parallel — the grounds keep their own verdicts.
+  const parallel = checkGroundsInParallel(claim, [yourSources, theWeb]);
+  const fabricated = parallel.disagreements.find((d) => d.text === "1136000000");
+  assert.ok(fabricated, "the invented figure must surface as a disagreement");
+  assert.deepEqual(fabricated.supportedBy, ["the web"]);
+  assert.deepEqual(fabricated.absentFrom, ["your sources"]);
+});
+
+test("nothing in the parallel report ranks, scores or resolves a disagreement", async () => {
+  // II.8/II.3: a disagreement between grounds belongs to the reader. The
+  // report may carry it; it may not settle it.
+  const { checkGroundsInParallel } = await import(
+    "../app/client/eo-citation-check.ts"
+  );
+  const r = checkGroundsInParallel("The budget is 1136000000.", [
+    { name: "a", citations: [{ index: 1, source_id: "a", text: "budget 1136000000" }] },
+    { name: "b", citations: [{ index: 1, source_id: "b", text: "budget 1022900000" }] },
+  ]);
+  const json = JSON.stringify(r);
+  for (const forbidden of ["score", "confidence", "weight", "rank", "verdict", "winner"])
+    assert.ok(!json.includes(forbidden), `the report must not carry a "${forbidden}"`);
+  assert.equal(r.grounds.length, 2, "both grounds keep their own verdict");
+});
+
+test("a ground with no material is examined:false, never silently clean", async () => {
+  const { checkGroundsInParallel } = await import(
+    "../app/client/eo-citation-check.ts"
+  );
+  const r = checkGroundsInParallel("The budget is 1136000000.", [
+    { name: "your sources", citations: [] },
+    { name: "the web", citations: [{ index: 1, source_id: "w", text: "budget 1136000000" }] },
+  ]);
+  const empty = r.grounds.find((g) => g.name === "your sources");
+  assert.equal(empty.examined, false);
+  // An unexamined ground contributes to neither column — absence of a check
+  // is not evidence of absence.
+  const atom = [...r.disagreements, ...r.unsupportedEverywhere].find((a) => a.text === "1136000000");
+  if (atom) assert.ok(!atom.absentFrom.includes("your sources"));
+});

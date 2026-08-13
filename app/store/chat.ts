@@ -75,6 +75,7 @@ import {
 } from "../client/eo-math-check";
 import {
   checkGrounding,
+  checkGroundsInParallel,
   snipCitations,
   splitSentences,
   countClaimAtoms,
@@ -232,6 +233,14 @@ export type ChatMessage = RequestMessage & {
   // at the same point groundingSpans is finalized against the settled
   // message (not the live per-chunk one) — see the onFinish call site.
   groundingCitations?: CitationEntry[];
+  /**
+   * Per-ground findings, kept parallel and never merged — eo-constitution
+   * II.8: "Plural grounds stay parallel and their disagreement is the
+   * finding." groundingReport above still builds ONE union index across every
+   * channel, which is the averaging II.8 refuses; this is the un-averaged
+   * reading beside it.
+   */
+  groundsReport?: ReturnType<typeof checkGroundsInParallel>;
   // True only during the async post-answer resolveSpans pass (onFinish's
   // background block below) — deliberately separate from `streaming`.
   // Reusing `streaming` for this used to make a finished answer look like
@@ -3364,6 +3373,36 @@ export const useChatStore = createPersistStore(
                   botMessage.id,
                   groundingReport.findings,
                 );
+
+                // The same draft, checked against each ground SEPARATELY.
+                // groundingReport above merged them into one index, and that
+                // merge is measurable: a false claim about the reader's own
+                // PDF comes back clean because a web snippet happened to
+                // carry the digits. II.8's first named consequence — plural
+                // grounds stay parallel, and their disagreement is the
+                // finding. Nothing here ranks or resolves them; the reader
+                // gets both readings intact (II.3, III.1).
+                const grounds = [];
+                if (sourceCits.length)
+                  grounds.push({ name: "your sources", citations: sourceCits });
+                if (webCitations.length)
+                  grounds.push({ name: "the web", citations: webCitations });
+                if (grounds.length) {
+                  const parallel = checkGroundsInParallel(message, grounds, {
+                    question: userContent.trim(),
+                  });
+                  botMessage.groundsReport = parallel;
+                  for (const d of parallel.disagreements)
+                    get().pushEoLog(
+                      "warrant",
+                      `grounds disagree on "${d.text}" — carried by ${d.supportedBy.join(", ")}, absent from ${d.absentFrom.join(", ")}`,
+                    );
+                  if (parallel.unsupportedEverywhere.length)
+                    get().pushEoLog(
+                      "warrant",
+                      `${parallel.unsupportedEverywhere.length} claim(s) carried by no ground that was checked`,
+                    );
+                }
               }
 
               // Every turn is proposed into the mind regardless of whether it

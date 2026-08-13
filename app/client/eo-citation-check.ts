@@ -994,3 +994,126 @@ export function detectMaterialEvasion(
   }
   return null;
 }
+
+// ── Plural grounds, kept parallel ─────────────────────────────────────────
+//
+// checkGrounding above takes ONE citation list and builds ONE union index over
+// it. When a caller hands it the reader's corpus and a web fetch together,
+// that index averages two grounds into one, and the consequence is measurable:
+// a false claim about the reader's own PDF comes back CLEAN because an
+// unrelated Wikipedia snippet happened to contain the digits.
+//
+// That is eo-constitution II.8's first named consequence, violated:
+//
+//   "No averaging of grounds. Plural grounds stay parallel and their
+//    disagreement is the finding; a mechanism that re-projects or averages
+//    them into one is a learned combination and belongs to the reader, not
+//    the engine."
+//
+// and it is the shape II.8 calls the second death — "an oracle that is
+// fluent, sourced, correct, and incapable of encounter." A merged index
+// cannot disagree with itself, so the one thing worth reporting is exactly
+// the thing it destroys.
+//
+// So: one index per ground, never across them. A ground is declared by the
+// caller (the reader's sources are one, the web is another) rather than
+// inferred here — placement knowledge is received, not derived (II.2).
+// Nothing below combines, scores, or ranks the grounds. The cross-tabulation
+// reports which grounds support an atom and which do not, and where those
+// sets are both non-empty that IS the finding, handed over intact.
+
+export interface Ground {
+  /** What a reader would call it: "your sources", "the web". */
+  name: string;
+  citations: CitationEntry[];
+}
+
+export interface GroundVerdict {
+  name: string;
+  /** False when this ground had no material — never conflated with "clean". */
+  examined: boolean;
+  atomsChecked: number;
+  findings: GroundingFinding[];
+}
+
+export interface AtomAcrossGrounds {
+  text: string;
+  start: number;
+  end: number;
+  atomKind: "number" | "name";
+  /** Grounds that examined this atom and found it. */
+  supportedBy: string[];
+  /** Grounds that examined this atom and did not find it. */
+  absentFrom: string[];
+}
+
+export interface ParallelGroundingReport {
+  /** One verdict per ground, in the order given. Never merged. */
+  grounds: GroundVerdict[];
+  /** Atoms some ground supports and another does not. THE finding. */
+  disagreements: AtomAcrossGrounds[];
+  /** Atoms no examined ground supports. */
+  unsupportedEverywhere: AtomAcrossGrounds[];
+  /** True when at least one ground had material to check against. */
+  examined: boolean;
+}
+
+/**
+ * Check a draft against several grounds WITHOUT merging them.
+ *
+ * Each ground gets its own index and its own verdict. The cross-tabulation
+ * says, per atom, which grounds carry it and which do not — and stops there.
+ * Deciding what a disagreement means is the reader's, per II.8 and II.3.
+ */
+export function checkGroundsInParallel(
+  content: string,
+  grounds: Ground[],
+  opts: { question?: string } = {},
+): ParallelGroundingReport {
+  const verdicts: GroundVerdict[] = grounds.map((g) => {
+    const r = checkGrounding(content, g.citations, {
+      question: opts.question,
+      channels: [g.name],
+    });
+    return {
+      name: g.name,
+      examined: r.examined,
+      atomsChecked: r.atomsChecked,
+      findings: r.findings,
+    };
+  });
+
+  const examinedGrounds = verdicts.filter((v) => v.examined);
+  const atoms = extractClaimAtoms(content, opts.question);
+
+  const rows: AtomAcrossGrounds[] = [];
+  for (const a of atoms) {
+    if (a.echoesQuestion) continue;
+    const supportedBy: string[] = [];
+    const absentFrom: string[] = [];
+    for (const v of examinedGrounds) {
+      const flagged = v.findings.some(
+        (f) => f.start === a.start && f.end === a.end,
+      );
+      (flagged ? absentFrom : supportedBy).push(v.name);
+    }
+    if (!supportedBy.length && !absentFrom.length) continue;
+    rows.push({
+      text: a.text,
+      start: a.start,
+      end: a.end,
+      atomKind: a.atomKind,
+      supportedBy,
+      absentFrom,
+    });
+  }
+
+  return {
+    grounds: verdicts,
+    disagreements: rows.filter(
+      (r) => r.supportedBy.length > 0 && r.absentFrom.length > 0,
+    ),
+    unsupportedEverywhere: rows.filter((r) => r.supportedBy.length === 0),
+    examined: examinedGrounds.length > 0,
+  };
+}
