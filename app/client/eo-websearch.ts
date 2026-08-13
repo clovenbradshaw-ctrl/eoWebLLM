@@ -188,6 +188,132 @@ async function fetchWikipedia(
   return out;
 }
 
+// ── DuckDuckGo HTML — migrated from eochat, restored by the proxy ────────
+//
+// This backend was dropped from the original port for one reason, stated in
+// this file's own header: "a page fetched from an origin without CORS headers
+// is opaque to `fetch()` — the DDG HTML scrape and the primary-source
+// webFetch hop both depend on that." A CORS-passing relay removes exactly
+// that constraint, so the backend comes back. The parsing below is eochat's
+// server/web-search.js::fetchDuckDuckGoHtml + decodeDdgRedirect, unchanged —
+// eochat is legacy and frozen, so this is a migration, not a dependency.
+//
+// ── Measured: this backend wants the RAW sentence, not a distilled one ───
+//
+// distillQuery exists because Wikipedia's list=search is a lexical index over
+// article text: hand it a whole sentence and it ranks on the scaffolding
+// words. A search engine is not that, and the same reduction that helps
+// Wikipedia actively hurts here. Measured through the relay, same request:
+//
+//   「イルカについてのエッセイを書いてください」 (whole sentence)
+//     -> イルカとどうやってコミュニケーションをとる？ / 意外と知らないイルカの生態 /
+//        イルカは、なぜジャンプするのか？ / 沿岸に生きるイルカたち
+//        — every result marine biology.
+//
+//   「イルカ」 (distilled to the bare subject)
+//     -> イルカ (歌手) — Wikipedia  [the FOLK SINGER Iruka]
+//        イルカ公式サイト / なごり雪 / 雨の物語  [her site, her songs]
+//        — four of five about the singer, not the animal.
+//
+// Japanese "イルカ" is ambiguous exactly as English "dolphins" is, and the
+// surrounding words are what resolve it. Distilling threw away the
+// disambiguating context and made the result worse. That is II.20 (proposed)
+// read from the other end: the sentence is the level that carries the
+// meaning, and reducing to the bare noun descends below it.
+//
+// So the two backends take different inputs on purpose, and webSearch's
+// `rawQuery` option is how a caller supplies both.
+
+/** Where a CORS-passing relay lives, if one is configured. Deliberately not
+ *  defaulted to any host: an unset proxy means this backend does not run and
+ *  behaviour is exactly what it was. A relay is the reader's own
+ *  infrastructure and does not belong hardcoded in a client bundle. */
+let searchProxyBase: string | null = null;
+
+/** `base` takes the target as a `?url=` parameter and returns its body with
+ *  permissive CORS. Pass null to disable. */
+export function configureSearchProxy(base: string | null): void {
+  searchProxyBase = base && /^https?:\/\//.test(base) ? base : null;
+}
+
+export function searchProxyConfigured(): boolean {
+  return searchProxyBase !== null;
+}
+
+function viaProxy(target: string): string | null {
+  if (!searchProxyBase) return null;
+  const join = searchProxyBase.includes("?") ? "&" : "?";
+  return `${searchProxyBase}${join}url=${encodeURIComponent(target)}`;
+}
+
+// Unwrap DDG's /l/?uddg=<urlencoded> redirect to the real article URL.
+// eochat/server/web-search.js::decodeDdgRedirect, unchanged.
+export function decodeDdgRedirect(url: string): string {
+  const s = String(url || "");
+  const m = s.match(/uddg=([^&]+)/);
+  if (m) {
+    try {
+      return decodeURIComponent(m[1]);
+    } catch {
+      /* fall through to the raw form */
+    }
+  }
+  return s.startsWith("//") ? "https:" + s : s;
+}
+
+/** The parse, split out from the fetch so it can be tested against a recorded
+ *  page with no network (scripts/test-ddg-parse.mjs). Regexes are eochat's. */
+export function parseDuckDuckGoHtml(
+  html: string,
+  { numResults = 4, maxChars = 6000 }: { numResults?: number; maxChars?: number } = {},
+): WebSearchResult[] {
+  const src = String(html || "");
+  const anchors = [
+    ...src.matchAll(/class="result__a" href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g),
+  ];
+  const snippets = [
+    ...src.matchAll(/class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g),
+  ];
+
+  const out: WebSearchResult[] = [];
+  const perResult = Math.floor(maxChars / Math.max(numResults, 1));
+  for (let i = 0; i < anchors.length && out.length < numResults; i++) {
+    const title = anchors[i][2]
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const url = decodeDdgRedirect(anchors[i][1]);
+    if (!title || !url || !/^https?:\/\//.test(url)) continue;
+    const snippet = (snippets[i]?.[1] || "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, perResult);
+    out.push({
+      rank: out.length + 1,
+      title,
+      url,
+      snippet,
+      source: "duckduckgo",
+    });
+  }
+  return out;
+}
+
+async function fetchDuckDuckGoHtml(
+  query: string,
+  numResults: number,
+  maxChars: number,
+): Promise<WebSearchResult[]> {
+  const relayed = viaProxy(
+    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
+  );
+  if (!relayed) return [];
+  const resp = await fetch(relayed, { signal: withTimeout(FETCH_TIMEOUT_MS) });
+  if (!resp.ok) return [];
+  return parseDuckDuckGoHtml(await resp.text(), { numResults, maxChars });
+}
+
 // RelatedTopics mixes flat {Text, FirstURL} entries with grouped
 // {Name, Topics: [...]} categories at the top level.
 function flattenDdgTopics(
@@ -248,9 +374,33 @@ export async function webSearch(
   {
     numResults = 4,
     maxChars = 6000,
-  }: { numResults?: number; maxChars?: number } = {},
+    rawQuery,
+  }: { numResults?: number; maxChars?: number; rawQuery?: string } = {},
 ): Promise<WebSearchResult[]> {
   numResults = Math.min(numResults, 10);
+
+  // DDG first, but ONLY when a relay is configured — unset, this whole branch
+  // is skipped and behaviour is exactly what it was. It leads when available
+  // because it is the one backend that reads a natural-language question:
+  // Wikipedia's list=search, handed the same sentence, ranks on scaffolding
+  // ("write me an essay about dolphins" returned Hysterical realism and Larry
+  // Csonka; the Japanese form returned zero hits at all).
+  //
+  // It gets `rawQuery` when the caller has it, per the measurement in this
+  // file's DDG header: the whole sentence disambiguates and the distilled
+  // subject does not.
+  if (searchProxyConfigured()) {
+    try {
+      const ddg = await fetchDuckDuckGoHtml(
+        rawQuery || query,
+        numResults,
+        maxChars,
+      );
+      if (ddg.length > 0) return ddg;
+    } catch {
+      // fall through — a relay that is down must never block the lookup
+    }
+  }
 
   try {
     const wiki = await fetchWikipedia(query, numResults, maxChars);
