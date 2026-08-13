@@ -142,16 +142,19 @@ export function chipReasonText(
       return "Echoes wording from a source without every word matching verbatim.";
     case "checking":
       return "Not checked against anything yet.";
-    case "stated":
-      return "You said this earlier — held on your word, not on a source.";
-    case "general":
-      return "General knowledge. Nothing external bore on this turn, so nothing was gathered to check it against.";
-    case "bleed":
-      return "The only thing carrying this is a summary of earlier turns, not a source. Worth checking before relying on it.";
-    case "unconfirmed":
-      return "Material was gathered this turn and this is not in it.";
     default:
-      return "Held as unconfirmed rather than guessed.";
+      switch (span.originChannel) {
+        case "desk":
+          return "You stated this earlier in this conversation — held as a recorded fact, not re-verified.";
+        case "internal":
+          return "Nothing external bore on this turn — answered from general knowledge, not checked against anything.";
+        case "discourse":
+          return "This may echo the folded summary of earlier turns, not evidence gathered this turn — a resemblance, not a match.";
+        case "hypergraph":
+          return "This may echo the drafted graph thought, not evidence gathered this turn — a resemblance, not a match.";
+        default:
+          return "Nothing was gathered to check this against — held as unconfirmed rather than guessed.";
+      }
   }
 }
 
@@ -199,7 +202,12 @@ export function GroundingChip(props: {
           ? "eo-chip-echoed"
           : span.state === "checking"
             ? "eo-chip-checking"
-            : "eo-chip-owned";
+            : span.originChannel === "desk"
+              ? "eo-chip-owned eo-chip-owned-desk"
+              : span.originChannel === "discourse" ||
+                  span.originChannel === "hypergraph"
+                ? "eo-chip-owned eo-chip-owned-caution"
+                : "eo-chip-owned";
 
   const title = chipReasonText(span, citation);
   const citationNumber = citation

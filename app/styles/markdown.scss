@@ -1238,6 +1238,29 @@
   color: var(--eo-warn);
 }
 
+// "owned", attributed to a channel (see originChannel in
+// eo-grounding-spans.ts). Still not a verdict — no filled pill — but the
+// underline itself carries the attribution so a reader can tell these four
+// "owned" cases apart at a glance instead of one flat gray:
+//   - desk: a fact the reader stated earlier this conversation. Reads
+//     closer to trusted (colored, solid underline) without claiming the
+//     full "sourced" pill treatment, which is reserved for material this
+//     turn actually gathered.
+//   - caution (discourse/hypergraph): the atom's wording resembles a
+//     paraphrase this turn's prompt carried — the exact channels
+//     eo-warrant.ts marks canWarrant:false. Colored to flag the specific
+//     risk, dashed (not solid) so it never reads as "confirmed."
+// Plain "owned" (no attribution) and "internal" keep the original neutral
+// dashed underline — same tooltip discipline, no color implies no channel
+// was identifiable.
+.eo-chip-owned-desk {
+  border-bottom: 1px solid var(--eo-model);
+}
+
+.eo-chip-owned-caution {
+  border-bottom: 1px dashed var(--eo-warn);
+}
+
 .eo-chip-contradicted {
   background: color-mix(in srgb, #b3261e 24%, transparent);
   color: #b3261e;

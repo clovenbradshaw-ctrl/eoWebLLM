@@ -29,6 +29,7 @@ import BottomIcon from "../icons/bottom.svg";
 import StopIcon from "../icons/pause.svg";
 import RobotIcon from "../icons/robot.svg";
 import SpeakerIcon from "../icons/speaker.svg";
+import EyeIcon from "../icons/eye.svg";
 
 import {
   ChatMessage,
@@ -148,6 +149,7 @@ import {
   buildCitationNumbering,
 } from "./terrain/grounding-chip";
 import { CitationModal } from "./terrain/citation-modal";
+import { PromptTraceModal } from "./prompt-trace-modal";
 import type { GroundingSpan } from "../client/eo-grounding-spans";
 import { CiteySprite } from "./citey";
 
@@ -1058,17 +1060,17 @@ function WarrantPanel(props: { trace: WarrantTrace; id?: string }) {
 }
 
 // Citey, surfaced only when it has something to say — one unresolved span
-// per message (contradicted takes priority over an unconfirmed span
-// span), in plain language, never DEF/EVA/REC vocabulary. The full record
-// this is a teaser for already exists as WarrantPanel below; clicking here
-// opens and scrolls to it rather than duplicating its content.
+// per message (contradicted takes priority over an owned span), in plain
+// language, never DEF/EVA/REC vocabulary. The full record this is a teaser
+// for already exists as WarrantPanel below; clicking here opens and scrolls
+// to it rather than duplicating its content.
 function CiteyNote(props: {
   spans?: GroundingSpan[];
   citations?: CitationEntry[];
   warrantPanelId: string;
 }) {
   const flagged = props.spans?.find(
-    (s) => s.state === "contradicted" || s.state === "bleed" || s.state === "unconfirmed",
+    (s) => s.state === "contradicted" || s.state === "owned",
   );
   if (!flagged) return null;
 
@@ -1419,20 +1421,35 @@ function ChatInner() {
     span: GroundingSpan;
     citation: CitationEntry;
   } | null>(null);
+  // The assistant message whose prompt trace modal is open, if any — see
+  // prompt-trace-modal.tsx. Keyed by message id rather than a boolean so
+  // the modal always renders the message it was opened for even if
+  // messages re-render in between.
+  const [openPromptTraceId, setOpenPromptTraceId] = useState<string | null>(
+    null,
+  );
   // The terminal's active click-to-fold target, if any (see
   // renderEotEntryText below): a name pulled from a log line's own
   // quoted text, narrowing the terminal to only the lines that name it.
   const [eotFoldEntity, setEotFoldEntity] = useState<string | null>(null);
   // Which terrain the terminal is showing -- "log" is the existing running
-  // event feed; "graph" is the belief graph + tier stack, added alongside
-  // it, never replacing it.
-  const [eotTerminalTab, setEotTerminalTab] = useState<"log" | "graph">("log");
+  // event feed; "graph" is the belief graph + tier stack; "history" is a
+  // turn-by-turn scrubber over what each message's own warrant/plan/
+  // grounding traces looked like when it was live -- all three sit
+  // alongside each other, none replacing another.
+  const [eotTerminalTab, setEotTerminalTab] = useState<
+    "log" | "graph" | "history"
+  >("log");
   // Manual surf/fold over the graph terrain: the same substring fold a
   // click on a node already performs, driven by typing instead.
   const [eotGraphSearch, setEotGraphSearch] = useState("");
   // Same free-text fold, for the Log tab -- typing narrows the event feed
   // the same way clicking a quoted entity in a log line already does.
   const [eotLogSearch, setEotLogSearch] = useState("");
+  // Index into session.messages for the History tab's scrubber -- null
+  // means "not yet opened this session", at which point it defaults to the
+  // most recent message.
+  const [eotHistoryIndex, setEotHistoryIndex] = useState<number | null>(null);
   const [showSources, setShowSources] = useState(false);
 
   // The terrain panel's own nav history — every card opened this session
@@ -2471,6 +2488,18 @@ function ChatInner() {
                   >
                     Graph
                   </div>
+                  <div
+                    className={
+                      styles["eot-panel-tab"] +
+                      (eotTerminalTab === "history"
+                        ? ` ${styles["eot-panel-tab-active"]}`
+                        : "")
+                    }
+                    onClick={() => setEotTerminalTab("history")}
+                    title="Scrub to an earlier turn and see exactly what it warranted, planned, and moved when it was live"
+                  >
+                    History
+                  </div>
                 </div>
                 <div
                   className={styles["eot-panel-close"]}
@@ -2612,6 +2641,117 @@ function ChatInner() {
                   )}
                 </>
               )}
+
+              {eotTerminalTab === "history" &&
+                (() => {
+                  // Newest-first everywhere else in this panel, but a
+                  // scrubber reads oldest-to-newest -- turn 1 before turn 2
+                  // is how the conversation actually happened, and "next"
+                  // should mean forward in time.
+                  const historyMessages = session.messages;
+                  if (!historyMessages.length) {
+                    return (
+                      <div className={styles["eot-panel-empty"]}>
+                        EOT — no messages yet this session. History replays each
+                        message&apos;s own warrant, plan, and grounding traces
+                        exactly as they looked when it was sent.
+                      </div>
+                    );
+                  }
+                  const index = Math.min(
+                    Math.max(eotHistoryIndex ?? historyMessages.length - 1, 0),
+                    historyMessages.length - 1,
+                  );
+                  const msg = historyMessages[index];
+                  const preview = getMessageTextContent(msg)
+                    .replace(/\s+/g, " ")
+                    .trim();
+                  const movement = msg.hypergraphMovement;
+                  return (
+                    <>
+                      <div className={styles["eot-graph-stats"]}>
+                        <button
+                          className={styles["eot-history-nav-btn"]}
+                          disabled={index === 0}
+                          onClick={() => setEotHistoryIndex(index - 1)}
+                        >
+                          ← Earlier
+                        </button>
+                        <span className={styles["eot-graph-cursor"]}>
+                          turn {index + 1} of {historyMessages.length}
+                        </span>
+                        <button
+                          className={styles["eot-history-nav-btn"]}
+                          disabled={index === historyMessages.length - 1}
+                          onClick={() => setEotHistoryIndex(index + 1)}
+                        >
+                          Later →
+                        </button>
+                      </div>
+                      <div>
+                        <strong>{msg.role}</strong>
+                        {msg.system ? ` · ${msg.system}` : ""}
+                        {preview ? `: ${preview.slice(0, 200)}` : ""}
+                        {preview.length > 200 ? "…" : ""}
+                      </div>
+
+                      {msg.warrantTrace ? (
+                        <WarrantPanel trace={msg.warrantTrace} />
+                      ) : (
+                        msg.role === "assistant" && (
+                          <div className={styles["eot-panel-empty"]}>
+                            Warrant — not recorded: sent before this was
+                            tracked.
+                          </div>
+                        )
+                      )}
+
+                      {msg.planTrace && <PlanPanel trace={msg.planTrace} />}
+
+                      {msg.groundingSpans?.length ? (
+                        <div>
+                          Grounding —{" "}
+                          {(
+                            [
+                              "sourced",
+                              "echoed",
+                              "owned",
+                              "checking",
+                              "contradicted",
+                            ] as const
+                          )
+                            .map(
+                              (state) =>
+                                `${msg.groundingSpans!.filter((s) => s.state === state).length} ${state}`,
+                            )
+                            .join(", ")}
+                          .
+                        </div>
+                      ) : null}
+
+                      {movement ? (
+                        <div>
+                          Hypergraph — {movement.newNodes} new node
+                          {movement.newNodes === 1 ? "" : "s"},{" "}
+                          {movement.newEdges} new edge
+                          {movement.newEdges === 1 ? "" : "s"},{" "}
+                          {movement.stated} relation
+                          {movement.stated === 1 ? "" : "s"} stated
+                          {movement.reached.length
+                            ? ` — climbed to ${movement.top}${movement.shiftedAtTop ? " (shifted)" : " (observed, no shift)"} via ${movement.reached.join("→")}`
+                            : " — nothing folded"}
+                          .
+                        </div>
+                      ) : (
+                        <div className={styles["eot-panel-empty"]}>
+                          Hypergraph movement — not shown: either this message
+                          admitted nothing new, or it was sent before this was
+                          tracked and the record does not say which.
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
             </div>
           );
         })()}
@@ -3042,6 +3182,16 @@ function ChatInner() {
                                         )
                                       }
                                     />
+
+                                    {message.debugRequest && (
+                                      <ChatAction
+                                        text="View prompt"
+                                        icon={<EyeIcon />}
+                                        onClick={() =>
+                                          setOpenPromptTraceId(message.id)
+                                        }
+                                      />
+                                    )}
 
                                     <ChatAction
                                       text={Locale.Chat.Actions.Delete}
@@ -3521,6 +3671,19 @@ function ChatInner() {
           onClose={() => setOpenCitation(null)}
         />
       )}
+
+      {openPromptTraceId &&
+        (() => {
+          const traced = session.messages.find(
+            (m) => m.id === openPromptTraceId,
+          );
+          return traced ? (
+            <PromptTraceModal
+              message={traced}
+              onClose={() => setOpenPromptTraceId(null)}
+            />
+          ) : null;
+        })()}
     </div>
   );
 }

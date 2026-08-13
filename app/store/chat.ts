@@ -135,6 +135,7 @@ import {
   queryUserFacts,
   hypergraphScopeId,
   type HypergraphNavigation,
+  type HypergraphMovement,
 } from "../client/eo-hypergraph";
 import { buildSelfFactsBlock } from "../client/eo-self-facts";
 import {
@@ -152,7 +153,6 @@ import {
 import { createLiftRegistry, liftIfValidated } from "../client/eo-lift";
 import {
   buildFoldLedger,
-  buildWarrantBlock,
   classifyResponseSet,
   escalate,
   foldPressure,
@@ -283,6 +283,15 @@ export type ChatMessage = RequestMessage & {
   // claim this turn, what was folded away, and why the turn routed the way it
   // did. Attached to the message it governed, one step from the artifact.
   warrantTrace?: WarrantTrace;
+  // What this message's own admission into the hypergraph moved (see
+  // eo-hypergraph.ts's HypergraphMovement) — computed at admission time
+  // either way, but historically only ever turned into a prose EOT-log
+  // line and discarded. Persisted here so a turn-by-turn replay (the
+  // History tab) can show exactly what a message moved without re-running
+  // admission or trusting the capped EOT log ring buffer. Undefined on any
+  // message sent before this field existed, or when admission produced no
+  // movement (nothing stated).
+  hypergraphMovement?: HypergraphMovement;
   // Explore/the hypergraph is source-scoped by default — a chat turn is
   // admitted (see admitHypergraphTurn) but stays invisible there (see
   // isDocEnabled in eo-hypergraph.ts) unless the reader opts THIS message
@@ -291,6 +300,18 @@ export type ChatMessage = RequestMessage & {
   // eoConversationEnabled above, and deliberately so: uploaded sources are
   // what a reader meant to bring in, a chat reply is not, unless said so.
   eoIncludedInExplore?: boolean;
+  // The exact request this reply was generated from — every message sent to
+  // the engine, in order, plus the model/config it was sent with. Captured
+  // once, right before llm.chat() fires, so "what was this model actually
+  // prompted with" is an inspectable fact on the reply itself rather than
+  // something only the (capped, prose) EOT "send" log line gestures at.
+  // Undefined on any message sent before this field existed, and on
+  // messages that bypassed generation entirely (viaCalculator).
+  debugRequest?: {
+    model: string;
+    messages: RequestMessage[];
+    config: Record<string, unknown>;
+  };
 };
 
 export interface PlanTrace {
@@ -2673,6 +2694,11 @@ export const useChatStore = createPersistStore(
         // the whole search.
         let hypergraphEdgesConsidered = 0;
         let hypergraphThoughtDrafted = false;
+        // Hoisted so Citey's grounding layer (below, both the live onUpdate
+        // pass and the finalized onFinish pass) can check an "owned" atom
+        // against the exact prose this turn's prompt carried, not just
+        // whether a thought was drafted at all.
+        let hypergraphThoughtText = "";
         if (userContent.trim()) {
           try {
             // Always re-scan for anything not yet admitted — no longer
@@ -2753,6 +2779,7 @@ export const useChatStore = createPersistStore(
                     priority: EO_BLOCK_PRIORITY.SURF,
                   });
                   hypergraphThoughtDrafted = true;
+                  hypergraphThoughtText = thought;
                   get().pushEoLog("hypergraph", `thought: ${thought}`);
                 }
               }
@@ -2893,7 +2920,10 @@ export const useChatStore = createPersistStore(
             { id: userMessage.id, content: userContent },
             turnIndex,
           );
-          if (m) get().pushEoLog("hypergraph", describeHypergraphMovement(m));
+          if (m) {
+            userMessage.hypergraphMovement = m;
+            get().pushEoLog("hypergraph", describeHypergraphMovement(m));
+          }
         }
 
         // Every message this turn emits shares a turn id. The first one is the
@@ -2987,18 +3017,19 @@ export const useChatStore = createPersistStore(
         });
         const demand = groundingDemand(ledger);
         const preRoute = routeTurn(ledger, demand);
-        const warrantBlock = buildWarrantBlock(ledger, demand);
         get().pushEoLog("warrant", warrantLogLine(ledger, demand, preRoute));
 
+        // buildWarrantBlock's banner-and-bracket-tag rendering (e.g. "[rules]
+        // 7 in force, 24 folded to fingerprints") used to be spliced into the
+        // system prompt here. Dropped from what the model actually sees — a
+        // small local model has nowhere near the margin to both track that
+        // notation AND answer in prose, and format in is format out: prose
+        // out asks for prose in. The ledger/demand/route arithmetic behind it
+        // still runs and still drives routing and the warrantTrace panel
+        // (see eoWarrantTrace below) — only the literal block text sent to
+        // the model is gone.
         const budgetResult = eoEnforceContextBudget(
-          buildMessages(
-            warrantBlock
-              ? [
-                  { text: warrantBlock, priority: EO_BLOCK_PRIORITY.PROTECTED },
-                  ...extraSystemBlocks,
-                ]
-              : extraSystemBlocks,
-          ),
+          buildMessages(extraSystemBlocks),
           contextWindow,
           "chat turn",
         );
@@ -3035,6 +3066,20 @@ export const useChatStore = createPersistStore(
         );
 
         log.debug("Messages: ", sendMessages);
+
+        botMessage.debugRequest = {
+          model: modelConfig.model,
+          messages: sendMessages.map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+          config: {
+            ...modelConfig,
+            cache: useAppConfig.getState().cacheType,
+            stream: true,
+            enable_thinking: useAppConfig.getState().enableThinking,
+          },
+        };
 
         // Citey's grounding layer needs to know what this turn already
         // gathered (web/corpus) to tell "sourced" from unsourced — and needs
@@ -3098,6 +3143,10 @@ export const useChatStore = createPersistStore(
               botMessage.groundingSpans = buildGroundingSpans(message, {
                 citations: liveCitations,
                 question: userContent.trim(),
+                statedFacts: session0.eoMemory?.facts,
+                discourseText: assembled.discourseText || undefined,
+                hypergraphText: hypergraphThoughtText || undefined,
+                externalRequired: demand.required,
               });
             }
             get().updateCurrentSession((session) => {
@@ -3126,11 +3175,13 @@ export const useChatStore = createPersistStore(
                 { id: botMessage.id, content: message },
                 turnIndex,
               );
-              if (botMovement)
+              if (botMovement) {
+                botMessage.hypergraphMovement = botMovement;
                 get().pushEoLog(
                   "hypergraph",
                   describeHypergraphMovement(botMovement),
                 );
+              }
 
               // System 2: DEFINE now, against the System-1 draft that
               // already exists — unconditional, every turn, no mechanical
@@ -3666,6 +3717,10 @@ export const useChatStore = createPersistStore(
               botMessage.groundingSpans = buildGroundingSpans(message, {
                 citations: allCitations,
                 question: userContent.trim(),
+                statedFacts: session0.eoMemory?.facts,
+                discourseText: assembled.discourseText || undefined,
+                hypergraphText: hypergraphThoughtText || undefined,
+                externalRequired: demand.required,
               });
               botMessage.groundingCitations = allCitations;
               botMessage.content = message;
@@ -3738,14 +3793,14 @@ export const useChatStore = createPersistStore(
                               ? "contradicted"
                               : c.verdict === "confirmed"
                                 ? "sourced"
-                                : "unconfirmed";
+                                : "owned";
                           span.correction = c.correction;
                         } else if (span.state === "checking") {
                           // Searched and nothing conclusive came back. That
-                          // is "gathered and absent", not "nothing bore on
-                          // this turn" — the two were the same word before
-                          // the split.
-                          span.state = "unconfirmed";
+                          // is "gathered and absent" — the atom stays held as
+                          // the character's own assertion ("owned"), just not
+                          // one backed by any gathered material.
+                          span.state = "owned";
                         }
                       }
                     });
@@ -3920,6 +3975,12 @@ export const useChatStore = createPersistStore(
             verbatimTurns,
             summaryInPrompt,
           },
+          // The actual folded-summary prose this turn's prompt carried, if
+          // any — not just its stats above. Citey's grounding layer needs
+          // the plain text itself to check an "owned" atom for a possible
+          // echo (see originChannel in eo-grounding-spans.ts); null when no
+          // summary was in the prompt this turn.
+          discourseText: summaryText,
         };
       },
 
