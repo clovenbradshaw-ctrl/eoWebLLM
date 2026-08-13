@@ -161,3 +161,44 @@ test("every prompt resolves rather than throwing when no relay is configured", a
     assert.ok(Array.isArray(out), `${label}: webSearch did not return an array`);
   }
 });
+
+// ── The intent gate: silence vs. inability ────────────────────────────────
+
+test("the Latin-only intent gate reports when it could not read the question at all", async () => {
+  const { hasExplicitSearchIntent, searchIntentUndecidable } = await import(
+    "../app/client/eo-tool-router.ts"
+  );
+
+  // English: the gate genuinely examined these and has a real verdict.
+  for (const q of ["research dolphins", "write me an essay about dolphins"]) {
+    assert.equal(searchIntentUndecidable(q), false, `decidable: ${q}`);
+  }
+  assert.equal(hasExplicitSearchIntent("research dolphins"), true);
+  assert.equal(hasExplicitSearchIntent("write me an essay about dolphins"), false);
+
+  // No Latin letters anywhere: the patterns could not have matched, so their
+  // silence is not a verdict. 「イルカについて調べてください」 asks for a lookup
+  // as plainly as "look up dolphins" does.
+  for (const q of [
+    "イルカについて調べてください",
+    "ابحث عن الدلافين",
+    "докажи это",
+    "돌고래에 대해 알아봐",
+  ]) {
+    assert.equal(hasExplicitSearchIntent(q), false, `gate cannot fire: ${q}`);
+    assert.equal(searchIntentUndecidable(q), true, `should be undecidable: ${q}`);
+  }
+});
+
+test("a code-switched question was genuinely examined, even if the gate stayed silent", () => {
+  // One Latin letter is enough for the patterns to have had a chance, so
+  // "essay について書いて" is a real negative rather than an unreadable one.
+  // Only a question with no Latin at all was never looked at.
+  return import("../app/client/eo-tool-router.ts").then(
+    ({ searchIntentUndecidable }) => {
+      assert.equal(searchIntentUndecidable("write an essay about イルカ please"), false);
+      assert.equal(searchIntentUndecidable("イルカ about essay 書いて"), false);
+      assert.equal(searchIntentUndecidable("🐬について書いて"), true, "emoji are not Latin letters");
+    },
+  );
+});

@@ -39,10 +39,14 @@ import {
   formatWebSearchBlock,
   stripCitationBrackets,
 } from "../client/eo-websearch";
-import { resolveSearchQuery } from "../client/eo-search-query";
+import {
+  resolveSearchQuery,
+  groundReferent,
+} from "../client/eo-search-query";
 import {
   planTools,
   hasExplicitSearchIntent,
+  searchIntentUndecidable,
 } from "../client/eo-tool-router";
 import {
   extractComparisonPhrase,
@@ -392,6 +396,18 @@ export interface ChatSession {
   // is searched before it reaches the model, same shape as eochat's
   // per-conversation webSearch toggle.
   webSearchEnabled?: boolean;
+  /**
+   * The running "what this conversation is about", carried across turns and
+   * updated AFTER each answer rather than before the next one. That ordering
+   * is the point: a mid-stream message that names no subject ("prove it",
+   * 「証明して」) needs one at search time, and computing it then would put a
+   * model call in front of an answer the reader is watching an empty box for
+   * (LAWS.md L1 — no dead air). Turn N leaves it; turn N+1 reads it.
+   *
+   * Warranted as `focus` in eo-warrant.ts: paraphrase, canWarrant false. It
+   * steers retrieval and may never ground anything.
+   */
+  eoFocus?: string;
 
   // DISPLAY-ONLY toggle, deliberately not a computation toggle: checkGrounding
   // and the System 2 escalation it can trigger (chat.ts's onUserInput) run
@@ -2279,6 +2295,31 @@ export const useChatStore = createPersistStore(
                 fellBack: true,
               };
             }
+
+            // The mechanical gate above is English in Latin script, so against
+            // a question with no Latin letters it could not have matched — not
+            // "did not match", could not. Its silence carries no information
+            // there, and the router that just overruled nothing is a 1B model
+            // judging in the languages it is weakest in. Two weak signals
+            // agreeing is not a strong one.
+            //
+            // So a negative verdict on a question the gate never actually
+            // examined does not settle it. Searching anyway costs one cheap
+            // lookup; not searching costs an ungrounded answer, and only the
+            // reader whose script the gate cannot read ever pays it. Same
+            // fail-toward-work discipline as the catch above, applied to a
+            // verdict that arrived rather than one that did not.
+            if (
+              !decision.tools.includes("web_search") &&
+              searchIntentUndecidable(userContent)
+            ) {
+              decision = {
+                tools: ["web_search"],
+                reason:
+                  "the mechanical intent gate is Latin-script only and could not read this question — a model-only negative does not settle it",
+                fellBack: true,
+              };
+            }
           }
           get().pushEoLog(
             "web",
@@ -2318,31 +2359,20 @@ export const useChatStore = createPersistStore(
                 .filter(Boolean)
                 .join("\n");
 
+              // The focus was computed after the PREVIOUS answer, so reading
+              // it here costs nothing — no model call stands between the
+              // reader pressing send and the first token (L1). Turn N left it;
+              // this is turn N+1 reading it. groundReferent still checks it
+              // against the live conversation, so a focus that has gone stale
+              // (the thread moved on, the words are no longer there) simply
+              // contributes nothing rather than steering toward a dead subject.
+              const carriedFocus = session0.eoFocus || "";
               const resolved = await resolveSearchQuery({
                 message: rawQuestion,
                 conversation: focusWindow,
-                resolveReferent: async ({ message, conversation }) =>
-                  eoRunBackground(
-                    llm,
-                    [
-                      createMessage({
-                        role: "system",
-                        content: EO_FOCUS_PROMPT,
-                      }),
-                      createMessage({
-                        role: "user",
-                        content: `CONVERSATION:\n${conversation}\n\nLATEST MESSAGE:\n${message}`,
-                      }),
-                    ],
-                    {
-                      model: modelConfig.model,
-                      cache: useAppConfig.getState().cacheType,
-                      stream: false,
-                      temperature: 0.1,
-                      top_p: 0.1,
-                    },
-                    EO_ROUTER_TIMEOUT_MS,
-                  ),
+                resolveReferent: carriedFocus
+                  ? async () => carriedFocus
+                  : null,
               });
 
               turnWebQuery = resolved.query;
@@ -3495,6 +3525,56 @@ export const useChatStore = createPersistStore(
                   confirmed: acked,
                 });
               });
+
+              // ── Focus, deposited for the NEXT turn ─────────────────────
+              //
+              // Here rather than before the next search, so nothing waits on
+              // it: the answer is already on screen, and this runs in the same
+              // System 2 phase the reading probe and task controller were moved
+              // into for exactly that reason (see the comment above their call
+              // site — a fast pass that waits on model calls is not one).
+              //
+              // Failure is free. Any throw, timeout, or unusable reply leaves
+              // the previous focus in place, and a stale focus is already
+              // harmless: groundReferent checks it against the live
+              // conversation before anything is carried, so words the thread
+              // has moved past contribute nothing.
+              try {
+                const focusReply = await eoRunBackground(
+                  llm,
+                  [
+                    createMessage({ role: "system", content: EO_FOCUS_PROMPT }),
+                    createMessage({
+                      role: "user",
+                      content: `CONVERSATION:\n${userContent.trim()}\n${message}`,
+                    }),
+                  ],
+                  {
+                    model: modelConfig.model,
+                    cache: useAppConfig.getState().cacheType,
+                    stream: false,
+                    temperature: 0.1,
+                    top_p: 0.1,
+                  },
+                  EO_ROUTER_TIMEOUT_MS,
+                );
+                // Grounded against the turn that just happened, so what is
+                // stored is words that were actually said — never the model's
+                // own paraphrase of them.
+                const focus = groundReferent(
+                  focusReply,
+                  `${userContent.trim()}\n${message}`,
+                );
+                if (focus.length) {
+                  const line = focus.join(" ");
+                  get().updateCurrentSession((session) => {
+                    session.eoFocus = line;
+                  });
+                  get().pushEoLog("web", `in focus: ${line}`);
+                }
+              } catch {
+                // keep whatever focus the previous turn left
+              }
 
               // ── Citey's grounding layer, finalized ─────────────────────
               //
