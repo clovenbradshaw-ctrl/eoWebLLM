@@ -15,10 +15,27 @@
 // correct name by sharing one span with it. Each atom's span is:
 //   - "sourced"  — backed by material this turn actually gathered
 //                  (web/corpus).
-//   - "owned"    — nothing was gathered to check it against, or the atom is
-//                  a name (see eo-revision.ts for why names don't get an
-//                  asserted verdict) — the character's own assertion, held
-//                  as exactly that rather than left silently untagged.
+//   - "stated"   — the reader themselves said it. The desk channel warrants
+//                  (eo-warrant.ts: conversational, canWarrant true) — this is
+//                  backed, just not by a source.
+//   - "general"   — nothing external bore on this turn at all, so general
+//                  knowledge is the legitimate basis (internal channel:
+//                  "a legitimate answer when nothing external bears on the
+//                  question").
+//   - "bleed"     — the ONLY thing carrying it is a channel that cannot
+//                  warrant: the folded PAST DISCOURSE paraphrase, or a
+//                  hypergraph thought. The dangerous one, and the reason this
+//                  split exists — it reads as grounded to the model and rests
+//                  on a paraphrase whose source is gone.
+//   - "unconfirmed" — material WAS gathered and this is not in it.
+//
+// Those four were one state, "owned", until this pass. Collapsing them put a
+// claim the reader had personally stated in the same colour as a claim resting
+// on a summary of a summary, and gave the two the same caption. That is the
+// project's own rule against synthesising several channels into one verdict
+// (eo-constitution II.8, "no averaging of grounds") violated in miniature, at
+// the smallest unit the system has. Each is now reported on its own footing
+// and the disagreement between channels stays visible.
 //   - "checking" — a number atom with nothing to check it against yet, but
 //                  eligible for the async search+judge pass in chat.ts.
 // Computed with zero model/network calls, so it can run on every streamed
@@ -37,10 +54,28 @@ import {
   wordSet,
   numberSet,
   type CitationEntry,
+  type Index,
 } from "./eo-citation-check";
 
 export type GroundingState =
-  "sourced" | "echoed" | "owned" | "checking" | "contradicted";
+  | "sourced"
+  | "echoed"
+  | "stated"
+  | "general"
+  | "bleed"
+  | "unconfirmed"
+  | "checking"
+  | "contradicted";
+
+/** The four states that replaced "owned", for a caller that needs to treat
+ *  them as a class (a display filter, a count) without re-listing them and
+ *  falling behind when one is added. */
+export const UNSOURCED_STATES: readonly GroundingState[] = [
+  "stated",
+  "general",
+  "bleed",
+  "unconfirmed",
+];
 
 // A multi-token name atom ("Metro Nashville Police Department") doesn't
 // have to be all-or-nothing against the union index the way a single-token
@@ -70,11 +105,40 @@ export interface GroundingSpan {
 
 export function buildGroundingSpans(
   content: string,
-  opts: { citations: CitationEntry[]; question?: string },
+  opts: {
+    citations: CitationEntry[];
+    question?: string;
+    /** The reader's own stated facts, verbatim (eo-memory.ts's StatedFact
+     *  texts). The desk channel warrants, so an atom found here is backed —
+     *  it just is not backed by a source. Omitted, no atom can be `stated`. */
+    deskFacts?: string[];
+    /** Text from channels typed canWarrant:false — the folded PAST DISCOURSE
+     *  summary, a hypergraph thought. An atom found ONLY here is `bleed`.
+     *  Omitted, no atom can be `bleed`, and the state it would have had is
+     *  the one it gets. */
+    unwarrantedText?: string[];
+  },
 ): GroundingSpan[] {
   const citations = opts.citations ?? [];
   const index = citations.length ? buildUnionIndex(citations) : null;
   const questionWords = wordSet(opts.question || "");
+
+  // Built the same way the citation index is, so "does the desk say this" is
+  // the exact test "does the source say this" already is — same tokenisation,
+  // same number normalisation, no second looser guess (LAWS.md L11d).
+  const asIndex = (texts?: string[]) =>
+    texts && texts.length
+      ? buildUnionIndex(
+          texts.map((t, i) => ({ index: i, source_id: "", text: t })),
+        )
+      : null;
+  const deskIndex = asIndex(opts.deskFacts);
+  const unwarrantedIndex = asIndex(opts.unwarrantedText);
+  const coveredBy = (idx: Index | null, atom: { kind: string; tokens: string[] }) =>
+    !!idx &&
+    atom.tokens.every((t) =>
+      atom.kind === "number" ? hasNumber(idx.numbers, t) : hasWord(idx.words, t),
+    );
 
   const spans: GroundingSpan[] = [];
   for (const s of splitSentences(String(content || ""))) {
@@ -134,9 +198,27 @@ export function buildGroundingSpans(
               );
             })
             .map((c) => c.index);
-        } else state = atom.kind === "number" ? "checking" : "owned";
+        } else state = unsourcedState(atom, true);
       } else {
-        state = atom.kind === "number" ? "checking" : "owned";
+        state = unsourcedState(atom, false);
+      }
+
+      // The split. Order is precedence, and it is deliberate: the desk
+      // WARRANTS, so a fact the reader stated outranks every remaining
+      // possibility and is never reported as unconfirmed. `bleed` is checked
+      // before the fallbacks because it is the finding — an atom carried only
+      // by a paraphrase is not merely unbacked, it is unbacked in a way that
+      // looks backed from inside the prompt.
+      function unsourcedState(
+        a: { kind: "number" | "name"; tokens: string[] },
+        gathered: boolean,
+      ): GroundingState {
+        if (coveredBy(deskIndex, a)) return "stated";
+        if (coveredBy(unwarrantedIndex, a)) return "bleed";
+        // A number still earns the async resolve pass; that is about what can
+        // be CHECKED next, not about what is known now.
+        if (a.kind === "number") return "checking";
+        return gathered ? "unconfirmed" : "general";
       }
 
       spans.push({

@@ -1193,6 +1193,46 @@
   border-bottom: 1px dashed var(--dim, var(--light-gray));
 }
 
+// The three states split out of "owned". They keep its restraint — no filled
+// pill, because none of them is a verdict — and differ only in what the
+// underline says about WHY the atom is unsourced. Same visual family on
+// purpose: the reader should see one class of thing with distinctions inside
+// it, not four unrelated badges.
+
+// "stated" — the reader said it. The desk channel warrants (eo-warrant.ts),
+// so this is backed, and a solid underline says so without claiming a source.
+.eo-chip-stated {
+  background: transparent;
+  color: inherit;
+  font-weight: inherit;
+  padding: 0;
+  border-bottom: 1px solid var(--dim, var(--light-gray));
+}
+
+// "general" — nothing external bore on the turn. The faintest mark here: this
+// is the ordinary, legitimate case, and dressing it up would train the reader
+// to ignore the marks that matter.
+.eo-chip-general {
+  background: transparent;
+  color: inherit;
+  font-weight: inherit;
+  padding: 0;
+  border-bottom: 1px dotted var(--dim, var(--light-gray));
+}
+
+// "bleed" — carried only by a channel that cannot warrant. The one of the
+// four that earns a colour, because it is the one a reader cannot infer from
+// context: it looks grounded from inside the prompt and rests on a paraphrase
+// whose source is gone. Still not a pill — it is a warning about provenance,
+// not a claim that the sentence is wrong.
+.eo-chip-bleed {
+  background: transparent;
+  color: inherit;
+  font-weight: inherit;
+  padding: 0;
+  border-bottom: 1px dashed var(--eo-warn);
+}
+
 .eo-chip-checking {
   background: var(--eo-warn-soft);
   color: var(--eo-warn);

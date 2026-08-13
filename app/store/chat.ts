@@ -3000,7 +3000,7 @@ export const useChatStore = createPersistStore(
         log.debug("Messages: ", sendMessages);
 
         // Citey's grounding layer needs to know what this turn already
-        // gathered (web/corpus) to tell "sourced" from "owned" — and needs
+        // gathered (web/corpus) to tell "sourced" from unsourced — and needs
         // to know it live, while the draft is still streaming, not only
         // once onFinish runs. Everything it depends on (turnWebResults,
         // turnWebQuery, corpusPassages) was already produced by the
@@ -3600,7 +3600,7 @@ export const useChatStore = createPersistStore(
 
               // Spans eligible for the async resolve pass: numbers marked
               // "checking" (nothing gathered this turn to check them
-              // against yet), and names marked "owned" (searched anyway,
+              // against yet), and names in any unsourced state (searched anyway,
               // for the verbatim-clause affordance, but never given an
               // asserted verdict — see eo-revision.ts's module header for
               // why a name never earns "checking" in the first place).
@@ -3666,10 +3666,14 @@ export const useChatStore = createPersistStore(
                               ? "contradicted"
                               : c.verdict === "confirmed"
                                 ? "sourced"
-                                : "owned";
+                                : "unconfirmed";
                           span.correction = c.correction;
                         } else if (span.state === "checking") {
-                          span.state = "owned";
+                          // Searched and nothing conclusive came back. That
+                          // is "gathered and absent", not "nothing bore on
+                          // this turn" — the two were the same word before
+                          // the split.
+                          span.state = "unconfirmed";
                         }
                       }
                     });

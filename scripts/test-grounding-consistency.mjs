@@ -95,10 +95,10 @@ function applyResolveChecks(spans, checks) {
           ? "contradicted"
           : c.verdict === "confirmed"
             ? "sourced"
-            : "owned";
+            : "unconfirmed";
       span.correction = c.correction;
     } else if (span.state === "checking") {
-      span.state = "owned";
+      span.state = "unconfirmed";
     }
   }
   return spans;
@@ -132,6 +132,21 @@ test("drift guard: grounding-chip.tsx's citability predicate still matches its m
   );
 });
 
+test("drift guard: chat.ts's resolve write-back still lands on the states this mirrors", () => {
+  // The owned split renamed what a failed/unrelated resolve produces. That is
+  // exactly the kind of change a mirror misses silently, so it is guarded by
+  // name rather than left to whoever notices.
+  const src = readSrc("app/store/chat.ts");
+  assert.ok(
+    src.includes('c.verdict === "confirmed" ? "sourced" : "unconfirmed"'),
+    "chat.ts's verdict mapping changed — update applyResolveChecks above",
+  );
+  assert.ok(
+    src.includes('span.state = "unconfirmed";'),
+    "chat.ts's unresolved-checking fallback changed — update applyResolveChecks above",
+  );
+});
+
 test("drift guard: chat.ts still assigns provenance before the judged guard", () => {
   const src = readSrc("app/store/chat.ts");
   const provenance = src.indexOf("span.clause = c.clause;");
@@ -149,7 +164,20 @@ test("more evidence never lowers a span's grade", () => {
   // The atom-level analogue of escalate()'s monotone rule: evidence may raise
   // what a claim rests on, never quietly lower it. buildUnionIndex only ever
   // grows, so support can only ever be gained.
-  const RANK = { contradicted: 0, owned: 1, checking: 1, echoed: 2, sourced: 3 };
+  // The four states that replaced "owned" all sit on the same rung: they say
+  // different things about WHY an atom is unsourced, not different things
+  // about how well-backed it is. "stated" is the exception — the desk
+  // warrants — so it ranks with echoed.
+  const RANK = {
+    contradicted: 0,
+    bleed: 1,
+    unconfirmed: 1,
+    general: 1,
+    checking: 1,
+    stated: 2,
+    echoed: 2,
+    sourced: 3,
+  };
   const draft = "The Eiffel Tower was completed in 1889 in Paris.";
   const none = buildGroundingSpans(draft, { citations: [] });
   const some = buildGroundingSpans(draft, {

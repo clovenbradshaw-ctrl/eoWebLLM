@@ -142,8 +142,16 @@ export function chipReasonText(
       return "Echoes wording from a source without every word matching verbatim.";
     case "checking":
       return "Not checked against anything yet.";
+    case "stated":
+      return "You said this earlier — held on your word, not on a source.";
+    case "general":
+      return "General knowledge. Nothing external bore on this turn, so nothing was gathered to check it against.";
+    case "bleed":
+      return "The only thing carrying this is a summary of earlier turns, not a source. Worth checking before relying on it.";
+    case "unconfirmed":
+      return "Material was gathered this turn and this is not in it.";
     default:
-      return "Nothing was gathered to check this against — held as unconfirmed rather than guessed.";
+      return "Held as unconfirmed rather than guessed.";
   }
 }
 

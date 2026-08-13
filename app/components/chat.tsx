@@ -1058,7 +1058,7 @@ function WarrantPanel(props: { trace: WarrantTrace; id?: string }) {
 }
 
 // Citey, surfaced only when it has something to say — one unresolved span
-// per message (contradicted takes priority over an unconfirmed "owned"
+// per message (contradicted takes priority over an unconfirmed span
 // span), in plain language, never DEF/EVA/REC vocabulary. The full record
 // this is a teaser for already exists as WarrantPanel below; clicking here
 // opens and scrolls to it rather than duplicating its content.
@@ -1068,7 +1068,7 @@ function CiteyNote(props: {
   warrantPanelId: string;
 }) {
   const flagged = props.spans?.find(
-    (s) => s.state === "contradicted" || s.state === "owned",
+    (s) => s.state === "contradicted" || s.state === "bleed" || s.state === "unconfirmed",
   );
   if (!flagged) return null;
 

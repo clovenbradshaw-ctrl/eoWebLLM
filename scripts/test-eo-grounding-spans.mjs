@@ -4,13 +4,16 @@ import assert from "node:assert/strict";
 import { buildGroundingSpans } from "../app/client/eo-grounding-spans.ts";
 import { resolveSpans } from "../app/client/eo-revision.ts";
 
-test("buildGroundingSpans: no citations at all -> numbers 'checking', names 'owned'", () => {
+test("buildGroundingSpans: no citations at all -> numbers 'checking', names 'general'", () => {
   const content = "The Eiffel Tower was completed in 1889.";
   const spans = buildGroundingSpans(content, { citations: [] });
   const number = spans.find((s) => s.atomKind === "number");
   const name = spans.find((s) => s.atomKind === "name");
   assert.equal(number.state, "checking");
-  assert.equal(name.state, "owned");
+  // "general", not "unconfirmed": nothing external bore on this turn, so
+  // general knowledge is the legitimate basis rather than a gap. The two were
+  // the same state until the owned split.
+  assert.equal(name.state, "general");
 });
 
 test("buildGroundingSpans: citations support every atom -> sourced", () => {
