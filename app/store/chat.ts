@@ -35,13 +35,13 @@ import { getInstructionFolds } from "../client/eo-instructions";
 import { compileProjectInstructionFolds } from "../client/eo-project-instructions";
 import {
   webSearch,
+  configureSearchProxy,
   formatWebSearchBlock,
   stripCitationBrackets,
-  distillQuery,
 } from "../client/eo-websearch";
+import { resolveSearchQuery } from "../client/eo-search-query";
 import {
   planTools,
-  planSearchQuery,
   hasExplicitSearchIntent,
 } from "../client/eo-tool-router";
 import {
@@ -558,6 +558,30 @@ const EO_DESK_WINDOW_MARGIN_TURNS = 2;
 // system2 or task decomposition, no matter how the rest of the pipeline is
 // sequenced.
 const EO_ROUTER_TIMEOUT_MS = 75000;
+
+// How many recent messages the focus resolver reads. Small on purpose: it is
+// answering "what is this about right now", and a long window makes an old
+// subject compete with the current one. Bounded the same way every other
+// window here is (eo-warrant.ts's foldToMouth).
+const EO_FOCUS_TURNS = 6;
+
+// Prose in, prose out. No JSON is asked for — a small local model is not
+// reliable at structured output, and chat.ts already carries that lesson from
+// the DEFINE gate (see needsDecomposition below). Whatever it answers is
+// checked against the conversation's own text by groundReferent, so a reply
+// naming something that was never said contributes nothing rather than
+// contributing a guess.
+//
+// It is asked to answer IN THE CONVERSATION'S OWN WORDS because that is what
+// makes the check possible at all: a paraphrase, however good, will not be
+// found verbatim and will be discarded.
+const EO_FOCUS_PROMPT =
+  "You read a conversation and one new message from the reader. Reply with " +
+  "the subject the new message is about, copied EXACTLY as it appears in the " +
+  "conversation above — the same words, the same script, no translation and " +
+  "no rewording. If the new message already names its own subject, reply with " +
+  "that subject as the message writes it. Reply with only those few words: no " +
+  "sentence, no explanation, no quotes, no JSON.";
 
 // Bounds how many of a cloned repo's real code files get ingested in one
 // turn — same context-economy discipline as everything else the prior-art
@@ -2263,34 +2287,70 @@ export const useChatStore = createPersistStore(
           if (decision.tools.includes("web_search")) {
             try {
               const rawQuestion = userContent.trim();
-              const { query: rewrittenQuery, rewritten } =
-                await planSearchQuery({
-                  question: rawQuestion,
-                  fallback: distillQuery(rawQuestion) || rawQuestion,
-                  generate: (systemPrompt, userPrompt) =>
-                    eoRunBackground(
-                      llm,
-                      [
-                        createMessage({
-                          role: "system",
-                          content: systemPrompt,
-                        }),
-                        createMessage({ role: "user", content: userPrompt }),
-                      ],
-                      {
-                        model: modelConfig.model,
-                        cache: useAppConfig.getState().cacheType,
-                        stream: false,
-                      },
-                      EO_ROUTER_TIMEOUT_MS,
-                    ),
-                });
-              turnWebQuery = rewrittenQuery;
+
+              // The relay, if the reader runs one. Read per turn rather than
+              // once at boot so a change in Settings takes effect on the next
+              // question instead of the next reload. Empty disables the DDG
+              // backend entirely and the lookup is Wikipedia-only, exactly as
+              // before (eo-websearch.ts's configureSearchProxy rejects any
+              // non-http(s) value rather than half-enabling it).
+              configureSearchProxy(
+                useAppConfig.getState().searchProxyUrl || null,
+              );
+
+              // planSearchQuery used to run here, rewriting the question into
+              // a short noun-phrase query. It is gone, and the reason is
+              // measured rather than stylistic: reducing to the topic makes
+              // this search WORSE. 「イルカについてのエッセイを書いてください」
+              // returns four results of marine biology; 「イルカ」 alone
+              // returns four-of-five about Iruka the folk singer, because the
+              // surrounding words were the only thing separating the animal
+              // from the musician. Wikipedia still needs a noun phrase and
+              // still gets one — fetchWikipedia calls distillQuery itself.
+              //
+              // What replaces it answers a question a rewrite never could: a
+              // message may name no subject at all ("prove it", "find examples
+              // of that", 「証明して」), and its subject is in the thread. Same
+              // one background call as before, so no added dead air (L1).
+              const focusWindow = session0.messages
+                .slice(-EO_FOCUS_TURNS)
+                .map((m) => getMessageTextContent(m))
+                .filter(Boolean)
+                .join("\n");
+
+              const resolved = await resolveSearchQuery({
+                message: rawQuestion,
+                conversation: focusWindow,
+                resolveReferent: async ({ message, conversation }) =>
+                  eoRunBackground(
+                    llm,
+                    [
+                      createMessage({
+                        role: "system",
+                        content: EO_FOCUS_PROMPT,
+                      }),
+                      createMessage({
+                        role: "user",
+                        content: `CONVERSATION:\n${conversation}\n\nLATEST MESSAGE:\n${message}`,
+                      }),
+                    ],
+                    {
+                      model: modelConfig.model,
+                      cache: useAppConfig.getState().cacheType,
+                      stream: false,
+                      temperature: 0.1,
+                      top_p: 0.1,
+                    },
+                    EO_ROUTER_TIMEOUT_MS,
+                  ),
+              });
+
+              turnWebQuery = resolved.query;
               get().pushEoLog(
                 "web",
-                rewritten
-                  ? `query: "${rawQuestion.slice(0, 60)}" -> "${turnWebQuery}"`
-                  : `query: "${turnWebQuery}" (rewrite unavailable, used fallback)`,
+                resolved.standalone
+                  ? `query: "${turnWebQuery.slice(0, 70)}" (stood alone — ${resolved.reason})`
+                  : `in focus: ${resolved.carried.join(", ")} — carried into "${rawQuestion.slice(0, 40)}"`,
               );
               const results = await webSearch(turnWebQuery);
               turnWebResults = results;

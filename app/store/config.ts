@@ -82,6 +82,20 @@ export type ConfigType = {
   // enableThinking above). checkGrounding/System 2 escalation are never
   // touched by this flag; it only suppresses what a reader sees.
   groundingDisplayEnabled: boolean;
+  // A CORS-passing relay, if the reader runs one. Empty means no relay, which
+  // is the default and leaves the lookup exactly as it was: Wikipedia only.
+  //
+  // App-wide rather than per-chat because it is infrastructure, and empty by
+  // default rather than pointing at any host because it is the READER'S
+  // infrastructure — a relay baked into a client bundle is both a hostage to
+  // someone else's uptime and an invitation to send their queries through it.
+  // eo-websearch.ts's configureSearchProxy rejects any non-http(s) value, so a
+  // typo here disables the backend rather than half-enabling it.
+  //
+  // What it buys: the DuckDuckGo HTML backend, which is the only one that
+  // reads a natural-language question in any language. Without it, a Japanese
+  // question reaches en.wikipedia.org's lexical index and returns nothing.
+  searchProxyUrl: string;
   modelConfig: ModelConfig;
 };
 
@@ -138,6 +152,7 @@ export const DEFAULT_CONFIG: ConfigType = {
   // default, never checkGrounding/System 2 itself (see this field's own
   // comment above).
   groundingDisplayEnabled: false,
+  searchProxyUrl: "",
 
   modelConfig: DEFAULT_MODEL_CONFIG,
 };
