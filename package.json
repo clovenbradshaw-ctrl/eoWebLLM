@@ -12,6 +12,7 @@
     "export": "cross-env BUILD_MODE=export next build",
     "export:dev": "cross-env BUILD_MODE=export next dev",
     "prompts": "node ./scripts/fetch-prompts.mjs",
+    "check-docs": "node ./scripts/check-doc-citations.mjs",
     "prepare": "husky install",
     "proxy-dev": "sh ./scripts/init-proxy.sh && proxychains -f ./scripts/proxychains.conf yarn dev"
   },
@@ -71,6 +72,7 @@
     "eslint-plugin-prettier": "^5.1.3",
     "husky": "^9.0.11",
     "lint-staged": "^13.2.2",
+    "playwright": "^1.62.1",
     "prettier": "^3.0.2",
     "serwist": "^9.0.2",
     "typescript": "^5.4.5",

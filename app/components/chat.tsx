@@ -1353,6 +1353,29 @@ function ChatInner() {
   const fontSize = config.fontSize;
 
   const isStreaming = session.messages.some((m) => m.streaming);
+  // Instant "it heard you" feedback for the gap between hitting send and
+  // the backend's own typing indicator appearing. onUserInput (chat.ts) can
+  // spend real time before a bot message with `streaming: true` ever
+  // exists — retrieval over a large source, web routing, task-decomposition
+  // planning — during which the reader used to see literally nothing move.
+  // This is deliberately local/ephemeral UI state, not threaded through the
+  // store: it only needs to bridge "I hit send" to "the real pipeline's own
+  // indicator took over," and clearing it is driven by session state below,
+  // never touching onUserInput's own generation/isGenerating machinery.
+  const [turnPending, setTurnPending] = useState(false);
+  useEffect(() => {
+    if (!turnPending) return;
+    if (session.isGenerating || isStreaming) {
+      setTurnPending(false);
+      return;
+    }
+    // Safety net, not the normal path: if a turn errors out before ever
+    // setting isGenerating (a thrown pre-turn pass, say), this is what
+    // keeps the placeholder from sitting there forever instead of the
+    // reader having to reload to make it go away.
+    const timeout = setTimeout(() => setTurnPending(false), 30_000);
+    return () => clearTimeout(timeout);
+  }, [turnPending, session.isGenerating, isStreaming]);
 
   // The entity-mention affordance's target list (see entity-mention.tsx):
   // the session's own hypergraph's strongest nodes, by mention — the SAME
@@ -1476,6 +1499,26 @@ function ChatInner() {
   const isMobileScreen = useMobileScreen();
   const navigate = useNavigate();
   const [attachImages, setAttachImages] = useState<ChatImage[]>([]);
+  // Source ids already handed off to some sent message (see
+  // attachedSourceIds on ChatMessage) — the composer's own doc chips only
+  // show sources NOT in this set, so an upload's chip moves from "waiting
+  // in the composer" to "attached to what I asked" on submit instead of
+  // sitting in the composer forever. Derived from session.messages (not its
+  // own React state) so it survives a reload — the session's messages are
+  // itself the durable record of what's already been sent, so a chip that
+  // moved onto a message stays gone even after the tab reloads. The source
+  // itself stays registered on the session either way; this only tracks
+  // what's already been shown as attached to a message once.
+  const attachedSourceIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const m of session.messages) {
+      for (const id of m.attachedSourceIds ?? []) ids.add(id);
+    }
+    return ids;
+  }, [session.messages]);
+  const pendingSources = (session.eoSources ?? []).filter(
+    (s) => !attachedSourceIds.has(s.id),
+  );
   const [uploading, setUploading] = useState(false);
   const [uploadingFile, setUploadingFile] = useState(false);
   const [rereadingSourceId, setRereadingSourceId] = useState<string | null>(
@@ -1594,7 +1637,13 @@ function ChatInner() {
       // Joining the back of the line instead of sending straight through
       // keeps order intact and, via flushQueuedInput below, drains
       // whatever was stuck.
-      chatStore.queueUserInput(userInput, attachImages);
+      chatStore.queueUserInput(
+        userInput,
+        attachImages,
+        pendingSources.map((s) => s.name),
+        pendingSources.map((s) => s.id),
+      );
+      setTurnPending(true);
       setAttachImages([]);
       localStorage.setItem(LAST_INPUT_KEY, userInput);
       setUserInput("");
@@ -1607,7 +1656,14 @@ function ChatInner() {
       return;
     }
 
-    chatStore.onUserInput(userInput, llm, attachImages);
+    chatStore.onUserInput(
+      userInput,
+      llm,
+      attachImages,
+      pendingSources.map((s) => s.name),
+      pendingSources.map((s) => s.id),
+    );
+    setTurnPending(true);
     setAttachImages([]);
     localStorage.setItem(LAST_INPUT_KEY, userInput);
     setUserInput("");
@@ -3101,24 +3157,26 @@ function ChatInner() {
                                       model
                                     </div>
                                   )}
-                                  {/* System 2 badge ("⚖ System 2 · responseKind") hidden
-                                  per feedback, same treatment as the Warrant/Plan
-                                  panels below — message.responseKind is still set,
-                                  just not surfaced as a line above the reply.
-                              {!isUser && message.responseKind && (
-                                <div
-                                  style={{
-                                    marginBottom: 8,
-                                    fontSize: "12px",
-                                    opacity: 0.65,
-                                    textTransform: "uppercase",
-                                    letterSpacing: "0.06em",
-                                  }}
-                                >
-                                  {`\u{2696} System 2 · ${message.responseKind.replace(/-/g, " ")}`}
-                                </div>
-                              )}
-                              */}
+                                  {/* Re-enabled: without this label a System 2
+                                  follow-up (e.g. a "grounding" note pointing out
+                                  the PRIOR answer's own unsupported claims) renders
+                                  as an unlabeled assistant bubble indistinguishable
+                                  from a normal reply. Live testing showed this reads
+                                  as the model inexplicably contradicting itself —
+                                  worse than the clutter this was hidden to avoid. */}
+                                  {!isUser && message.responseKind && (
+                                    <div
+                                      style={{
+                                        marginBottom: 8,
+                                        fontSize: "12px",
+                                        opacity: 0.65,
+                                        textTransform: "uppercase",
+                                        letterSpacing: "0.06em",
+                                      }}
+                                    >
+                                      {`\u{2696} Grounding check · ${message.responseKind.replace(/-/g, " ")}`}
+                                    </div>
+                                  )}
                                   {/* Warrant/Plan trace panels hidden per feedback — the
                                   per-message "Warrant — System 1..." / "Plan — ..."
                                   lines above the reply. Data is still collected
@@ -3240,6 +3298,19 @@ function ChatInner() {
                               })}
                             </div>
                           )}
+                          {!!message.attachedSourceNames?.length && (
+                            <div className={styles["attach-docs-sent"]}>
+                              {message.attachedSourceNames.map((name) => (
+                                <div
+                                  key={name}
+                                  className={styles["attach-doc-sent"]}
+                                  title={name}
+                                >
+                                  {name}
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                         {!isUser && message.sourceCitations?.length ? (
                           <FacingPageSourcePanel
@@ -3262,6 +3333,25 @@ function ChatInner() {
                 </Fragment>
               );
             })}
+            {turnPending && (
+              <div className={styles["chat-message"]}>
+                <div className={styles["chat-message-container"]}>
+                  <div className={styles["chat-message-header"]}>
+                    <div className={styles["chat-message-avatar"]}>
+                      <TemplateAvatar
+                        avatar={session.template.avatar}
+                        model={config.modelConfig.model}
+                        streamedText=""
+                        name={session.template.name}
+                      />
+                    </div>
+                  </div>
+                  <div className={styles["chat-message-status"]}>
+                    {Locale.Chat.Typing}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
           <div className={styles["chat-input-panel"]}>
             <ScrollDownToast onclick={scrollToBottom} show={!hitBottom} />
@@ -3307,7 +3397,7 @@ function ChatInner() {
             />
             <label
               className={`${styles["chat-input-panel-inner"]} ${
-                attachImages.length != 0
+                attachImages.length != 0 || pendingSources.length != 0
                   ? styles["chat-input-panel-inner-attach"]
                   : ""
               }`}
@@ -3351,6 +3441,29 @@ function ChatInner() {
                       </div>
                     );
                   })}
+                </div>
+              )}
+              {pendingSources.length != 0 && (
+                <div className={styles["attach-docs"]}>
+                  {pendingSources.map((source) => (
+                    <div key={source.id} className={styles["attach-doc"]}>
+                      <span
+                        className={styles["attach-doc-name"]}
+                        title={source.name}
+                      >
+                        {source.name}
+                      </span>
+                      <DeleteImageButton
+                        deleteImage={() => {
+                          chatStore.updateCurrentSession((current) => {
+                            current.eoSources = (
+                              current.eoSources ?? []
+                            ).filter((s) => s.id !== source.id);
+                          });
+                        }}
+                      />
+                    </div>
+                  ))}
                 </div>
               )}
               {isStreaming ? (

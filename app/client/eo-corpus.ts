@@ -292,9 +292,18 @@ export async function retrieveCorpus(
     } catch {
       continue;
     }
+    // A large source (a full novel, say) can produce thousands of chunks;
+    // scoring them all in one synchronous sweep would stall the tab for the
+    // whole scan. Yield back to the event loop every so often so the UI
+    // stays responsive while a big source is being searched.
+    let sinceYield = 0;
     for (const chunk of chunkText(text)) {
       const score = scoreChunk(chunk.text, terms);
       if (score > 0) candidates.push({ source, ...chunk, score });
+      if (++sinceYield >= 200) {
+        sinceYield = 0;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
     }
   }
   candidates.sort((a, b) => b.score - a.score || a.byteStart - b.byteStart);

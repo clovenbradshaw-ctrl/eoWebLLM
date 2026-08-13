@@ -233,6 +233,20 @@ const CLAIM_STOPWORDS = new Set([
   "conversely",
   "notably",
   "indeed",
+  // Discourse adverbs a small model loves to open sentences with. They are
+  // never proper names, so a capitalized "Unfortunately" is grammar, not a
+  // claim — flagging it makes the reader pay for the model's mannerisms.
+  "unfortunately",
+  "fortunately",
+  "thankfully",
+  "regrettably",
+  "admittedly",
+  "sadly",
+  "luckily",
+  "ironically",
+  "surprisingly",
+  "honestly",
+  "interestingly",
   "perhaps",
   "maybe",
   "possibly",
@@ -321,6 +335,37 @@ export interface Index {
   numbers: Set<string>;
 }
 
+// ── Closed-class paraphrase: the abbreviation table ────────────────────────
+//
+// The check is deliberately literal — a number or name must exist in the
+// bytes cited. But "literal" is not "dumb": a source that says "Chief
+// Executive" supports an answer that says "CEO", and a source that says "CEO"
+// supports an answer that says "Chief Executive". These are fixed, well-known
+// equivalences — general knowledge, which in this pipeline is a PRIOR, and the
+// point of a prior is that it is applied without asking the model (LAWS.md
+// L11d: no second, looser guess). The table is closed-form and symmetric: it
+// is applied to the union index at build time in both directions, so the check
+// itself stays the exact string-containment test it always was. Deliberately
+// conservative — office roles only, nothing that collides with ordinary prose
+// ("us", "est", "gov") where expanding would fabricate support.
+const ABBREV_EXPANSIONS: Record<string, string[]> = {
+  ceo: ["chief", "executive"],
+  coo: ["chief", "operating", "officer"],
+  cfo: ["chief", "financial", "officer"],
+  cto: ["chief", "technology", "officer"],
+  cio: ["chief", "information", "officer"],
+  cmo: ["chief", "marketing", "officer"],
+  vp: ["vice", "president"],
+};
+
+/** Expansion words for an abbreviation, if it is one of the closed class. */
+export function abbreviationExpansion(word: string): string[] | null {
+  const key = String(word || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+  return ABBREV_EXPANSIONS[key] ?? null;
+}
+
 export function buildUnionIndex(citations: CitationEntry[]): Index {
   const words = new Set<string>();
   const numbers = new Set<string>();
@@ -328,7 +373,55 @@ export function buildUnionIndex(citations: CitationEntry[]): Index {
     for (const w of wordSet(c.text)) words.add(w);
     for (const n of numberSet(c.text)) numbers.add(n);
   }
+  // Both directions, so a disagreement that is only an abbreviation resolves
+  // whichever way the source wrote it.
+  for (const w of [...words]) {
+    const exp = abbreviationExpansion(w);
+    if (exp) for (const e of exp) words.add(e);
+  }
+  for (const [key, phrase] of Object.entries(ABBREV_EXPANSIONS)) {
+    if (phrase.every((p) => hasWord(words, p))) words.add(key);
+  }
   return { words, numbers };
+}
+
+/**
+ * Whether one checkable token is supported by an index — exact bytes, or the
+ * closed-class abbreviation of those bytes (both directions, per the table
+ * above). Never a looser guess: the expansion list is fixed and small.
+ */
+export function tokenSupported(
+  index: Index,
+  isNumber: boolean,
+  token: string,
+): boolean {
+  if (isNumber) return hasNumber(index.numbers, token);
+  if (hasWord(index.words, token)) return true;
+  const exp = abbreviationExpansion(token);
+  if (exp) return exp.every((e) => hasWord(index.words, e));
+  return false;
+}
+
+/**
+ * Which of a check's findings a DIFFERENT set of citations actually supports.
+ *
+ * This is the surprise-driven re-surf's resolution test (the System-2 pass in
+ * chat.ts): the draft asserted "CEO"; the first surf's passages lack it, so it
+ * was reported unsupported — but a re-surf keyed on the draft's own unusual
+ * word choice can surface the passage that says "Chief Executive", and then
+ * the finding resolves and the reader is never shown a note about it. Same
+ * index, same token support as the original check; only the material changed.
+ * If it resolves, it was never really unsupported — it was un-surfaced.
+ */
+export function resolveFindingsAgainst(
+  findings: GroundingFinding[],
+  citations: CitationEntry[],
+): GroundingFinding[] {
+  if (!citations.length) return [];
+  const index = buildUnionIndex(citations);
+  return findings.filter((f) =>
+    f.absent.every((t) => tokenSupported(index, f.atomKind === "number", t)),
+  );
 }
 
 const ABBREV =
@@ -510,11 +603,8 @@ export function checkGrounding(
       atomsChecked++;
       const absent: string[] = [];
       for (const token of atom.tokens) {
-        const supported =
-          atom.kind === "number"
-            ? hasNumber(index.numbers, token)
-            : hasWord(index.words, token);
-        if (!supported) absent.push(token);
+        if (!tokenSupported(index, atom.kind === "number", token))
+          absent.push(token);
       }
       if (!absent.length) continue;
       findings.push({
@@ -574,6 +664,52 @@ export function annotateVoids(
     out = out.slice(0, f.end) + ` ${marker}` + out.slice(f.end);
   }
   return out;
+}
+
+/**
+ * A mechanical replacement value for one unsupported claim, found by matching
+ * the draft sentence that made the claim against sentences of the material
+ * actually consulted this turn — never by asking the model what the right
+ * value is (LAWS.md L5: a compliance-critical fact is never left to the
+ * model's own instruction-following).
+ *
+ * Deliberately conservative: a candidate sentence must share at least
+ * SNIP_MIN_SIGNIFICANT_WORDS non-numeric words with the draft sentence (so
+ * the match is topical, not coincidental), and the winning sentence must
+ * contain exactly one atom of the claim's own kind — two or more candidate
+ * numbers/names in the best-matching sentence means there's no way to pick
+ * the right one mechanically, so this returns null rather than guess.
+ */
+export function findMechanicalCorrection(
+  atom: { text: string; atomKind: "number" | "name" },
+  draftSentence: string,
+  consultedText: string[],
+): string | null {
+  const draftWords = new Set(
+    [...significantWords(draftSentence)].filter((w) => !/^\p{N}+$/u.test(w)),
+  );
+  if (draftWords.size < SNIP_MIN_SIGNIFICANT_WORDS) return null;
+
+  let best: { text: string; overlap: number } | null = null;
+  for (const passage of consultedText) {
+    for (const s of splitSentences(passage)) {
+      if (s.text.toLowerCase().includes(atom.text.toLowerCase())) continue;
+      const candWords = significantWords(s.text);
+      let overlap = 0;
+      for (const w of draftWords) if (candWords.has(w)) overlap++;
+      if (overlap < SNIP_MIN_SIGNIFICANT_WORDS) continue;
+      if (!best || overlap > best.overlap) best = { text: s.text, overlap };
+    }
+  }
+  if (!best) return null;
+
+  const atoms = extractAtoms(best.text, 0).filter(
+    (a) => a.kind === atom.atomKind,
+  );
+  if (atoms.length !== 1) return null;
+  if (atoms[0].text.trim().toLowerCase() === atom.text.trim().toLowerCase())
+    return null;
+  return atoms[0].text;
 }
 
 // ── Snipping: show the exact words that grounded the reply, not the whole
@@ -742,4 +878,105 @@ export function checkConsistency(
     (n) => !sourceNumbers.has(n),
   );
   return { negationMismatch, unsupportedNumbers };
+}
+
+// ── detectMaterialEvasion: denial-vs-bytes ────────────────────────────────
+
+const EVASION_VERBS =
+  "mention|say|state|specify|provide|give|tell|address|indicate|reveal|" +
+  "list|detail|contain|include|cover|discuss|record|report|identify|note|" +
+  "describe|name|cite|appear";
+const EVASION_VERBS_BARE =
+  "mention|provide|specify|give|contain|include|cover|address|discuss|" +
+  "record|report|note|describe|name|cite|list|detail|indicate|reveal|appear";
+const EVASION_PARTICIPLES =
+  "mentioned|specified|found|addressed|stated|given|provided|discussed|" +
+  "documented|recorded|available|known|noted|indicated|listed|revealed|" +
+  "detailed|included|covered|described|named|cited|identified";
+const EVASION_NOUNS =
+  "mention|information|details?|data|figures?|record|indication|reference|" +
+  "discussion|statement|answer|listing|coverage";
+const SOURCE_NOUNS =
+  "text|document|passage|passages|material|source|corpus|report|article|" +
+  "chapter|section|page|answer|file|record|documents?";
+const NEGATED =
+  "(?:doesn[''’]?t|does not|didn[''’]?t|did not|won[''’]?t|will not)";
+
+const EVASION_PATTERNS: RegExp[] = [
+  // "the document does not mention / say / provide ..." — subject explicitly
+  // the material, any denial verb.
+  new RegExp(
+    `\\b(?:the\\s+)?(?:${SOURCE_NOUNS})\\s+${NEGATED}\\s+(?:${EVASION_VERBS})\\b`,
+    "i",
+  ),
+  // bare "doesn't mention / does not provide ..." (optionally "it does not").
+  // Deliberately narrower than the subject-anchored list: "doesn't say X but
+  // says Y" is ordinary rhetoric, "doesn't mention X" is a coverage denial.
+  new RegExp(`\\b(?:it\\s+)?${NEGATED}\\s+(?:${EVASION_VERBS_BARE})\\b`, "i"),
+  // "isn't mentioned / was not given / is not known ..."
+  new RegExp(
+    `\\b(?:isn[''’]?t|is not|wasn[''’]?t|was not|weren[''’]?t|were not)\\s+(?:${EVASION_PARTICIPLES})\\b`,
+    "i",
+  ),
+  // bare "not specified / not found / not available ..."
+  new RegExp(`\\bnot\\s+(?:${EVASION_PARTICIPLES})\\b`, "i"),
+  // "no mention / no information / no details / no data / no figures ..."
+  new RegExp(`\\bno\\s+(?:${EVASION_NOUNS})\\b`, "i"),
+  // "nothing about / on / regarding"
+  /\bnothing\s+(?:about|on|regarding)\b/i,
+  // "couldn't find / cannot determine / cannot be determined / unable to say ..."
+  new RegExp(
+    `\\b(?:couldn[''’]?t|could not|can[''’]?t|cannot|unable to|` +
+      `wasn[''’]?t able to|was not able to|weren[''’]?t able to|` +
+      `were not able to|is unable to|are unable to|am unable to)\\s+` +
+      `(?:be\\s+)?(?:find|determine|ascertain|establish|confirm|verify|` +
+      `identify|locate|say|provide|give|recover|discover|decide|found|` +
+      `determined|verified|ascertained|established|confirmed|identified|` +
+      `located|decided)\\b`,
+    "i",
+  ),
+  // "not in the document / not in the text / not in the records"
+  new RegExp(`\\bnot\\s+in\\s+the\\s+(?:${SOURCE_NOUNS})\\b`, "i"),
+  // "it is not clear / not certain / not known which|whether|how ..."
+  new RegExp(
+    `\\bit\\s+(?:is|[''’]s)\\s+not\\s+(?:clear|certain|known|obvious|specified)\\s+` +
+      `(?:which|whether|how|what|when|where|who)\\b`,
+    "i",
+  ),
+  // "not sure which / whether / how ..."
+  new RegExp(
+    `\\bnot\\s+sure\\s+(?:which|whether|how|what|when|where|who)\\b`,
+    "i",
+  ),
+  // "no specific / no explicit information ..."
+  new RegExp(`\\bno\\s+(?:specific|explicit)\\s+(?:${EVASION_NOUNS})\\b`, "i"),
+  // "fails to mention / fail to provide ..."
+  new RegExp(`\\bfails?\\s+to\\s+(?:${EVASION_VERBS})\\b`, "i"),
+  // "without mentioning / without providing ..."
+  new RegExp(
+    `\\bwithout\\s+(?:mentioning|providing|giving|stating|specifying|addressing|covering|discussing)\\b`,
+    "i",
+  ),
+];
+
+/**
+ * Detect an evasion in a draft: a claim that the reader's own material does
+ * not cover something, phrased as a denial ("doesn't mention", "not
+ * specified", "no information about"). A denial alone is cheap to state and
+ * models state them reflexively; this only counts as an EVASION when the
+ * mechanical retrieval returned passages this turn — when the bytes disagree
+ * with the prose, the retrieval wins. Returns the first matched denial phrase
+ * (lowercased) or null. Pure, zero model/network calls — same tier as
+ * checkGrounding.
+ */
+export function detectMaterialEvasion(
+  draft: string,
+  retrievedPassages: number,
+): string | null {
+  if (!draft || retrievedPassages < 1) return null;
+  for (const re of EVASION_PATTERNS) {
+    const m = String(draft).match(re);
+    if (m) return m[0].toLowerCase();
+  }
+  return null;
 }

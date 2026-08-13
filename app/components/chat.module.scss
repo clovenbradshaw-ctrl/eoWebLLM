@@ -42,6 +42,72 @@
   }
 }
 
+.attach-docs {
+  position: absolute;
+  left: 30px;
+  bottom: 32px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: calc(100% - 60px);
+}
+
+.attach-doc {
+  cursor: default;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 8px;
+  border: rgba($color: #888, $alpha: 0.2) 1px solid;
+  border-radius: 16px;
+  background-color: var(--white);
+
+  .attach-doc-name {
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+  }
+
+  .delete-image {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 5px;
+    flex-shrink: 0;
+  }
+}
+
+// Doc chips rendered on a sent user message (see message.attachedSourceNames)
+// -- the read-only counterpart to .attach-doc above: no delete button, since
+// the upload already moved from "waiting in the composer" to "attached to
+// this question".
+.attach-docs-sent {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.attach-doc-sent {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  height: 28px;
+  line-height: 28px;
+  padding: 0 10px;
+  border: rgba($color: #888, $alpha: 0.2) 1px solid;
+  border-radius: 14px;
+  font-size: 12px;
+  background-color: var(--white);
+}
+
 .chat-input-actions {
   display: flex;
   flex-wrap: wrap;

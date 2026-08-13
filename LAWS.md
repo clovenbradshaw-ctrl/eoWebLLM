@@ -116,17 +116,22 @@ and one simple lookup.
 
 ## L4 — "Reading" is the full organ chain, not the shallowest script's slice of it
 
-> **Superseded in part by `eoreader6/READING-POLICY.md`, which is canonical
-> for how reading works.** Two claims below are wrong and are corrected
-> there: (a) that no assembled reader exists — `packages/host/corpus.js`
-> (`createSession`/`admitChunked`/`sessionReferents`/`sessionRelations`, whose
-> `discoveredCast` chains pronoun binding) plus `packages/host/surfer.js` is
-> exactly that, and is what a reading should run through; (b) that the six
-> stages below are the whole of reading — they omit **retrieval**, and so
-> mis-frame activation decay as memory loss. Activation decays and re-zeros by
-> design; beings are not forgotten, they return on re-mention through
-> retrieval. See READING-POLICY.md P1. Never enlarge an activation window to
-> fix a recall failure.
+> **Correction — the blockquote below originally cited `eoreader6/READING-
+> POLICY.md` as canonical and superseding. That file does not exist and
+> never has, in either repo's git history, on any branch (checked
+> 2026-08-13). Whatever wrote this blockquote either described a doc that
+> was planned but never built, or fabricated the citation; either way,
+> nothing should defer to it. The correction itself is real and stands on
+> its own record here, not on a missing file.** Two claims below are wrong
+> and are corrected here: (a) that no assembled reader exists —
+> `packages/host/corpus.js` (`createSession`/`admitChunked`/
+> `sessionReferents`/`sessionRelations`, whose `discoveredCast` chains
+> pronoun binding) plus `packages/host/surfer.js` is exactly that, and is
+> what a reading should run through; (b) that the six stages below are the
+> whole of reading — they omit **retrieval**, and so mis-frame activation
+> decay as memory loss. Activation decays and re-zeros by design; beings are
+> not forgotten, they return on re-mention through retrieval. Never enlarge
+> an activation window to fix a recall failure.
 
 Asked to characterize `eoreader6`'s ability to "read" a book, a first pass
 described only `goldens/network/read.mjs` — the co-occurrence golden that
@@ -138,7 +143,15 @@ answering a narrower question than the engine can: "Direction and polarity
 also carry — deliberately not scored here … because the four reference
 networks this golden checks against are themselves undirected, untyped
 co-occurrence counts and have no dimension to check direction or a verb
-against" (`goldens/network/read.mjs:175-185`). Describing that golden as
+against" — attributed here to `goldens/network/read.mjs:175-185`, but that
+path has never existed in eoreader6's history (checked 2026-08-13; no
+`goldens/network/` directory ever existed, and this quoted passage does not
+appear anywhere in the repo via full-text search). The underlying claim — a
+co-occurrence golden exists and deliberately doesn't score direction/
+polarity — is plausible and consistent with `goldens/cast/`'s design, but
+this specific citation is fabricated and should not be trusted or re-cited
+until someone locates or rebuilds the real golden it's describing. Describing
+that golden as
 what `eoreader6` "does" mistook the one organ with a scoreboard for the
 whole instrument. There is also no single function to point to instead —
 `packages/engine`'s only public export (`packages/engine/index.js`) is
@@ -149,9 +162,13 @@ no `read(book)` among them. Every reading script in `scripts/` — `read-
 tiered.mjs`, `read-people.mjs`, `read-ladder.mjs`, `read-paradigm.mjs`,
 `full-golden-layered.mjs`, `chapter-scene-level.mjs`, `terrain-census.mjs`
 — hand-assembles its own subset of organs to ask its own question, and
-`eoreader6/CLAUDE.md` endorses exactly that pattern: a new driver's job is
-"usually to ask a new QUESTION of that pipeline's output, not to rebuild
-pieces of the pipeline." So the correction below is a definition, not a
+a file referred to here as `eoreader6/CLAUDE.md` was said to endorse exactly
+that pattern — a new driver's job is "usually to ask a new QUESTION of that
+pipeline's output, not to rebuild pieces of the pipeline" — but no such file
+has ever existed in eoreader6's history (checked 2026-08-13). The stated
+principle is sound and worth keeping regardless of where it was supposedly
+written down; it just isn't backed by any real file today. So the correction
+below is a definition, not a
 pointer to code that already assembles it — the richest version of reading
 is the full set of organs available to be chained, in the order `read-
 people.mjs` chains them, not any one script's slice.
@@ -176,8 +193,11 @@ based name-variant coreference before any entity exists
 (`surfaces.js::discoverReferents`), and a second pass over admitted
 entities that merges by arrival *shape* — segregation and displacement,
 never string comparison — for exactly the cases spelling-merge is
-conservative about on purpose (`referents/consequence.js`,
-`referents/cooccurrence.js::mergeAliasedEntities`). **(4) Typed, directional
+conservative about on purpose (`referents/consequence.js::
+identityByConsequence` — corrected 2026-08-13 from a previous citation to
+`referents/cooccurrence.js::mergeAliasedEntities`, a file and function that
+have never existed in eoreader6's history; the arrival-shape merge behavior
+described here is real and lives in `identityByConsequence`). **(4) Typed, directional
 relation.** SVO triples with polarity (`perceiver/text/relations.js`) feed a
 decaying belief graph (`emergence/graph.js`); `emergence/binding.js` then
 tests each pair through a displacement null (is this co-arrival real),
@@ -226,3 +246,91 @@ call, "full capacity" is never a fixed ceiling to gesture at — it is stages
 1–6 above, available to be assembled, with the domain-general/encoded-
 assumption split from stage (1) holding regardless of how many of the later
 stages a given run adds on top.
+
+---
+
+## L5 — A compliance-critical fact is never left to the model's own
+instruction-following
+
+`app/store/chat.ts`'s grounding-check follow-up used to work like this: run
+`checkGrounding` mechanically to find the draft's unsupported claims, then
+hand those findings to the SAME small local model and prompt it to write a
+short correction — "state the right value if the material has one, don't
+hedge, don't apologise, three sentences at most." That prompt was reasonable
+prose and the model still didn't reliably follow it. Live end-to-end testing
+against this exact model found it: (a) fabricating a founding year (answered
+"1893" against a document that stated "2031" in the passage it had just been
+shown), (b) fabricating a budget figure ("$1.136 billion, a 17.4% increase"
+against a source that said $1,022,900,000 and +$210,600,000), and separately,
+in the climb-response prompt (corrected 2026-08-13: this lives in
+`app/store/chat.ts`'s `climbedNav`/`buildThoughtUserPrompt` call, not in
+`eo-warrant.ts` — that file has never contained a climb-response prompt or
+`containsPromptScaffold`; `eo-warrant.ts`'s actual job is deciding grounding-
+warrant from fold-ledger arithmetic, a different concern), echoing the
+prompt's own closing instruction back as if it were an answer rather than
+either a verdict or the literal sentinel it was told to emit
+(`containsPromptScaffold`, imported into `chat.ts` from
+`eo-holonic-plan.ts`, exists specifically to catch that). Three different call sites, three different
+ways the same model failed to do the one thing its prompt asked. The lesson
+generalizes past any one of them: **a prompt is a request, not a guarantee,
+and a small local model's compliance rate with any single instruction is not
+something to build a correctness-bearing feature on top of.**
+
+The fix for the grounding follow-up was not a better prompt. It was removing
+the model from that path entirely: `findMechanicalCorrection` in
+`app/client/eo-citation-check.ts` finds a replacement value the same way
+`snipCitations`/`significantWords` already find a supporting clause —
+vocabulary overlap between the draft's own sentence and a sentence of the
+material actually consulted this turn — and returns `null`, not a guess,
+whenever the winning sentence contains more than one candidate of the
+claim's kind. The correction the reader sees is composed by string
+concatenation in `chat.ts`, never generated. Where a genuine model call
+can't be avoided (phrasing, judgment calls, anything that isn't a single
+checkable fact), its output must still be checked mechanically before it
+reaches the reader — `containsPromptScaffold`'s echo-detection and
+`checkGrounding`'s own post-hoc pass are both already this pattern applied
+after the fact, not before it; L5 is what makes "check after" the required
+shape rather than an option a new call site can skip because "the prompt
+already asked nicely."
+
+**The check for a future pass:** if a new feature's design is "prompt the
+model to state/verify/comply with X, and trust that instruction," that's
+this law being violated, however well-worded the prompt is. Ask instead
+whether X is checkable against material already in hand — if it is, compute
+it mechanically (string/number matching, set overlap, the same discipline
+`eo-citation-check.ts` already uses throughout) and only use the model for
+the parts of the turn that are genuinely generative, not for the parts that
+have one correct, look-up-able answer. Where a model call is unavoidable,
+its output is a draft to check, never a value to trust — the check must run
+whether or not the prompt asked the model to be careful.
+
+---
+
+## L6 — A recognized pattern needs a name here even when no fix is ready yet
+
+Two sequences in this repo's own PR history match L1's "built wrong,
+corrected, still not settled" shape but never got an entry, which means the
+next instance of either won't be caught by anyone reviewing against this
+file. Recording the pattern — not a fix, there isn't one yet — is what makes
+it checkable next time.
+
+**Citey mascot avatar, PRs #23–#30 (2026-08-11 to 2026-08-12, ~26 hours):**
+five-plus PRs iterating on one visual component's shape and per-state
+rendering, including one closed-and-abandoned attempt (#24) redone from
+scratch as #25. Same shape as L1's `TracePanel` history — a shared component
+built, found wrong, rebuilt, still not settled after multiple passes — but
+for the mascot avatar, and with no law written down while it was happening.
+
+**Pages/CI deploy, PRs #17 and #19 (2026-08-10, ten minutes apart):** #17
+"Fix Github Pages Deployment: checkout submodules" merged, then #19 "Fix
+Pages build: cast reading-pipeline.js boundary to sidestep spurious
+`never[]` inference" merged ten minutes later — two independent "fix the
+deploy" PRs back to back, each patching a different edge of the same
+underlying build fragility rather than the class of problem.
+
+**The check for a future pass:** if a component or pipeline needs three or
+more fix-shaped PRs within about a day, that's this pattern regardless of
+whether the individual causes look unrelated — treat it as a signal the
+underlying assembly isn't stable yet (see the holonic-stability discussion
+this law's own audit produced), not as a string of coincidentally clustered
+bugs, and look for the shared root before the next patch.

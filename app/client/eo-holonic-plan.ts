@@ -551,6 +551,23 @@ function echoesPromptScaffold(revised: string): {
   return { echo: kl < RECONCILE_ECHO_KL_THRESHOLD_BITS, klBits: kl };
 }
 
+/**
+ * True when `text` contains any of the distinctive scaffold phrases verbatim
+ * (case-insensitive). The only way a model can know these phrases is from the
+ * prompt that just went out — the reader never said them — so containment is
+ * an echo of the prompt, not content. A plain containment test (rather than
+ * the KL-based echoesPromptScaffold above) is the right instrument for a
+ * short system-2 response where the echo is a whole distinctive sentence,
+ * not a distribution-wide tilt toward the scaffold's vocabulary.
+ */
+export function containsPromptScaffold(
+  text: string,
+  phrases: string[],
+): boolean {
+  const lower = text.toLowerCase();
+  return phrases.some((p) => lower.includes(p.toLowerCase()));
+}
+
 export interface ReconcileResult {
   text: string;
   echoDetected: boolean;

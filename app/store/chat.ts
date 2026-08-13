@@ -57,6 +57,7 @@ import {
   evaluateCompliance,
   needsDecomposition,
   reconcileDraft,
+  containsPromptScaffold,
   type AnswerSpec,
 } from "../client/eo-holonic-plan";
 import {
@@ -73,6 +74,11 @@ import {
   snipCitations,
   splitSentences,
   countClaimAtoms,
+  findMechanicalCorrection,
+  resolveFindingsAgainst,
+  extractClaimAtoms,
+  abbreviationExpansion,
+  detectMaterialEvasion,
   type CitationEntry,
   type GroundingReport,
   type GroundingFinding,
@@ -190,6 +196,20 @@ export type ChatMessage = RequestMessage & {
   // the raw question — see distillQuery in eo-websearch.ts) — the "what is
   // being searched" disclosure the reader sees before the results themselves.
   webQuery?: string;
+  // Names of eoSources the reader had attached in the composer at the
+  // moment this message was sent — rendered as chips on the message itself
+  // (see chat.tsx) so an upload's chip moves from "waiting in the composer"
+  // to "attached to what I asked", the same handoff attachImages already
+  // gets. The source itself stays registered on the session (retrieval
+  // doesn't stop just because its upload chip moved), this is purely a
+  // record of what was showing when the reader hit send.
+  attachedSourceNames?: string[];
+  // ids paired 1:1 with attachedSourceNames above — kept separately (rather
+  // than looked up from session.eoSources by name each render) so the
+  // composer can derive "already attached to some message" straight from
+  // session.messages instead of its own React state, which used to reset
+  // on reload and let an already-sent doc's chip reappear in the composer.
+  attachedSourceIds?: string[];
   // Mechanical grounding check (see eo-citation-check.ts): did every checkable
   // claim in the reply actually occur in this turn's search snippets. Never
   // shown to the model, computed after generation, same seam as eochat's
@@ -389,7 +409,12 @@ export interface ChatSession {
   // the reader would click Send and nothing would visibly happen). This
   // queues it instead: onUserInput's own finish/error paths check this
   // after clearing isGenerating and automatically send the next one.
-  queuedInputs?: { content: string; images?: ChatImage[] }[];
+  queuedInputs?: {
+    content: string;
+    images?: ChatImage[];
+    attachedSourceNames?: string[];
+    attachedSourceIds?: string[];
+  }[];
 
   // set by an uploaded file (see app/client/eo-binary-structure.ts); consumed
   // and cleared by the next onUserInput call, same one-shot handoff pattern
@@ -1070,6 +1095,86 @@ async function eoRunSystem2(input: {
     }
   }
 
+  // 1b. Chase what reduces surprise — MECHANICALLY. The grounding check on the
+  //     finished draft found atoms it asserted that the surfaced material
+  //     lacks. That mismatch is a surprise, and it is a RETRIEVAL signal, not
+  //     (yet) a note: the draft's own unusual word choice is a prior the
+  //     source may not share — "CEO" where the document says "Chief Executive"
+  //     — and the closed-form abbreviation table (eo-citation-check.ts) says
+  //     so without asking any model. Re-surf on the surprised atoms, expanded
+  //     mechanically, and resolve every finding the fresh passages actually
+  //     support. A finding that resolves was never unsupported — it was
+  //     un-surfaced — and the reader is not shown a note about it.
+  const unsupportedFindings: GroundingFinding[] = grounding?.findings ?? [];
+  const resolvedFindings: GroundingFinding[] = [];
+  let resolutionPassages: CorpusPassage[] = [];
+  const surpriseAtoms = [
+    ...new Set(
+      unsupportedFindings.flatMap((f) => f.absent).filter((t) => t.length >= 2),
+    ),
+  ];
+  if (
+    surpriseAtoms.length &&
+    sources.some((s) => s.enabled && s.textReadable)
+  ) {
+    try {
+      const expanded = new Set<string>(surpriseAtoms);
+      for (const a of surpriseAtoms) {
+        const exp = abbreviationExpansion(a);
+        if (exp) for (const e of exp) expanded.add(e);
+      }
+      resolutionPassages = await retrieveCorpus(
+        [...expanded].join(" "),
+        sources,
+      );
+      const seen = new Set(
+        [...input.alreadySurfaced, ...deliberate.passages].map(
+          (p) => `${p.source.id}:${p.byteStart}`,
+        ),
+      );
+      resolutionPassages = resolutionPassages.filter(
+        (p) => !seen.has(`${p.source.id}:${p.byteStart}`),
+      );
+      if (resolutionPassages.length) {
+        resolvedFindings.push(
+          ...resolveFindingsAgainst(
+            unsupportedFindings,
+            corpusCitations(resolutionPassages),
+          ),
+        );
+      }
+      get().pushEoLog(
+        "surf",
+        `surf(system2): surprise re-surf — ${surpriseAtoms.join(", ")} → ` +
+          `${resolutionPassages.length} fresh passage(s), ` +
+          `${resolvedFindings.length}/${unsupportedFindings.length} finding(s) resolved`,
+      );
+    } catch (err) {
+      get().pushEoLog(
+        "error",
+        `surf(system2): surprise re-surf failed — ${(err as Error).message}`,
+      );
+    }
+  }
+
+  // 1c. The evasion surprise: the draft denied the material covers something
+  //     ("doesn't mention", "does not provide information", "not specified")
+  //     while the deliberate re-surf MECHANICALLY retrieved passages this same
+  //     turn. The denial is model prose; the retrieval is bytes. When they
+  //     disagree, the retrieval wins — the reader gets the material, not the
+  //     denial. The phrase-only detection is the cheap part; the guard that
+  //     decides the denial was a lie is `deliberate.passages.length > 0`.
+  const evasionPhrase = detectMaterialEvasion(
+    draft,
+    deliberate.passages.length,
+  );
+  if (evasionPhrase) {
+    get().pushEoLog(
+      "surf",
+      `surf(system2): evasion detected — the answer denied the material ("${evasionPhrase}"), but ${deliberate.passages.length} passage(s) were retrieved`,
+    );
+  }
+
   // 2. The rules, re-gated in checking mode.
   const checkGate = eoBuildInstructionBlock(
     question,
@@ -1131,45 +1236,119 @@ async function eoRunSystem2(input: {
   const earned: { kind: string; run: () => Promise<string | null> }[] = [];
 
   // 3a. A grounding note is earned by a failed check, or by claims made over
-  //     material this turn never actually read.
-  const unsupported = grounding?.findings ?? [];
+  //     material this turn never actually read. A finding the surprise re-surf
+  //     resolved is not a failed check — the material does contain it, just
+  //     not in the passages first surfaced — so it is removed here, before the
+  //     note is earned, and the reader is never told it is missing.
+  const resolvedKeys = new Set(
+    resolvedFindings.map((f) => `${f.start}:${f.text}`),
+  );
+  const unsupported = unsupportedFindings.filter(
+    (f) => !resolvedKeys.has(`${f.start}:${f.text}`),
+  );
+  if (resolvedFindings.length) {
+    get().pushEoLog(
+      "warrant",
+      `system 2: surprise re-surf resolved ${resolvedFindings.length} finding(s) — ` +
+        `grounding note suppressed for ${resolvedFindings
+          .map((f) => `"${f.text}"`)
+          .join(", ")}`,
+    );
+  }
   const externalUnread = demand.mustUnfold.filter((c) =>
     ["corpus", "web", "file"].includes(c),
   );
   if (unsupported.length || (claims.length && externalUnread.length)) {
     earned.push({
       kind: "grounding",
+      // LAWS.md L5 — composed mechanically, with no model call. A correction
+      // is exactly the kind of reader-facing fact this app cannot afford to
+      // hand to a small local model on trust that it will follow the prompt:
+      // the same 1B model that gets the ORIGINAL claim wrong is the one being
+      // asked to phrase its own correction, with nothing enforcing that it
+      // actually states the right value instead of another guess.
       run: async () => {
-        const findings = unsupported
-          .slice(0, 8)
-          .map(
-            (f) =>
-              `- "${f.text}" (${f.atomKind}) is not in ${grounding?.channels.join(" or ") || "the material checked"}`,
-          )
-          .join("\n");
-        const unread = externalUnread.length
-          ? `\nMaterial that exists but was not read this turn: ${externalUnread.join(", ")}.`
-          : "";
+        const channelLabel =
+          grounding?.channels.join(" and ") || "this turn's material";
+        const consultedText = [
+          ...input.alreadySurfaced,
+          ...deliberate.passages,
+        ].map((p) => p.text);
+        const draftSentences = splitSentences(draft);
+
+        const lines = unsupported.slice(0, 5).map((f) => {
+          const sentence =
+            draftSentences.find((s) => f.start >= s.start && f.end <= s.end)
+              ?.text ?? draft.slice(Math.max(0, f.start - 80), f.end + 80);
+          const correction = findMechanicalCorrection(
+            { text: f.text, atomKind: f.atomKind },
+            sentence,
+            consultedText,
+          );
+          return correction
+            ? `"${f.text}" is wrong — ${channelLabel} says ${correction}.`
+            : `"${f.text}" is not in ${channelLabel} and could not be verified.`;
+        });
+        if (unsupported.length > 5)
+          lines.push(`(${unsupported.length - 5} more unverified claim(s).)`);
+        if (externalUnread.length)
+          lines.push(
+            `Material that exists but was not read this turn: ${externalUnread.join(", ")}.`,
+          );
+        return lines.length ? lines.join(" ") : null;
+      },
+    });
+  }
+
+  // 3a2. A "resolved" follow-up is earned when the answer denied the reader's
+  //      material covers the question while the deliberate re-surf MECHANICALLY
+  //      retrieved passages that do. The reader asked for a figure; the answer
+  //      said "doesn't mention"; the bytes say otherwise. The model writes the
+  //      addition, but its prose is UNTRUSTED: it must carry at least one
+  //      checkable atom from the material or it is dropped for a mechanical
+  //      sentence, and a scaffold echo drops it outright.
+  if (evasionPhrase) {
+    earned.push({
+      kind: "resolved",
+      run: async () => {
+        const material = deliberate.passages.map((p) => p.text).join("\n\n");
+        const atoms = extractClaimAtoms(material);
+        const anchor =
+          atoms.find((a) => a.atomKind === "number")?.text ??
+          atoms.find((a) => a.atomKind === "name")?.text ??
+          "";
+        const fallback = anchor
+          ? `The document does address this — the figures it gives include ${anchor}.`
+          : null;
         const raw = await background(
           withRulesInForce(
-            "You are checking an answer that has already been given. Write a short, plain note to the reader about what in it is NOT supported by the material actually consulted. Name the specific claims. Do not restate the answer, do not apologise, do not hedge with generalities about AI limitations. If something merely was not checked, say it was not checked rather than saying it is wrong. Three sentences at most.",
+            "An answer has already been given but it denied that the reader's own document covers the question. Passages from that document follow and DO cover it. Write a short addition of at most three sentences giving the reader what the material actually says. Use its figures and names exactly. Do not repeat the answer, do not apologise, and do not mention this re-check or that you were given material.",
           ),
-          `The answer given:\n${draft.slice(0, 2000)}\n\nUnsupported claims found by a mechanical check:\n${findings || "(none)"}${unread}`,
+          `Material from the document:\n${material.slice(0, 2500)}\n\nThe answer given:\n${draft.slice(0, 1500)}`,
         );
         const text = String(raw || "").trim();
-        // L1d — the note must exist even if the model call for it does not.
-        // A mechanically composed fallback is worse prose and the same fact.
-        if (text) return text;
-        if (!unsupported.length) return null;
-        return (
-          `Checked against ${grounding?.channels.join(" and ") || "this turn's material"}: ` +
-          `${unsupported.length} thing(s) in that answer are not in it — ` +
-          unsupported
-            .slice(0, 5)
-            .map((f) => `"${f.text}"`)
-            .join(", ") +
-          `. Treat those as unverified.`
-        );
+        if (
+          !text ||
+          containsPromptScaffold(text, [
+            "Use its figures and names exactly",
+            "Do not repeat the answer",
+            "Do not mention this re-check",
+          ])
+        ) {
+          get().pushEoLog(
+            "warrant",
+            `system 2: resolved response echoed its own prompt — mechanical fallback`,
+          );
+          return fallback;
+        }
+        if (anchor && !text.includes(anchor)) {
+          get().pushEoLog(
+            "warrant",
+            `system 2: resolved response did not carry the material's own figure ${anchor} — mechanical fallback`,
+          );
+          return fallback;
+        }
+        return text;
       },
     });
   }
@@ -1322,6 +1501,25 @@ async function eoRunSystem2(input: {
           );
           const text = String(raw || "").trim();
           if (!text || /^none\.?$/i.test(text)) return null;
+          // The 1B talker is prone to answering this sentinel-style prompt by
+          // echoing its own closing instruction instead of either a verdict or
+          // the literal NONE (observed live: it emitted the prompt's final
+          // sentence verbatim as a reader-facing message). The only way it can
+          // know these phrases is from the prompt, so containment is an echo —
+          // drop the whole response rather than emit scaffolding as prose.
+          if (
+            containsPromptScaffold(text, [
+              "Never invent a connection the material does not contain",
+              "Say plainly whether this supports the answer, contradicts it, or adds a detail",
+              "Two sentences at most",
+            ])
+          ) {
+            get().pushEoLog(
+              "warrant",
+              `system 2: climb response echoed its own prompt — dropped`,
+            );
+            return null;
+          }
           return text;
         },
       });
@@ -1779,10 +1977,15 @@ export const useChatStore = createPersistStore(
       // instead of dropping the reader's message. onUserInput's own
       // finish/error paths dequeue and resend the next one once
       // `isGenerating` clears — see queuedInputs's own comment.
-      queueUserInput(content: string, images?: ChatImage[]) {
+      queueUserInput(
+        content: string,
+        images?: ChatImage[],
+        attachedSourceNames?: string[],
+        attachedSourceIds?: string[],
+      ) {
         get().updateCurrentSession((session) => {
           session.queuedInputs = (session.queuedInputs ?? []).concat([
-            { content, images },
+            { content, images, attachedSourceNames, attachedSourceIds },
           ]);
         });
       },
@@ -1864,13 +2067,21 @@ export const useChatStore = createPersistStore(
         get().updateCurrentSession((session) => {
           session.queuedInputs = rest;
         });
-        get().onUserInput(next.content, llm, next.images);
+        get().onUserInput(
+          next.content,
+          llm,
+          next.images,
+          next.attachedSourceNames,
+          next.attachedSourceIds,
+        );
       },
 
       async onUserInput(
         content: string,
         llm: LLMApi,
         attachImages?: ChatImage[],
+        attachedSourceNames?: string[],
+        attachedSourceIds?: string[],
       ) {
         // Defense in depth, not the primary guard: chat.tsx's onSubmit is
         // expected to keep a second call from ever reaching here (see its
@@ -1927,6 +2138,12 @@ export const useChatStore = createPersistStore(
         let userMessage: ChatMessage = createMessage({
           role: "user",
           content: userContent,
+          attachedSourceNames: attachedSourceNames?.length
+            ? attachedSourceNames
+            : undefined,
+          attachedSourceIds: attachedSourceIds?.length
+            ? attachedSourceIds
+            : undefined,
         });
         get().updateCurrentSession((session) => {
           session.messages = session.messages.concat([userMessage]);

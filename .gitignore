@@ -55,4 +55,5 @@ public/worker-*.js
 .claude/
 .next-stress/
 .next-crispr-test/
+.next-verify/
 research/

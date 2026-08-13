@@ -46,8 +46,21 @@ const MAX_ANALYSIS_BYTES = 50 * 1024 * 1024;
 // Above this many decoded characters, skip modifier-graph/EOT reading
 // specifically (the two regex-based taggers over the whole document) — the
 // source still registers as textReadable and stays fully surfable by
-// eo-corpus.ts's retrieveCorpus, it just doesn't also get a reading.
-const MAX_READING_CHARS = 2_000_000;
+// eo-corpus.ts's retrieveCorpus, it just doesn't also get a reading. Kept
+// well under a novel-length document (a full "War and Peace" upload is
+// ~3.2M characters and was freezing the tab for the whole regex pass before
+// this was lowered) since this pass is pure enrichment, not required for the
+// source to be usable.
+const MAX_READING_CHARS = 300_000;
+
+// A single synchronous phase below (entropy scan, UTF-8 decode, regex
+// tagging) can still take a noticeable moment even under its own cap; yield
+// to the event loop between phases so the tab can paint the "uploading"
+// indicator and stay responsive to input instead of appearing to hang for
+// the sum of every phase at once.
+function yieldToMain(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 export interface IngestedSource {
   source: EoSource;
@@ -69,19 +82,15 @@ export async function ingestFile(file: File): Promise<IngestedSource> {
   await persistRawSource(id, buffer);
 
   const withinAnalysisBudget = buffer.length <= MAX_ANALYSIS_BYTES;
-  const structure = withinAnalysisBudget
-    ? findBinaryStructure(buffer)
-    : {
-        byteLength: buffer.length,
-        blockSize: 0,
-        blockCount: 0,
-        clearings: [],
-        gap: "too_large_for_analysis",
-      };
 
   // A decoded string this function can treat as the source's text: either
   // it's already valid UTF-8, or a format-specific extractor (PDF/XLSX/
   // DOCX/PPTX/ODF/EPUB/RTF) pulled text out of a container that isn't.
+  // isReadableUtf8 only samples the first 128KB, so this check is cheap even
+  // for a very large file — it's what lets a large plain-text upload (e.g. a
+  // full novel) skip the binary-structure entropy pass below entirely,
+  // rather than spending CPU on a structure summary that's discarded for
+  // text-readable sources anyway (see structureSummary below).
   let decoded: string | null = null;
   let textReadable = false;
   if (withinAnalysisBudget) {
@@ -98,6 +107,54 @@ export async function ingestFile(file: File): Promise<IngestedSource> {
       textReadable = decoded !== null;
     }
   }
+
+  await yieldToMain();
+
+  // The binary-structure entropy/boundary pass: only meaningful (and only
+  // kept, via structureSummary below) for a source that ISN'T text-readable,
+  // so skip it entirely once decode above already succeeded — no point
+  // spending CPU analyzing a large novel's bytes as an opaque blob when its
+  // real text is what gets surfaced. Wrapped in try/catch so a pathological
+  // binary can't abort an otherwise-successful upload.
+  let structure:
+    | ReturnType<typeof findBinaryStructure>
+    | {
+        byteLength: number;
+        blockSize: number;
+        blockCount: number;
+        clearings: { block: number; byteOffset: number }[];
+        gap?: string;
+      };
+  if (textReadable) {
+    structure = {
+      byteLength: buffer.length,
+      blockSize: 0,
+      blockCount: 0,
+      clearings: [],
+    };
+  } else if (!withinAnalysisBudget) {
+    structure = {
+      byteLength: buffer.length,
+      blockSize: 0,
+      blockCount: 0,
+      clearings: [],
+      gap: "too_large_for_analysis",
+    };
+  } else {
+    try {
+      structure = findBinaryStructure(buffer);
+    } catch {
+      structure = {
+        byteLength: buffer.length,
+        blockSize: 0,
+        blockCount: 0,
+        clearings: [],
+        gap: "analysis_failed",
+      };
+    }
+  }
+
+  await yieldToMain();
 
   // Modifier-order graph enrichment + EOT reading: only for text that
   // decoded cleanly (whether native UTF-8 or extracted), and only ever the

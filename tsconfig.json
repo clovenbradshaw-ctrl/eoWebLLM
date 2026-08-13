@@ -40,7 +40,8 @@
     "**/*.tsx",
     ".next/types/**/*.ts",
     "app/calcTextareaHeight.ts",
-    ".next-crispr-test/types/**/*.ts"
+    ".next-crispr-test/types/**/*.ts",
+    ".next-verify/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"
