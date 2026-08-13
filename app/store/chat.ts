@@ -2242,6 +2242,24 @@ export const useChatStore = createPersistStore(
         // citations exist (see formatWebSearchBlock in eo-websearch.ts).
         let turnWebResults: Awaited<ReturnType<typeof webSearch>> = [];
         let turnWebQuery = "";
+        // The relay, if the reader runs one. Set unconditionally and before
+        // any branch, because webSearch has more than one caller and they do
+        // not all sit behind this toggle: Citey's own post-answer grounding
+        // pass (resolveSpans, below) searches whether or not the ANSWER needed
+        // a search. Configuring it inside the branch made Citey's reach depend
+        // on whether the answer path happened to run first — and since
+        // searchProxyBase is module state that survives the turn, on whether
+        // some EARLIER turn ran it. A reader who never triggers an answer-time
+        // search would have had Citey grounding against Wikipedia alone,
+        // silently, forever.
+        //
+        // Read per turn rather than once at boot so a change in Settings takes
+        // effect on the next question instead of the next reload. Empty
+        // disables the DDG backend and the lookup is Wikipedia-only, exactly
+        // as before; configureSearchProxy rejects any non-http(s) value rather
+        // than half-enabling it.
+        configureSearchProxy(useAppConfig.getState().searchProxyUrl || null);
+
         if (session0.webSearchEnabled && userContent.trim()) {
           // Router failure (parse failure OR the background call itself
           // timing out/erroring on a slow local model) must fail OPEN, same
@@ -2328,16 +2346,6 @@ export const useChatStore = createPersistStore(
           if (decision.tools.includes("web_search")) {
             try {
               const rawQuestion = userContent.trim();
-
-              // The relay, if the reader runs one. Read per turn rather than
-              // once at boot so a change in Settings takes effect on the next
-              // question instead of the next reload. Empty disables the DDG
-              // backend entirely and the lookup is Wikipedia-only, exactly as
-              // before (eo-websearch.ts's configureSearchProxy rejects any
-              // non-http(s) value rather than half-enabling it).
-              configureSearchProxy(
-                useAppConfig.getState().searchProxyUrl || null,
-              );
 
               // planSearchQuery used to run here, rewriting the question into
               // a short noun-phrase query. It is gone, and the reason is
