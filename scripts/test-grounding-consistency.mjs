@@ -390,3 +390,38 @@ test(
     }
   },
 );
+
+// ── A void is a finding, not a silence (V3) ───────────────────────────────
+
+test("'never checked' and 'checked, nothing wrong' do not render alike", () => {
+  // LAWS.md L2e, at the report's own surface. `clean` alone answers a
+  // three-state question with a boolean: it is true both when a check found
+  // nothing wrong AND when no check ran at all. A caller reading `.clean` got
+  // the same answer for a verified sentence and an unexamined one.
+  const source = [{ index: 1, source_id: "s", text: "The budget was 1022900000." }];
+  const claim = "The budget was 1136000000.";
+
+  const unexamined = checkGrounding(claim, [], { channels: [] });
+  const examinedAbsent = checkGrounding(claim, source, { channels: ["src"] });
+  const examinedClean = checkGrounding("The budget was 1022900000.", source, {
+    channels: ["src"],
+  });
+
+  assert.equal(unexamined.examined, false, "no citations means nothing was examined");
+  assert.equal(examinedAbsent.examined, true);
+  assert.equal(examinedClean.examined, true);
+
+  // The predicate a caller actually wants — and the one that separates all
+  // three states, which `clean` alone cannot.
+  const verifiedClean = (r) => r.examined && r.clean;
+  assert.equal(verifiedClean(unexamined), false, "an unexamined claim is not verified clean");
+  assert.equal(verifiedClean(examinedAbsent), false);
+  assert.equal(verifiedClean(examinedClean), true);
+});
+
+test("an unexamined report still says so in its own counts", () => {
+  const r = checkGrounding("The budget was 1136000000.", [], { channels: [] });
+  assert.equal(r.atomsChecked, 0);
+  assert.deepEqual(r.channels, []);
+  assert.equal(r.findings.length, 0);
+});

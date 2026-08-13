@@ -44,6 +44,18 @@ export interface GroundingReport {
   // LAWS.md L3 — no silent truncation: a capped findings list must say it was
   // capped, or it reads as a complete report when it isn't.
   truncated: { reported: number; total: number; dropped: number } | null;
+  /**
+   * Whether this check actually examined anything. `clean` alone cannot say:
+   * it is true both for "checked, nothing wrong" and for "nothing was checked",
+   * and those are different results. LAWS.md L2e — "checked, nothing there" and
+   * "never checked" are different facts and must not render alike; the fold
+   * ledger has `checkedEmpty` for exactly this and the report did not.
+   *
+   * `examined === false` means no material was available to check against, so
+   * `clean: true` beside it is the absence of a finding, never a clean bill.
+   * A caller wanting "verified clean" reads `examined && clean`.
+   */
+  examined: boolean;
   // Which warrant channels this check actually covered (see eo-warrant.ts).
   // "clean" means clean AGAINST THESE — a report that doesn't say what it
   // checked reads as a whole-answer verdict when it is a partial one
@@ -586,6 +598,7 @@ export function checkGrounding(
       atomsChecked: 0,
       findings: [],
       clean: true,
+      examined: false,
       truncated: null,
       channels,
     };
@@ -631,6 +644,7 @@ export function checkGrounding(
     atomsChecked,
     findings: kept,
     clean: total === 0,
+    examined: true,
     truncated:
       total > kept.length
         ? { reported: kept.length, total, dropped: total - kept.length }

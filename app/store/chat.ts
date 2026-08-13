@@ -3352,7 +3352,12 @@ export const useChatStore = createPersistStore(
                 get().pushEoLog(
                   "warrant",
                   groundingReport.clean
-                    ? `grounding: clean against ${checkedChannels.join(" + ")} (${groundingReport.atomsChecked} claim(s) checked)`
+                    ? // "clean" and "nothing was examined" are different
+                      // results and must not render alike (V4/L2e). The report
+                      // now says which this was; the log says so too.
+                      groundingReport.examined
+                      ? `grounding: clean against ${checkedChannels.join(" + ")} (${groundingReport.atomsChecked} claim(s) checked)`
+                      : `grounding: NOT CHECKED — no material was available to check against, so nothing here is a clean bill`
                     : `grounding: ${groundingReport.findings.length} unsupported claim(s) of ${groundingReport.atomsChecked} checked against ${checkedChannels.join(" + ")}${groundingReport.truncated ? ` (${groundingReport.truncated.dropped} more truncated)` : ""}`,
                 );
                 get().recordEoMindGrounding(

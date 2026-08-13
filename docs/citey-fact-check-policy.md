@@ -145,6 +145,16 @@ diff:
 | negation flip → clean | zero atoms | `polarity` is already a diffed field |
 | uncased scripts → 0 | keys on `\p{Lu}` | typed edges, no case dependency |
 
+## 3.4 Precondition: identity across sources
+
+Everything above assumes two readings can be compared. They cannot, safely,
+until it is settled what makes a referent in one source *the same referent* as
+one in another — see
+[`citey-cross-document-identity.md`](citey-cross-document-identity.md).
+`diffLinkViews` keys on bare strings today, so edges from different documents
+collide by construction, and a diff over wrongly-merged referents produces
+confident nonsense. That doc is a precondition of this one, not a follow-up.
+
 ## 4. The policy
 
 Five rules. The first four are the project's own; the fifth was the one place
@@ -187,6 +197,86 @@ unconfirmed. That is P1 violated at the smallest unit the system has. **Done
 this pass**: the four are now `stated` / `general` / `bleed` / `unconfirmed`,
 named for the channels in `eo-warrant.ts` that already distinguished them,
 detected mechanically with zero model calls.
+
+## 4.5 The void — the grounding that catches fabrication
+
+A void is a **finding**, not a failure to find. "I looked in X, Y and Z and it
+is not there" is a positive, checkable result, and it is the only kind of
+grounding that catches a fabrication: a confirmation tells you a claim is
+present; a void tells you an invented one is not.
+
+That makes §1's uncomfortable result — that Citey grades a true-but-unsourced
+claim and a fabricated one identically — a **void problem**, not a fact
+problem. The distinction between them is entirely in the SCOPE of the search
+that failed. "Not in the three files you uploaded" says almost nothing. "Not in
+those three, nor forty web results, nor the encyclopedia, nor the dictionary"
+says a great deal. Today neither is recorded, so every void carries the same
+weight, which is to say none.
+
+### Measured
+
+```
+never checked (no citations)   clean=true   atomsChecked=0  channels=[]
+checked against the source     clean=false  atomsChecked=2  channels=[your sources]
+```
+
+**`clean: true` is what a caller gets for "never looked."** The distinguishing
+information exists — `atomsChecked: 0`, `channels: []` — but the field whose
+name invites a boolean read carries the wrong answer. LAWS.md L2e is explicit
+that *"checked, nothing there" and "never checked" are different facts and must
+not render alike*; `checkedEmpty` exists in the fold ledger for exactly this
+distinction, and `checkGrounding` does not make it at its own surface.
+
+**A void names a channel label, never an address:**
+
+```
+The department received $1,136,000,000 [⊘ not in your sources or web] …
+```
+
+Compare the two directions of the same system. A citation is
+`budget.pdf#0-90` — followable to exact bytes, by anyone, later. A void is
+`your sources or web` — a label. No source ids, no query, no cursor, no
+timestamp. **It cannot be re-run, so it cannot be checked or challenged.** It
+is an unaddressed claim, which is the one thing this system refuses everywhere
+else.
+
+**And `annotateVoids` is dead in the app.** Nothing outside
+`eo-citation-check.ts` calls it, so the `[⊘]` marker never reaches a reader at
+all. Voids survive only as `report.findings[]` and as `checkedEmpty` on the
+ledger.
+
+### The principle
+
+**A citation's warrant is a byte address. A void's warrant is a reproducible
+search.** Same discipline, different object — and both meet the same standard:
+someone else can repeat the trip and get the same answer.
+
+So a void should carry what a search needs to be re-run: the scope actually
+covered (source ids, not channel labels), the query, the cursor it ran at, the
+method, and the result. That is a Field-equivalent for absence, and it is what
+would let a reader challenge a void instead of taking it on trust.
+
+### Policy
+
+**V1 — A void is a finding with the same standing as a citation.** It is
+reported, addressed, and auditable, never a silent absence or a bare
+"unsupported."
+
+**V2 — A void's warrant is a reproducible search.** Record the scope by
+identifier, the query, and the cursor. A void nobody can re-run is an assertion.
+
+**V3 — "Never checked" is never "clean."** The distinction must live at the
+field a caller actually reads, not only in a count beside it. An unexamined
+claim and an examined-and-absent one are different results.
+
+**V4 — A void's weight is its scope, and its scope is always declared.** An
+unscoped void says nothing and must not be rendered as though it said
+something.
+
+**V5 — A void is a claim about a search, never about the world.** "Not found in
+X, searched at Y" — never "false." This is P1 and P2 applied to absence: the
+strongest available statement is about what was looked in, not about what is
+true.
 
 ## 5. Where the work actually is
 
