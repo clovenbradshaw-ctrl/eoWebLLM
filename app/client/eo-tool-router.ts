@@ -211,6 +211,35 @@ export function hasExplicitSearchIntent(question: string): boolean {
   return EXPLICIT_SEARCH_INTENT_RE.test(q) || TIME_SENSITIVE_FACT_RE.test(q);
 }
 
+// Both patterns above are English written in Latin script. Against a question
+// with no Latin letters in it they cannot match — not "did not match", CANNOT.
+// 「イルカについて調べてください」 asks for a lookup as plainly as "look up
+// dolphins" does, and returns false here for a reason that has nothing to do
+// with what it says.
+//
+// That difference matters because of what the caller does with a false: it
+// hands the decision to a model-judged route (planTools), and a 1B local model
+// judges least reliably in exactly the languages this gate is blind to. So the
+// reader whose question the gate could not read gets BOTH the weaker mechanism
+// AND no mechanical backstop, which is II.20's shape (proposed, eo-constitution
+// #9): a capability difference produced entirely inside the instrument.
+//
+// The fix is not a Japanese pattern list plus an Arabic one — that is the same
+// mistake in more languages. It is to stop treating silence as a verdict.
+// LAWS.md's own distinction: "checked, nothing there" and "never checked" are
+// different facts and must not render alike. This says which one happened, and
+// it is decidable language-neutrally — the question is whether the patterns
+// could apply at all, not what they mean.
+export function searchIntentUndecidable(question: string): boolean {
+  const q = String(question || "").trim();
+  if (!q) return false;
+  // A single Latin letter anywhere is enough for the patterns to have had a
+  // chance — a code-switched "essay について書いて" is readable by them even
+  // if they happen not to fire. Only a question with no Latin letters at all
+  // was never actually examined.
+  return !/\p{Script=Latin}/u.test(q);
+}
+
 /**
  * Ask the model (the same background seam planTools uses) to rewrite the
  * reader's message into a search-engine query. Falls back to `fallback`

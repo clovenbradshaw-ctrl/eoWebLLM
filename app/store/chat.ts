@@ -35,14 +35,18 @@ import { getInstructionFolds } from "../client/eo-instructions";
 import { compileProjectInstructionFolds } from "../client/eo-project-instructions";
 import {
   webSearch,
+  configureSearchProxy,
   formatWebSearchBlock,
   stripCitationBrackets,
-  distillQuery,
 } from "../client/eo-websearch";
 import {
+  resolveSearchQuery,
+  groundReferent,
+} from "../client/eo-search-query";
+import {
   planTools,
-  planSearchQuery,
   hasExplicitSearchIntent,
+  searchIntentUndecidable,
 } from "../client/eo-tool-router";
 import {
   extractComparisonPhrase,
@@ -392,6 +396,18 @@ export interface ChatSession {
   // is searched before it reaches the model, same shape as eochat's
   // per-conversation webSearch toggle.
   webSearchEnabled?: boolean;
+  /**
+   * The running "what this conversation is about", carried across turns and
+   * updated AFTER each answer rather than before the next one. That ordering
+   * is the point: a mid-stream message that names no subject ("prove it",
+   * 「証明して」) needs one at search time, and computing it then would put a
+   * model call in front of an answer the reader is watching an empty box for
+   * (LAWS.md L1 — no dead air). Turn N leaves it; turn N+1 reads it.
+   *
+   * Warranted as `focus` in eo-warrant.ts: paraphrase, canWarrant false. It
+   * steers retrieval and may never ground anything.
+   */
+  eoFocus?: string;
 
   // DISPLAY-ONLY toggle, deliberately not a computation toggle: checkGrounding
   // and the System 2 escalation it can trigger (chat.ts's onUserInput) run
@@ -558,6 +574,30 @@ const EO_DESK_WINDOW_MARGIN_TURNS = 2;
 // system2 or task decomposition, no matter how the rest of the pipeline is
 // sequenced.
 const EO_ROUTER_TIMEOUT_MS = 75000;
+
+// How many recent messages the focus resolver reads. Small on purpose: it is
+// answering "what is this about right now", and a long window makes an old
+// subject compete with the current one. Bounded the same way every other
+// window here is (eo-warrant.ts's foldToMouth).
+const EO_FOCUS_TURNS = 6;
+
+// Prose in, prose out. No JSON is asked for — a small local model is not
+// reliable at structured output, and chat.ts already carries that lesson from
+// the DEFINE gate (see needsDecomposition below). Whatever it answers is
+// checked against the conversation's own text by groundReferent, so a reply
+// naming something that was never said contributes nothing rather than
+// contributing a guess.
+//
+// It is asked to answer IN THE CONVERSATION'S OWN WORDS because that is what
+// makes the check possible at all: a paraphrase, however good, will not be
+// found verbatim and will be discarded.
+const EO_FOCUS_PROMPT =
+  "You read a conversation and one new message from the reader. Reply with " +
+  "the subject the new message is about, copied EXACTLY as it appears in the " +
+  "conversation above — the same words, the same script, no translation and " +
+  "no rewording. If the new message already names its own subject, reply with " +
+  "that subject as the message writes it. Reply with only those few words: no " +
+  "sentence, no explanation, no quotes, no JSON.";
 
 // Bounds how many of a cloned repo's real code files get ingested in one
 // turn — same context-economy discipline as everything else the prior-art
@@ -2202,6 +2242,24 @@ export const useChatStore = createPersistStore(
         // citations exist (see formatWebSearchBlock in eo-websearch.ts).
         let turnWebResults: Awaited<ReturnType<typeof webSearch>> = [];
         let turnWebQuery = "";
+        // The relay, if the reader runs one. Set unconditionally and before
+        // any branch, because webSearch has more than one caller and they do
+        // not all sit behind this toggle: Citey's own post-answer grounding
+        // pass (resolveSpans, below) searches whether or not the ANSWER needed
+        // a search. Configuring it inside the branch made Citey's reach depend
+        // on whether the answer path happened to run first — and since
+        // searchProxyBase is module state that survives the turn, on whether
+        // some EARLIER turn ran it. A reader who never triggers an answer-time
+        // search would have had Citey grounding against Wikipedia alone,
+        // silently, forever.
+        //
+        // Read per turn rather than once at boot so a change in Settings takes
+        // effect on the next question instead of the next reload. Empty
+        // disables the DDG backend and the lookup is Wikipedia-only, exactly
+        // as before; configureSearchProxy rejects any non-http(s) value rather
+        // than half-enabling it.
+        configureSearchProxy(useAppConfig.getState().searchProxyUrl || null);
+
         if (session0.webSearchEnabled && userContent.trim()) {
           // Router failure (parse failure OR the background call itself
           // timing out/erroring on a slow local model) must fail OPEN, same
@@ -2255,6 +2313,31 @@ export const useChatStore = createPersistStore(
                 fellBack: true,
               };
             }
+
+            // The mechanical gate above is English in Latin script, so against
+            // a question with no Latin letters it could not have matched — not
+            // "did not match", could not. Its silence carries no information
+            // there, and the router that just overruled nothing is a 1B model
+            // judging in the languages it is weakest in. Two weak signals
+            // agreeing is not a strong one.
+            //
+            // So a negative verdict on a question the gate never actually
+            // examined does not settle it. Searching anyway costs one cheap
+            // lookup; not searching costs an ungrounded answer, and only the
+            // reader whose script the gate cannot read ever pays it. Same
+            // fail-toward-work discipline as the catch above, applied to a
+            // verdict that arrived rather than one that did not.
+            if (
+              !decision.tools.includes("web_search") &&
+              searchIntentUndecidable(userContent)
+            ) {
+              decision = {
+                tools: ["web_search"],
+                reason:
+                  "the mechanical intent gate is Latin-script only and could not read this question — a model-only negative does not settle it",
+                fellBack: true,
+              };
+            }
           }
           get().pushEoLog(
             "web",
@@ -2263,34 +2346,49 @@ export const useChatStore = createPersistStore(
           if (decision.tools.includes("web_search")) {
             try {
               const rawQuestion = userContent.trim();
-              const { query: rewrittenQuery, rewritten } =
-                await planSearchQuery({
-                  question: rawQuestion,
-                  fallback: distillQuery(rawQuestion) || rawQuestion,
-                  generate: (systemPrompt, userPrompt) =>
-                    eoRunBackground(
-                      llm,
-                      [
-                        createMessage({
-                          role: "system",
-                          content: systemPrompt,
-                        }),
-                        createMessage({ role: "user", content: userPrompt }),
-                      ],
-                      {
-                        model: modelConfig.model,
-                        cache: useAppConfig.getState().cacheType,
-                        stream: false,
-                      },
-                      EO_ROUTER_TIMEOUT_MS,
-                    ),
-                });
-              turnWebQuery = rewrittenQuery;
+
+              // planSearchQuery used to run here, rewriting the question into
+              // a short noun-phrase query. It is gone, and the reason is
+              // measured rather than stylistic: reducing to the topic makes
+              // this search WORSE. 「イルカについてのエッセイを書いてください」
+              // returns four results of marine biology; 「イルカ」 alone
+              // returns four-of-five about Iruka the folk singer, because the
+              // surrounding words were the only thing separating the animal
+              // from the musician. Wikipedia still needs a noun phrase and
+              // still gets one — fetchWikipedia calls distillQuery itself.
+              //
+              // What replaces it answers a question a rewrite never could: a
+              // message may name no subject at all ("prove it", "find examples
+              // of that", 「証明して」), and its subject is in the thread. Same
+              // one background call as before, so no added dead air (L1).
+              const focusWindow = session0.messages
+                .slice(-EO_FOCUS_TURNS)
+                .map((m) => getMessageTextContent(m))
+                .filter(Boolean)
+                .join("\n");
+
+              // The focus was computed after the PREVIOUS answer, so reading
+              // it here costs nothing — no model call stands between the
+              // reader pressing send and the first token (L1). Turn N left it;
+              // this is turn N+1 reading it. groundReferent still checks it
+              // against the live conversation, so a focus that has gone stale
+              // (the thread moved on, the words are no longer there) simply
+              // contributes nothing rather than steering toward a dead subject.
+              const carriedFocus = session0.eoFocus || "";
+              const resolved = await resolveSearchQuery({
+                message: rawQuestion,
+                conversation: focusWindow,
+                resolveReferent: carriedFocus
+                  ? async () => carriedFocus
+                  : null,
+              });
+
+              turnWebQuery = resolved.query;
               get().pushEoLog(
                 "web",
-                rewritten
-                  ? `query: "${rawQuestion.slice(0, 60)}" -> "${turnWebQuery}"`
-                  : `query: "${turnWebQuery}" (rewrite unavailable, used fallback)`,
+                resolved.standalone
+                  ? `query: "${turnWebQuery.slice(0, 70)}" (stood alone — ${resolved.reason})`
+                  : `in focus: ${resolved.carried.join(", ")} — carried into "${rawQuestion.slice(0, 40)}"`,
               );
               const results = await webSearch(turnWebQuery);
               turnWebResults = results;
@@ -3435,6 +3533,56 @@ export const useChatStore = createPersistStore(
                   confirmed: acked,
                 });
               });
+
+              // ── Focus, deposited for the NEXT turn ─────────────────────
+              //
+              // Here rather than before the next search, so nothing waits on
+              // it: the answer is already on screen, and this runs in the same
+              // System 2 phase the reading probe and task controller were moved
+              // into for exactly that reason (see the comment above their call
+              // site — a fast pass that waits on model calls is not one).
+              //
+              // Failure is free. Any throw, timeout, or unusable reply leaves
+              // the previous focus in place, and a stale focus is already
+              // harmless: groundReferent checks it against the live
+              // conversation before anything is carried, so words the thread
+              // has moved past contribute nothing.
+              try {
+                const focusReply = await eoRunBackground(
+                  llm,
+                  [
+                    createMessage({ role: "system", content: EO_FOCUS_PROMPT }),
+                    createMessage({
+                      role: "user",
+                      content: `CONVERSATION:\n${userContent.trim()}\n${message}`,
+                    }),
+                  ],
+                  {
+                    model: modelConfig.model,
+                    cache: useAppConfig.getState().cacheType,
+                    stream: false,
+                    temperature: 0.1,
+                    top_p: 0.1,
+                  },
+                  EO_ROUTER_TIMEOUT_MS,
+                );
+                // Grounded against the turn that just happened, so what is
+                // stored is words that were actually said — never the model's
+                // own paraphrase of them.
+                const focus = groundReferent(
+                  focusReply,
+                  `${userContent.trim()}\n${message}`,
+                );
+                if (focus.length) {
+                  const line = focus.join(" ");
+                  get().updateCurrentSession((session) => {
+                    session.eoFocus = line;
+                  });
+                  get().pushEoLog("web", `in focus: ${line}`);
+                }
+              } catch {
+                // keep whatever focus the previous turn left
+              }
 
               // ── Citey's grounding layer, finalized ─────────────────────
               //

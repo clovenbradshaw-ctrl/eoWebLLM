@@ -69,11 +69,39 @@ const VERBOSE = process.argv.includes("--verbose");
 // submodule's own currency below, so a stale root doesn't silently mean
 // "no NEXT-*.md docs to check" either.
 const EOREADER6_ROOTS = [EOREADER6_ROOT, EOREADER6_ENGINE, EOREADER6_PACKAGES];
+// Every .md under docs/, scanned rather than listed by name — same reasoning
+// main applies to the NEXT-*.md class just below. A named list is why the two
+// documents defining Citey's own grounding policy
+// (docs/citey-structured-grounding.md, docs/citey-terrain-feedback-spec.md)
+// were never checked at all.
+//
+// Their citations to `citey-states.js` and `CiteyBrain.js` are the reason to
+// be careful about what a hit here means. A first pass called them fabricated
+// because a full-text search of this repo found them only in the doc that
+// cites them — but the doc says plainly that they are NPJ's
+// (github.com/clovenbradshaw-ctrl/npj), a THIRD repository this checker has no
+// root for and has never been able to see. "Absent from the two roots I know"
+// is not "does not exist," and that is the identical mistake this file's
+// header already records making about eoreader6's stale pin. A citation whose
+// repo is not among ROOTS below is outside this tool's competence, not
+// evidence of anything.
+const DOCS_DIR = join(WEBLLM_ROOT, "docs");
+const docsDirEntries = existsSync(DOCS_DIR)
+  ? readdirSync(DOCS_DIR, { withFileTypes: true })
+      .filter((e) => e.isFile() && e.name.endsWith(".md"))
+      .map((e) => ({
+        path: join(DOCS_DIR, e.name),
+        roots: [WEBLLM_ROOT, ...EOREADER6_ROOTS],
+        eoreader6Rooted: true,
+      }))
+  : [];
+
 const nextDocs = existsSync(EOREADER6_ROOT)
   ? readdirSync(EOREADER6_ROOT).filter((name) => /^NEXT-.*\.md$/i.test(name))
   : [];
 const DOCS = [
   { path: join(WEBLLM_ROOT, "LAWS.md"), roots: [WEBLLM_ROOT, ...EOREADER6_ROOTS], eoreader6Rooted: true },
+  ...docsDirEntries,
   ...nextDocs.map((name) => ({ path: join(EOREADER6_ROOT, name), roots: EOREADER6_ROOTS, eoreader6Rooted: true })),
   { path: join(EOREADER6_ROOT, "CUBE.md"), roots: EOREADER6_ROOTS, eoreader6Rooted: true },
   { path: join(EOREADER6_ROOT, "KERNEL_REBUILD_CHECKPOINT.md"), roots: EOREADER6_ROOTS, eoreader6Rooted: true },
@@ -147,8 +175,25 @@ const resolveCandidates = (relPath, roots) => {
   return [];
 };
 
+// eoreader6 is a git submodule and is frequently not on disk — a clone without
+// --recursive, or a CI job that skips submodules. When it is absent, a citation
+// that could only ever have resolved inside it is UNVERIFIABLE, not fabricated.
+// Reporting those two identically is what made this tool unreadable: a run
+// against an un-checked-out submodule printed 53 "problems", nearly all of them
+// a directory that simply was not there — so the handful of real fabrications
+// sat inside a wall of noise nobody reads. This tool exists to be acted on, and
+// a checker that cries wolf is a checker that gets ignored.
+const EOREADER6_PRESENT =
+  existsSync(EOREADER6_ROOT) && readdirSync(EOREADER6_ROOT).length > 0;
+
+// Paths this repo can answer for on its own, submodule or no submodule. An
+// unresolved citation under one of these IS a real finding: the root is present
+// and complete, so "not found" means not there.
+const WEBLLM_SHAPED = /^(app|scripts|docs|instruction-set|public|\.github)\//;
+
 let totalCitations = 0;
 let problems = 0;
+let unverifiable = 0;
 let eoreader6RootedMisses = 0;
 
 for (const doc of DOCS) {
@@ -166,6 +211,16 @@ for (const doc of DOCS) {
 
     const candidates = resolveCandidates(relPath, doc.roots);
     if (candidates.length === 0) {
+      // Only claim "missing" where this repo alone could have answered. A bare
+      // basename (`kinds.js`) searches every root including the absent one, so
+      // with the submodule gone it is honestly unknown — say so rather than
+      // assert a fabrication the evidence does not support.
+      if (!EOREADER6_PRESENT && !WEBLLM_SHAPED.test(relPath)) {
+        unverifiable++;
+        if (VERBOSE)
+          console.log(`UNVERIFIABLE   ${relDocPath}: ${full}  (eoreader6 submodule not checked out)`);
+        continue;
+      }
       problems++;
       if (doc.eoreader6Rooted) eoreader6RootedMisses++;
       console.log(`MISSING-FILE   ${relDocPath}: ${full}`);
@@ -198,12 +253,22 @@ for (const doc of DOCS) {
 }
 
 console.log(`\n${totalCitations} citation(s) checked across ${DOCS.length} doc(s), ${problems} problem(s) found.`);
+// Two different unknowns, reported separately because they have different
+// fixes. `unverifiable` is "the submodule is not on disk at all"; the count
+// below is "it is on disk but pinned, and may simply be behind." Neither is a
+// fabrication finding, and collapsing them would lose which one to act on.
+if (unverifiable > 0) {
+  console.log(
+    `${unverifiable} citation(s) could not be checked at all: the eoreader6 submodule is not checked out ` +
+      `(\`git submodule update --init\`). These are UNKNOWN, not clean.`,
+  );
+}
 if (eoreader6RootedMisses > 0) {
   console.log(
     `${eoreader6RootedMisses} of those are under an eoreader6 root — this checkout is a submodule pinned to one ` +
     `commit and this environment cannot \`git fetch\` it, so a MISSING-FILE there means "not in this pinned ` +
     `snapshot," not "confirmed fabricated." Cross-check against GitHub (\`gh api repos/<org>/eoreader6/contents/<path>\`) ` +
-    `before treating any of them as a fabricated citation.`
+    `before treating any of them as a fabricated citation.`,
   );
 }
 if (problems > 0) process.exit(1);
