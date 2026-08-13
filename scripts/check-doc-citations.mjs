@@ -48,8 +48,28 @@ const VERBOSE = process.argv.includes("--verbose");
 // All roots are tried; file-exists-in-any counts as found. The NEXT-*.md/
 // CUBE.md docs live inside eoreader6 and cite the same mix of forms.
 const EOREADER6_ROOTS = [EOREADER6_ROOT, EOREADER6_ENGINE, EOREADER6_PACKAGES];
+
+// Every .md under docs/, scanned rather than listed by name. The named-list
+// approach is what let the Citey design docs go unchecked: this checker was
+// built for the fabricated-citation problem, and the two documents that define
+// Citey's own grounding policy (docs/citey-structured-grounding.md,
+// docs/citey-terrain-feedback-spec.md) were never in DOCS — so their citations
+// to `citey-states.js` and `CiteyBrain.js`, neither of which exists anywhere in
+// this repo, were invisible to the one tool built to catch exactly that. A
+// scan means a design doc added later cannot slip through the same gap.
+const DOCS_DIR = join(WEBLLM_ROOT, "docs");
+const docsDirEntries = existsSync(DOCS_DIR)
+  ? readdirSync(DOCS_DIR, { withFileTypes: true })
+      .filter((e) => e.isFile() && e.name.endsWith(".md"))
+      .map((e) => ({
+        path: join(DOCS_DIR, e.name),
+        roots: [WEBLLM_ROOT, ...EOREADER6_ROOTS],
+      }))
+  : [];
+
 const DOCS = [
   { path: join(WEBLLM_ROOT, "LAWS.md"), roots: [WEBLLM_ROOT, ...EOREADER6_ROOTS] },
+  ...docsDirEntries,
   { path: join(EOREADER6_ROOT, "NEXT-LEVEL1-PROMOTION.md"), roots: EOREADER6_ROOTS },
   { path: join(EOREADER6_ROOT, "NEXT-EXISTENCE-DEPENDENCY-GROWTH-ARTIFACT.md"), roots: EOREADER6_ROOTS },
   { path: join(EOREADER6_ROOT, "CUBE.md"), roots: EOREADER6_ROOTS },
@@ -124,8 +144,25 @@ const resolveCandidates = (relPath, roots) => {
   return [];
 };
 
+// eoreader6 is a git submodule and is frequently not on disk — a clone without
+// --recursive, or a CI job that skips submodules. When it is absent, a citation
+// that could only ever have resolved inside it is UNVERIFIABLE, not fabricated.
+// Reporting those two identically is what made this tool unreadable: a run
+// against an un-checked-out submodule printed 53 "problems", nearly all of them
+// a directory that simply was not there — so the handful of real fabrications
+// sat inside a wall of noise nobody reads. This tool exists to be acted on, and
+// a checker that cries wolf is a checker that gets ignored.
+const EOREADER6_PRESENT =
+  existsSync(EOREADER6_ROOT) && readdirSync(EOREADER6_ROOT).length > 0;
+
+// Paths this repo can answer for on its own, submodule or no submodule. An
+// unresolved citation under one of these IS a real finding: the root is present
+// and complete, so "not found" means not there.
+const WEBLLM_SHAPED = /^(app|scripts|docs|instruction-set|public|\.github)\//;
+
 let totalCitations = 0;
 let problems = 0;
+let unverifiable = 0;
 
 for (const doc of DOCS) {
   const text = readFileSync(doc.path, "utf8");
@@ -142,6 +179,16 @@ for (const doc of DOCS) {
 
     const candidates = resolveCandidates(relPath, doc.roots);
     if (candidates.length === 0) {
+      // Only claim "missing" where this repo alone could have answered. A bare
+      // basename (`kinds.js`) searches every root including the absent one, so
+      // with the submodule gone it is honestly unknown — say so rather than
+      // assert a fabrication the evidence does not support.
+      if (!EOREADER6_PRESENT && !WEBLLM_SHAPED.test(relPath)) {
+        unverifiable++;
+        if (VERBOSE)
+          console.log(`UNVERIFIABLE   ${relDocPath}: ${full}  (eoreader6 submodule not checked out)`);
+        continue;
+      }
       problems++;
       console.log(`MISSING-FILE   ${relDocPath}: ${full}`);
       continue;
@@ -173,4 +220,11 @@ for (const doc of DOCS) {
 }
 
 console.log(`\n${totalCitations} citation(s) checked across ${DOCS.length} doc(s), ${problems} problem(s) found.`);
+if (unverifiable > 0) {
+  console.log(
+    `${unverifiable} citation(s) could not be checked: the eoreader6 submodule is not checked out ` +
+      `(\`git submodule update --init\` for a complete run). These are UNKNOWN, not clean — ` +
+      `rerun with the submodule present before treating this as a full pass.`,
+  );
+}
 if (problems > 0) process.exit(1);
