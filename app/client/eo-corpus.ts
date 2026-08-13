@@ -63,6 +63,10 @@ const ROOT = "eo-corpus-v1";
 const CHUNK_CHARS = 3000;
 const RETRIEVAL_TOKEN_BUDGET = 3000;
 const RETRIEVAL_MAX_PASSAGES = 6;
+// How far the priors channel (eo-priors.ts) may ever move the passage
+// cutoff above. A hard bound, not a suggestion — priors sets a
+// hyperparameter, it does not get to reopen how large the surf can grow.
+const MAX_PASSAGES_DELTA_BOUND = 2;
 const STOPWORDS = new Set([
   "a",
   "an",
@@ -272,13 +276,31 @@ function scoreChunk(text: string, terms: string[]): number {
   return score;
 }
 
+export interface CorpusHyperparams {
+  /**
+   * A discrete, bounded step onto the passage cutoff — the ONLY thing a
+   * caller may adjust here. It is applied once, to the cutoff, after
+   * candidates are scored and sorted; it never reaches scoreChunk and never
+   * reorders a single candidate. That is what keeps a hyperparameter a
+   * hyperparameter rather than a second, undisclosed scoring term (see
+   * eo-priors.ts's header for why that distinction is load-bearing).
+   */
+  maxPassagesDelta?: number;
+}
+
 /**
  * Search every enabled, readable source. Original bytes remain in OPFS; this
  * only returns the passages selected for the current turn.
+ *
+ * `hyperparams` is optional and, when passed, must come from a channel
+ * declared `canWarrant: false` in eo-warrant.ts (today: priors, see
+ * eo-priors.ts) — it can only widen or narrow how many passages are kept,
+ * never which ones score, never what they say.
  */
 export async function retrieveCorpus(
   question: string,
   sources: EoSource[],
+  hyperparams?: CorpusHyperparams,
 ): Promise<CorpusPassage[]> {
   const terms = queryTerms(question);
   if (!terms.length) return [];
@@ -307,6 +329,11 @@ export async function retrieveCorpus(
     }
   }
   candidates.sort((a, b) => b.score - a.score || a.byteStart - b.byteStart);
+  const delta = Math.max(
+    -MAX_PASSAGES_DELTA_BOUND,
+    Math.min(MAX_PASSAGES_DELTA_BOUND, hyperparams?.maxPassagesDelta ?? 0),
+  );
+  const maxPassages = Math.max(1, RETRIEVAL_MAX_PASSAGES + delta);
   const kept: CorpusPassage[] = [];
   let tokens = 0;
   for (const passage of candidates) {
@@ -314,7 +341,7 @@ export async function retrieveCorpus(
     if (tokens + cost > RETRIEVAL_TOKEN_BUDGET) continue;
     kept.push(passage);
     tokens += cost;
-    if (kept.length >= RETRIEVAL_MAX_PASSAGES) break;
+    if (kept.length >= maxPassages) break;
   }
   return kept;
 }

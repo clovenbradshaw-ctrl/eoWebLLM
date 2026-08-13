@@ -49,6 +49,7 @@ export type WarrantChannel =
   | "rules" // instruction folds in force
   | "hypergraph" // a background model's prose synthesis over the accumulated entity/relation graph — a paraphrase of structure, not a source
   | "focus" // the running "what this conversation is currently about" — a standing paraphrase, kept open across turns
+  | "priors" // a measured background register (eo-priors.ts) that may only re-parameterize the corpus channel's own search — never shown as content, never a source
   | "internal"; // the model's own weights
 
 export type WarrantKind =
@@ -56,6 +57,7 @@ export type WarrantKind =
   | "conversational" // what was actually said, held verbatim
   | "paraphrase" // a lossy fold whose source is not in the prompt
   | "normative" // rules: they govern form, they never supply facts
+  | "steering" // adjusts another channel's own hyperparameters; carries no fact and is never shown as content
   | "internal"; // the model's own knowledge
 
 export interface ChannelWarrant {
@@ -136,6 +138,18 @@ export const CHANNEL_WARRANT: Record<WarrantChannel, ChannelWarrant> = {
     canWarrant: false,
     demandsCheck: true,
     rule: "IN FOCUS names what this conversation has been about, carried forward from earlier turns so a message that names no subject still has one. It orients retrieval and nothing else. It is a running summary, not a record of what was said: never cite it, never treat it as having established a fact, and if a claim needs what it refers to, go to the passage rather than to this line.",
+  },
+  priors: {
+    // The weakest standing of any channel on purpose, and a different
+    // weakness than focus's or discourse's: those two are paraphrases the
+    // model actually reads and must be warned off citing. Priors is never
+    // read at all — see eo-priors.ts — so its rule exists for the audit
+    // trail (warrantLogLine, buildWarrantBlock) rather than for the model,
+    // which has nothing here to be tempted to quote.
+    kind: "steering",
+    canWarrant: false,
+    demandsCheck: false,
+    rule: "PRIORS is a measured background register (eo-priors.ts) that is never surfaced to you as content this turn. Its only effect is to widen or narrow how many passages the corpus channel keeps, decided before you see anything. It has no content to cite, was not consulted about this question's substance, and can never be named as where a fact came from.",
   },
   internal: {
     kind: "internal",
@@ -219,6 +233,14 @@ export interface LedgerInputs {
     edgesConsidered: number;
     /** Whether a bounded background "thought" was actually drafted and put in the prompt. */
     thoughtDrafted: boolean;
+  } | null;
+  priors?: {
+    /** How many modifier stacks the induced prior's own tokens formed in this turn's question (eo-priors.ts::measurePriorTouch). */
+    stacksFound: number;
+    /** The step actually applied to the corpus channel's own passage cutoff (eo-priors.ts::priorHyperparameters). */
+    maxPassagesDelta: number;
+    /** The prior's own disclosed provenance string. */
+    giver: string;
   } | null;
   budget?: { droppedMessages: number; truncated: boolean } | null;
 }
@@ -357,6 +379,25 @@ export function buildFoldLedger(inputs: LedgerInputs): FoldLedger {
         hypergraph.thoughtDrafted
           ? `${hypergraph.edgesConsidered} relation(s) synthesized into a background thought`
           : `${hypergraph.edgesConsidered} relation(s) considered, no thought drafted`,
+      ),
+    );
+  }
+
+  const priors = inputs.priors;
+  if (priors) {
+    // present:1/surfaced:0, always — unlike corpus/web/file, priors is a
+    // standing background register, not per-turn material, and it is never
+    // handed to the model as text (see CHANNEL_WARRANT.priors above). The
+    // interesting number here is stacksFound, carried in the note for the
+    // audit log, not in surfaced/present (which would wrongly imply this
+    // channel has content that could have been shown and wasn't).
+    channels.push(
+      channel(
+        "priors",
+        { present: 1, surfaced: 0, checkedEmpty: priors.stacksFound === 0 },
+        priors.stacksFound > 0
+          ? `${priors.stacksFound} stack(s) touched the induced prior — passage cutoff adjusted by ${priors.maxPassagesDelta}`
+          : "induced prior consulted, no stack touched — no adjustment",
       ),
     );
   }
@@ -530,6 +571,20 @@ export function groundingDemand(ledger: FoldLedger): GroundingDemand {
     forbidden.add("hypergraph");
     reasons.push(
       `hypergraph: ${hypergraph.surfaced} relation(s) synthesized into a thought — orientation only, never evidence`,
+    );
+  }
+
+  const priors = channelOf(ledger, "priors");
+  if (priors) {
+    // Declared forbidden even though it is never surfaced as content (so
+    // never at risk of being quoted) — this keeps the "which channels may
+    // never warrant" set complete by construction rather than complete by
+    // omission, and it is what CHANNEL_WARRANT.priors.canWarrant === false
+    // is actually enforcing here. Consulting it never raises `required` on
+    // its own: it did not withhold anything from this turn to unfold.
+    forbidden.add("priors");
+    reasons.push(
+      `priors: consulted to set the corpus channel's own hyperparameters only — never evidence, never surfaced`,
     );
   }
 

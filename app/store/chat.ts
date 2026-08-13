@@ -120,6 +120,7 @@ import {
   type CorpusPassage,
   type EoSource,
 } from "../client/eo-corpus";
+import { measurePriorTouch, priorHyperparameters } from "../client/eo-priors";
 import {
   ensureHypergraphHydrated,
   admitHypergraphTurn,
@@ -360,7 +361,14 @@ export type EoLogKind =
   // moment it scrolls out of view. This is the same line, in the one place
   // "warrant" and "hypergraph" already put their own per-turn decisions so a
   // reader can find every turn's shape without reopening each message.
-  | "plan";
+  | "plan"
+  // The priors channel (eo-priors.ts): whether the induced prior touched
+  // this turn's question and what it did to the corpus channel's own
+  // passage cutoff. Its own kind rather than folded into "file" — a reader
+  // auditing why the corpus surf widened should find that decision here,
+  // not have to infer it from a "file" line that is really about something
+  // else (the source surf itself).
+  | "priors";
 
 export interface EoLogEntry {
   id: string;
@@ -2602,12 +2610,24 @@ export const useChatStore = createPersistStore(
         // surface a different part of the same raw source. `sources` itself
         // was already hoisted above, for the non-text surf.
         let corpusPassages: CorpusPassage[] = [];
+        // The priors channel (eo-priors.ts): measured against the question,
+        // BEFORE retrieveCorpus runs, so its only possible effect is a
+        // hyperparameter set ahead of the surf — never a look at what the
+        // surf found. See eo-warrant.ts's CHANNEL_WARRANT.priors: this may
+        // widen or narrow the passage cutoff and nothing else, and it is
+        // never handed to the model as text.
+        const priorsTouch = measurePriorTouch(userContent.trim());
+        const priorsHyperparams = priorHyperparameters(priorsTouch);
         if (
           sources.some((s) => s.enabled && s.textReadable) &&
           userContent.trim()
         ) {
           try {
-            const passages = await retrieveCorpus(userContent.trim(), sources);
+            const passages = await retrieveCorpus(
+              userContent.trim(),
+              sources,
+              priorsHyperparams,
+            );
             corpusPassages = passages;
             const corpusBlock = formatCorpusContext(
               userContent.trim(),
@@ -2623,6 +2643,7 @@ export const useChatStore = createPersistStore(
               "file",
               `surf: ${passages.length} passage(s) from ${sources.filter((s) => s.enabled && s.textReadable).length} enabled source(s)`,
             );
+            get().pushEoLog("priors", priorsHyperparams.reason);
           } catch (err) {
             get().pushEoLog(
               "error",
@@ -2942,6 +2963,13 @@ export const useChatStore = createPersistStore(
             edgesConsidered: hypergraphEdgesConsidered,
             thoughtDrafted: hypergraphThoughtDrafted,
           },
+          priors: sourcesReadable.length
+            ? {
+                stacksFound: priorsTouch.stacksFound,
+                maxPassagesDelta: priorsHyperparams.maxPassagesDelta,
+                giver: priorsTouch.giver,
+              }
+            : null,
           discourse: assembled.discourse,
           budget: {
             droppedMessages: dryRun.dropped,
