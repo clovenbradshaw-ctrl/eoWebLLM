@@ -95,10 +95,10 @@ function applyResolveChecks(spans, checks) {
           ? "contradicted"
           : c.verdict === "confirmed"
             ? "sourced"
-            : "owned";
+            : "unconfirmed";
       span.correction = c.correction;
     } else if (span.state === "checking") {
-      span.state = "owned";
+      span.state = "unconfirmed";
     }
   }
   return spans;
@@ -132,6 +132,21 @@ test("drift guard: grounding-chip.tsx's citability predicate still matches its m
   );
 });
 
+test("drift guard: chat.ts's resolve write-back still lands on the states this mirrors", () => {
+  // The owned split renamed what a failed/unrelated resolve produces. That is
+  // exactly the kind of change a mirror misses silently, so it is guarded by
+  // name rather than left to whoever notices.
+  const src = readSrc("app/store/chat.ts");
+  assert.ok(
+    src.includes('c.verdict === "confirmed" ? "sourced" : "unconfirmed"'),
+    "chat.ts's verdict mapping changed — update applyResolveChecks above",
+  );
+  assert.ok(
+    src.includes('span.state = "unconfirmed";'),
+    "chat.ts's unresolved-checking fallback changed — update applyResolveChecks above",
+  );
+});
+
 test("drift guard: chat.ts still assigns provenance before the judged guard", () => {
   const src = readSrc("app/store/chat.ts");
   const provenance = src.indexOf("span.clause = c.clause;");
@@ -149,7 +164,20 @@ test("more evidence never lowers a span's grade", () => {
   // The atom-level analogue of escalate()'s monotone rule: evidence may raise
   // what a claim rests on, never quietly lower it. buildUnionIndex only ever
   // grows, so support can only ever be gained.
-  const RANK = { contradicted: 0, owned: 1, checking: 1, echoed: 2, sourced: 3 };
+  // The four states that replaced "owned" all sit on the same rung: they say
+  // different things about WHY an atom is unsourced, not different things
+  // about how well-backed it is. "stated" is the exception — the desk
+  // warrants — so it ranks with echoed.
+  const RANK = {
+    contradicted: 0,
+    bleed: 1,
+    unconfirmed: 1,
+    general: 1,
+    checking: 1,
+    stated: 2,
+    echoed: 2,
+    sourced: 3,
+  };
   const draft = "The Eiffel Tower was completed in 1889 in Paris.";
   const none = buildGroundingSpans(draft, { citations: [] });
   const some = buildGroundingSpans(draft, {
@@ -362,3 +390,112 @@ test(
     }
   },
 );
+
+// ── A void is a finding, not a silence (V3) ───────────────────────────────
+
+test("'never checked' and 'checked, nothing wrong' do not render alike", () => {
+  // LAWS.md L2e, at the report's own surface. `clean` alone answers a
+  // three-state question with a boolean: it is true both when a check found
+  // nothing wrong AND when no check ran at all. A caller reading `.clean` got
+  // the same answer for a verified sentence and an unexamined one.
+  const source = [{ index: 1, source_id: "s", text: "The budget was 1022900000." }];
+  const claim = "The budget was 1136000000.";
+
+  const unexamined = checkGrounding(claim, [], { channels: [] });
+  const examinedAbsent = checkGrounding(claim, source, { channels: ["src"] });
+  const examinedClean = checkGrounding("The budget was 1022900000.", source, {
+    channels: ["src"],
+  });
+
+  assert.equal(unexamined.examined, false, "no citations means nothing was examined");
+  assert.equal(examinedAbsent.examined, true);
+  assert.equal(examinedClean.examined, true);
+
+  // The predicate a caller actually wants — and the one that separates all
+  // three states, which `clean` alone cannot.
+  const verifiedClean = (r) => r.examined && r.clean;
+  assert.equal(verifiedClean(unexamined), false, "an unexamined claim is not verified clean");
+  assert.equal(verifiedClean(examinedAbsent), false);
+  assert.equal(verifiedClean(examinedClean), true);
+});
+
+test("an unexamined report still says so in its own counts", () => {
+  const r = checkGrounding("The budget was 1136000000.", [], { channels: [] });
+  assert.equal(r.atomsChecked, 0);
+  assert.deepEqual(r.channels, []);
+  assert.equal(r.findings.length, 0);
+});
+
+// ── II.8: plural grounds stay parallel ────────────────────────────────────
+
+test("a claim about the reader's document is not validated by an unrelated web hit", async () => {
+  // The measured violation. checkGrounding builds ONE union index across every
+  // citation handed to it, so a figure absent from the reader's own PDF comes
+  // back CLEAN when a web snippet happens to carry the same digits. That is
+  // eo-constitution II.8's first named consequence — "No averaging of grounds"
+  // — and the shape it calls the second death: a merged index cannot disagree
+  // with itself, so the one thing worth reporting is what the merge destroys.
+  const { checkGroundsInParallel } = await import(
+    "../app/client/eo-citation-check.ts"
+  );
+  const yourSources = {
+    name: "your sources",
+    citations: [
+      { index: 1, source_id: "budget.pdf#0-90", text: "The department received 1022900000 for fiscal year 2031." },
+    ],
+  };
+  const theWeb = {
+    name: "the web",
+    citations: [
+      { index: 1, source_id: "https://x/wiki", text: "Unrelated article mentioning 1136000000 in another context." },
+    ],
+  };
+  const claim = "Your document states the budget is 1136000000 for fiscal year 2031.";
+
+  // Merged — what the union index does today.
+  const merged = checkGrounding(
+    claim,
+    [...yourSources.citations, ...theWeb.citations.map((c) => ({ ...c, index: 2 }))],
+    { channels: ["your sources", "the web"] },
+  );
+  assert.equal(merged.clean, true, "precondition: the merge reports this fabrication as clean");
+
+  // Parallel — the grounds keep their own verdicts.
+  const parallel = checkGroundsInParallel(claim, [yourSources, theWeb]);
+  const fabricated = parallel.disagreements.find((d) => d.text === "1136000000");
+  assert.ok(fabricated, "the invented figure must surface as a disagreement");
+  assert.deepEqual(fabricated.supportedBy, ["the web"]);
+  assert.deepEqual(fabricated.absentFrom, ["your sources"]);
+});
+
+test("nothing in the parallel report ranks, scores or resolves a disagreement", async () => {
+  // II.8/II.3: a disagreement between grounds belongs to the reader. The
+  // report may carry it; it may not settle it.
+  const { checkGroundsInParallel } = await import(
+    "../app/client/eo-citation-check.ts"
+  );
+  const r = checkGroundsInParallel("The budget is 1136000000.", [
+    { name: "a", citations: [{ index: 1, source_id: "a", text: "budget 1136000000" }] },
+    { name: "b", citations: [{ index: 1, source_id: "b", text: "budget 1022900000" }] },
+  ]);
+  const json = JSON.stringify(r);
+  for (const forbidden of ["score", "confidence", "weight", "rank", "verdict", "winner"])
+    assert.ok(!json.includes(forbidden), `the report must not carry a "${forbidden}"`);
+  assert.equal(r.grounds.length, 2, "both grounds keep their own verdict");
+});
+
+test("a ground with no material is examined:false, never silently clean", async () => {
+  const { checkGroundsInParallel } = await import(
+    "../app/client/eo-citation-check.ts"
+  );
+  const r = checkGroundsInParallel("The budget is 1136000000.", [
+    { name: "your sources", citations: [] },
+    { name: "the web", citations: [{ index: 1, source_id: "w", text: "budget 1136000000" }] },
+  ]);
+  const empty = r.grounds.find((g) => g.name === "your sources");
+  assert.equal(empty.examined, false);
+  // An unexamined ground contributes to neither column — absence of a check
+  // is not evidence of absence.
+  const atom = [...r.disagreements, ...r.unsupportedEverywhere].find((a) => a.text === "1136000000");
+  if (atom) assert.ok(!atom.absentFrom.includes("your sources"));
+});

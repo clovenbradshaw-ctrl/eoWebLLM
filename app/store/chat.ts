@@ -75,6 +75,7 @@ import {
 } from "../client/eo-math-check";
 import {
   checkGrounding,
+  checkGroundsInParallel,
   snipCitations,
   splitSentences,
   countClaimAtoms,
@@ -232,6 +233,14 @@ export type ChatMessage = RequestMessage & {
   // at the same point groundingSpans is finalized against the settled
   // message (not the live per-chunk one) — see the onFinish call site.
   groundingCitations?: CitationEntry[];
+  /**
+   * Per-ground findings, kept parallel and never merged — eo-constitution
+   * II.8: "Plural grounds stay parallel and their disagreement is the
+   * finding." groundingReport above still builds ONE union index across every
+   * channel, which is the averaging II.8 refuses; this is the un-averaged
+   * reading beside it.
+   */
+  groundsReport?: ReturnType<typeof checkGroundsInParallel>;
   // True only during the async post-answer resolveSpans pass (onFinish's
   // background block below) — deliberately separate from `streaming`.
   // Reusing `streaming` for this used to make a finished answer look like
@@ -3000,7 +3009,7 @@ export const useChatStore = createPersistStore(
         log.debug("Messages: ", sendMessages);
 
         // Citey's grounding layer needs to know what this turn already
-        // gathered (web/corpus) to tell "sourced" from "owned" — and needs
+        // gathered (web/corpus) to tell "sourced" from unsourced — and needs
         // to know it live, while the draft is still streaming, not only
         // once onFinish runs. Everything it depends on (turnWebResults,
         // turnWebQuery, corpusPassages) was already produced by the
@@ -3352,13 +3361,48 @@ export const useChatStore = createPersistStore(
                 get().pushEoLog(
                   "warrant",
                   groundingReport.clean
-                    ? `grounding: clean against ${checkedChannels.join(" + ")} (${groundingReport.atomsChecked} claim(s) checked)`
+                    ? // "clean" and "nothing was examined" are different
+                      // results and must not render alike (V4/L2e). The report
+                      // now says which this was; the log says so too.
+                      groundingReport.examined
+                      ? `grounding: clean against ${checkedChannels.join(" + ")} (${groundingReport.atomsChecked} claim(s) checked)`
+                      : `grounding: NOT CHECKED — no material was available to check against, so nothing here is a clean bill`
                     : `grounding: ${groundingReport.findings.length} unsupported claim(s) of ${groundingReport.atomsChecked} checked against ${checkedChannels.join(" + ")}${groundingReport.truncated ? ` (${groundingReport.truncated.dropped} more truncated)` : ""}`,
                 );
                 get().recordEoMindGrounding(
                   botMessage.id,
                   groundingReport.findings,
                 );
+
+                // The same draft, checked against each ground SEPARATELY.
+                // groundingReport above merged them into one index, and that
+                // merge is measurable: a false claim about the reader's own
+                // PDF comes back clean because a web snippet happened to
+                // carry the digits. II.8's first named consequence — plural
+                // grounds stay parallel, and their disagreement is the
+                // finding. Nothing here ranks or resolves them; the reader
+                // gets both readings intact (II.3, III.1).
+                const grounds = [];
+                if (sourceCits.length)
+                  grounds.push({ name: "your sources", citations: sourceCits });
+                if (webCitations.length)
+                  grounds.push({ name: "the web", citations: webCitations });
+                if (grounds.length) {
+                  const parallel = checkGroundsInParallel(message, grounds, {
+                    question: userContent.trim(),
+                  });
+                  botMessage.groundsReport = parallel;
+                  for (const d of parallel.disagreements)
+                    get().pushEoLog(
+                      "warrant",
+                      `grounds disagree on "${d.text}" — carried by ${d.supportedBy.join(", ")}, absent from ${d.absentFrom.join(", ")}`,
+                    );
+                  if (parallel.unsupportedEverywhere.length)
+                    get().pushEoLog(
+                      "warrant",
+                      `${parallel.unsupportedEverywhere.length} claim(s) carried by no ground that was checked`,
+                    );
+                }
               }
 
               // Every turn is proposed into the mind regardless of whether it
@@ -3600,7 +3644,7 @@ export const useChatStore = createPersistStore(
 
               // Spans eligible for the async resolve pass: numbers marked
               // "checking" (nothing gathered this turn to check them
-              // against yet), and names marked "owned" (searched anyway,
+              // against yet), and names in any unsourced state (searched anyway,
               // for the verbatim-clause affordance, but never given an
               // asserted verdict — see eo-revision.ts's module header for
               // why a name never earns "checking" in the first place).
@@ -3666,10 +3710,14 @@ export const useChatStore = createPersistStore(
                               ? "contradicted"
                               : c.verdict === "confirmed"
                                 ? "sourced"
-                                : "owned";
+                                : "unconfirmed";
                           span.correction = c.correction;
                         } else if (span.state === "checking") {
-                          span.state = "owned";
+                          // Searched and nothing conclusive came back. That
+                          // is "gathered and absent", not "nothing bore on
+                          // this turn" — the two were the same word before
+                          // the split.
+                          span.state = "unconfirmed";
                         }
                       }
                     });
