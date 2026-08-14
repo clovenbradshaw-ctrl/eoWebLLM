@@ -195,27 +195,40 @@ survives destroying word order is not reading anything.
 and one caption — desk-backed, internal, forbidden-channel bleed, and genuinely
 unconfirmed. That is P1 violated at the smallest unit the system has.
 
-**Status: reverted on `main`, and the split is currently NOT in the code.**
-`98d435b` landed the four states — `stated` / `general` / `bleed` /
-`unconfirmed` — named for the channels in `eo-warrant.ts` that already
-distinguished them, detected mechanically with zero model calls. `170713d`
-then rewrote `eo-grounding-spans.ts` from a pre-split base, restoring the
-single `owned` state and adding origin-channel *attribution* on top of it.
+**Status: split and attribution reconciled; both ship.** `98d435b` landed the
+four states. `170713d` then rewrote `eo-grounding-spans.ts` from a pre-split
+base, restoring single-state `owned` and adding origin-channel *attribution* on
+top of it — work done from a stale checkout, not a reversal on the merits.
 
-The two are different answers to P5 and the difference is not cosmetic. A
-split makes the distinction a **type**: `bleed` cannot be rendered, counted or
-filtered as `stated`, because they are not the same value. Attribution makes
-it a **best-effort annotation on one value**, explicitly "never a certainty
-claim" and unset by default — so an atom resting on an unwarrantable
-paraphrase and an atom the reader personally stated remain the same state, and
-anything that switches on state alone still treats them alike.
+They were never rivals, and the reconciliation keeps the better half of each.
+**Attribution is the better detector**: fractional token matching, three
+channels kept apart (`desk` / `discourse` / `hypergraph`), and an explicit
+`externalRequired` flag before anything is called `internal`. **The split is
+the stronger guarantee**: it makes the distinction a *type*. So the states are
+now derived from that same detection rather than from a second, looser guess
+(L11d):
 
-Which to keep is a design decision, not a merge conflict, and it is not
-resolved here. What is recorded: the split's own tests are still in the tree
-and still failing against the reverted code (`test-eo-grounding-spans.mjs`,
-plus two seam guards in `test-grounding-consistency.mjs`), so `main` is red at
-the moment this was written. Those failures are the accidental revert being
-caught, and they should not be quieted by rewriting the tests to match.
+| originChannel | state | why |
+|---|---|---|
+| `desk` | `stated` | conversational channel, `canWarrant: true` — backed, just not by a source |
+| `discourse` / `hypergraph` | `bleed` | both `canWarrant: false` — the same *kind* of failure |
+| — (material gathered) | `unconfirmed` | we looked; it is not there |
+| — (nothing gathered) | `general` | nothing external bore on the turn |
+
+`originChannel` is kept alongside, and is strictly finer: `bleed` deliberately
+collapses discourse and hypergraph, and the channel still says which, so a
+caption can name it. It may sharpen wording; it may never decide whether
+something is backed.
+
+**Why the type and not the caption.** Under attribution alone, a claim the
+reader personally stated and a claim resting on a paraphrase whose source is
+gone were the same *value*. The colour and caption differed — but every
+filter, count and predicate switching on `state` still treated them as one
+thing, and the resolve pass, the chip's citability check and the seam guards
+all switch on `state`. That is II.8's "no averaging of grounds" at the smallest
+unit the system has, and a comment cannot enforce where a type can. Four tests
+in `test-eo-grounding-spans.mjs` pin it, including the one that matters:
+`stated` and `bleed` must not be equal.
 
 ## 4.5 The void — the grounding that catches fabrication
 
@@ -342,7 +355,7 @@ atom against ONE union index built from every ground, so an atom carried by a
 single ground reads as `sourced` — and the panel above it, built from the
 parallel report, says the grounds disagree about that same atom. Two surfaces,
 one message, opposite claims. `demoteDisagreedSpans` un-merges the chips after
-they are built: a disagreed atom drops to `owned` and loses its citation
+they are built: a disagreed atom drops to `unconfirmed` and loses its citation
 indexes, because those point at the ground that *did* carry it, and letting the
 chip open that passage answers *"is this backed?"* with the one ground that
 happens to agree.

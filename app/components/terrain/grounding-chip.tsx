@@ -142,19 +142,21 @@ export function chipReasonText(
       return "Echoes wording from a source without every word matching verbatim.";
     case "checking":
       return "Not checked against anything yet.";
+    case "stated":
+      return "You stated this earlier in this conversation — held as a recorded fact, not re-verified.";
+    case "general":
+      return "Nothing external bore on this turn — answered from general knowledge, not checked against anything.";
+    // originChannel is finer than the state here and names WHICH
+    // unwarrantable channel it was. Both readings say the same thing about
+    // warrant: a resemblance, not a match.
+    case "bleed":
+      return span.originChannel === "hypergraph"
+        ? "This may echo the drafted graph thought, not evidence gathered this turn — a resemblance, not a match."
+        : "This may echo the folded summary of earlier turns, not evidence gathered this turn — a resemblance, not a match.";
+    case "unconfirmed":
+      return "Material was gathered this turn and this is not in it.";
     default:
-      switch (span.originChannel) {
-        case "desk":
-          return "You stated this earlier in this conversation — held as a recorded fact, not re-verified.";
-        case "internal":
-          return "Nothing external bore on this turn — answered from general knowledge, not checked against anything.";
-        case "discourse":
-          return "This may echo the folded summary of earlier turns, not evidence gathered this turn — a resemblance, not a match.";
-        case "hypergraph":
-          return "This may echo the drafted graph thought, not evidence gathered this turn — a resemblance, not a match.";
-        default:
-          return "Nothing was gathered to check this against — held as unconfirmed rather than guessed.";
-      }
+      return "Nothing was gathered to check this against — held as unconfirmed rather than guessed.";
   }
 }
 
@@ -202,10 +204,9 @@ export function GroundingChip(props: {
           ? "eo-chip-echoed"
           : span.state === "checking"
             ? "eo-chip-checking"
-            : span.originChannel === "desk"
+            : span.state === "stated"
               ? "eo-chip-owned eo-chip-owned-desk"
-              : span.originChannel === "discourse" ||
-                  span.originChannel === "hypergraph"
+              : span.state === "bleed"
                 ? "eo-chip-owned eo-chip-owned-caution"
                 : "eo-chip-owned";
 

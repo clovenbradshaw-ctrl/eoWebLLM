@@ -2754,7 +2754,7 @@ export const useChatStore = createPersistStore(
         let hypergraphEdgesConsidered = 0;
         let hypergraphThoughtDrafted = false;
         // Hoisted so Citey's grounding layer (below, both the live onUpdate
-        // pass and the finalized onFinish pass) can check an "owned" atom
+        // pass and the finalized onFinish pass) can check an unsourced atom
         // against the exact prose this turn's prompt carried, not just
         // whether a thought was drafted at all.
         let hypergraphThoughtText = "";
@@ -3888,14 +3888,15 @@ export const useChatStore = createPersistStore(
                               ? "contradicted"
                               : c.verdict === "confirmed"
                                 ? "sourced"
-                                : "owned";
+                                : "unconfirmed";
                           span.correction = c.correction;
                         } else if (span.state === "checking") {
                           // Searched and nothing conclusive came back. That
-                          // is "gathered and absent" — the atom stays held as
-                          // the character's own assertion ("owned"), just not
-                          // one backed by any gathered material.
-                          span.state = "owned";
+                          // is precisely "gathered and absent", which is what
+                          // `unconfirmed` names — distinct from `general`
+                          // ("nothing was gathered at all"), and the reason
+                          // the two are separate states.
+                          span.state = "unconfirmed";
                         }
                       }
                     });
@@ -4072,7 +4073,7 @@ export const useChatStore = createPersistStore(
           },
           // The actual folded-summary prose this turn's prompt carried, if
           // any — not just its stats above. Citey's grounding layer needs
-          // the plain text itself to check an "owned" atom for a possible
+          // the plain text itself to check an unsourced atom for a possible
           // echo (see originChannel in eo-grounding-spans.ts); null when no
           // summary was in the prompt this turn.
           discourseText: summaryText,

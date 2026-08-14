@@ -182,3 +182,93 @@ test("25-fixture sweep: buildGroundingSpans + resolveSpans never mutate content,
     }
   }
 });
+
+// ── The split and the attribution, reconciled ─────────────────────────────
+//
+// Two designs for the same problem landed independently: a four-state SPLIT
+// (98d435b) and an origin-channel ATTRIBUTION on a single `owned` state
+// (170713d), the second written from a base predating the first and
+// therefore silently dropping it. They are not rivals — attribution is the
+// better detector, the split is the stronger guarantee — so the states are
+// now derived from the same detection, and both survive.
+//
+// These pin the property that makes the split worth having: the distinction
+// is a TYPE, not a caption. Anything switching on `state` alone must already
+// be able to tell these apart, without consulting a second field and without
+// being trusted to remember to.
+
+test("split states are derived from the same detection attribution uses", () => {
+  const content = "The budget was 1022900000 dollars for Metro Nashville.";
+
+  // desk — the reader said it. A warranting channel (eo-warrant.ts).
+  const stated = buildGroundingSpans(content, {
+    citations: [],
+    statedFacts: [{ text: "Metro Nashville set a budget of 1022900000." }],
+  });
+  const statedName = stated.find((s) => s.atomKind === "name");
+  assert.equal(statedName.state, "stated");
+  assert.equal(statedName.originChannel, "desk", "the finer detail is kept too");
+
+  // discourse — canWarrant:false. Reads as grounded, rests on a paraphrase.
+  const bled = buildGroundingSpans(content, {
+    citations: [],
+    discourseText: "Earlier we discussed Metro Nashville and its budget.",
+  });
+  const bledName = bled.find((s) => s.atomKind === "name");
+  assert.equal(bledName.state, "bleed");
+  assert.equal(bledName.originChannel, "discourse");
+
+  // THE POINT. These are different VALUES, so no filter, count or predicate
+  // switching on state can treat them alike — which is exactly what a shared
+  // `owned` value plus differing captions could not prevent.
+  assert.notEqual(
+    statedName.state,
+    bledName.state,
+    "a reader-stated atom and one resting on an unwarrantable paraphrase must not share a state",
+  );
+});
+
+test("bleed collapses the unwarrantable channels; originChannel still names which", () => {
+  const content = "The report named Metro Nashville.";
+  const viaHypergraph = buildGroundingSpans(content, {
+    citations: [],
+    hypergraphText: "a drafted thought about Metro Nashville",
+  });
+  const span = viaHypergraph.find((s) => s.atomKind === "name");
+  // Same KIND of failure as discourse — both are canWarrant:false — so the
+  // state is the same. The channel is finer and keeps the difference.
+  assert.equal(span.state, "bleed");
+  assert.equal(span.originChannel, "hypergraph");
+});
+
+test("'gathered and absent' and 'nothing gathered' are different states", () => {
+  const content = "The commissioner is Dolores Vandermeer.";
+
+  const nothingGathered = buildGroundingSpans(content, { citations: [] });
+  assert.equal(
+    nothingGathered.find((s) => s.atomKind === "name").state,
+    "general",
+    "nothing was gathered, so general knowledge is the legitimate basis",
+  );
+
+  const gathered = buildGroundingSpans(content, {
+    citations: [{ index: 1, source_id: "s", text: "An unrelated passage entirely." }],
+  });
+  assert.equal(
+    gathered.find((s) => s.atomKind === "name").state,
+    "unconfirmed",
+    "material was gathered and this is not in it — a finding, not a shrug (L2e)",
+  );
+});
+
+test("a warranting channel is never overwritten by the number shortcut", () => {
+  // A number the reader themselves stated must not be sent back out to be
+  // re-verified: `checking` is decided AFTER the channels for this reason.
+  const spans = buildGroundingSpans("The budget was 1022900000 dollars.", {
+    citations: [],
+    statedFacts: [{ text: "Our budget was 1022900000." }],
+  });
+  const number = spans.find((s) => s.atomKind === "number");
+  assert.equal(number.state, "stated");
+  assert.equal(number.originChannel, "desk");
+});

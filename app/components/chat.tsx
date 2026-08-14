@@ -1160,7 +1160,10 @@ function CiteyNote(props: {
   warrantPanelId: string;
 }) {
   const flagged = props.spans?.find(
-    (s) => s.state === "contradicted" || s.state === "owned",
+    (s) =>
+      s.state === "contradicted" ||
+      s.state === "bleed" ||
+      s.state === "unconfirmed",
   );
   if (!flagged) return null;
 
@@ -2821,7 +2824,10 @@ function ChatInner() {
                             [
                               "sourced",
                               "echoed",
-                              "owned",
+                              "stated",
+                              "general",
+                              "bleed",
+                              "unconfirmed",
                               "checking",
                               "contradicted",
                             ] as const

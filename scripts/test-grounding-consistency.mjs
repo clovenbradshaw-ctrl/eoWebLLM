@@ -693,7 +693,7 @@ test("an atom the grounds disagree about is not left rendering as sourced", asyn
   const after = demoteDisagreedSpans(merged, report.disagreements).find(
     (s) => s.text === "1136000000",
   );
-  assert.equal(after.state, "owned", "a disagreed atom must stop claiming backing");
+  assert.equal(after.state, "unconfirmed", "a disagreed atom must stop claiming backing");
   assert.deepEqual(
     after.supportingCitationIndexes,
     [],
@@ -729,7 +729,7 @@ test("demotion touches only the disagreed spans, and only claiming states", asyn
 
   assert.equal(out[0].state, "sourced", "an undisputed span is untouched");
   assert.deepEqual(out[0].supportingCitationIndexes, [1], "and keeps its citation");
-  assert.equal(out[1].state, "owned", "the disputed span is demoted");
+  assert.equal(out[1].state, "unconfirmed", "the disputed span is demoted");
   // An already-unsourced state is not made worse by the grounds differing:
   // "checking" says a resolve pass is still owed, and overwriting it would
   // silently cancel that pass.
