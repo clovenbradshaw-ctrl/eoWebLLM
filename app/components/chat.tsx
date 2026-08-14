@@ -122,6 +122,7 @@ import {
   hypergraphScopeId,
   ensureHypergraphHydrated,
   describeHypergraphMovement,
+  isSourceFullyHydrated,
   type GraphTerrainSnapshot,
   type TierTerrainSnapshot,
 } from "../client/eo-hypergraph";
@@ -2151,13 +2152,22 @@ function ChatInner() {
           // opens Terrain right after uploading should see the graph a
           // source actually produced, not "add a source to start one" for
           // a source that's already sitting right above it.
-          if (source.textReadable) {
+          // A fully-hydrated large source (its hypergraph bookmark has
+          // already reached the end — see MAX_HYDRATE_CHARS/naturalChunks
+          // in eo-hypergraph.ts) is skipped here so it isn't re-decoded
+          // from OPFS on every re-render just to hand ensureHypergraphHydrated
+          // a no-op; anything not yet fully read still goes through, one
+          // natural chunk (chapter/part/...) per call. See LAWS.md L7.
+          if (
+            source.textReadable &&
+            !isSourceFullyHydrated(hypergraphScopeId(session), source.id)
+          ) {
             try {
               const bytes = await readRawSource(source.id);
               const text = new TextDecoder("utf-8", { fatal: true }).decode(
                 bytes,
               );
-              const movements = ensureHypergraphHydrated(
+              const movements = await ensureHypergraphHydrated(
                 hypergraphScopeId(session),
                 [{ id: source.id, text }],
                 [],

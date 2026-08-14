@@ -123,6 +123,50 @@ function ledgerFileName(id: string) {
   return `${id}.ledger.json`;
 }
 
+function hydrationBookmarkFileName(id: string) {
+  return `${id}.hydrate.json`;
+}
+
+/**
+ * How far eo-hypergraph.ts's progressive, chapter-at-a-time admission has
+ * gotten through one large source — the durable half of that mechanism's
+ * "bookmark": `chunkIndex` is the index of the NEXT natural chunk to admit,
+ * not a count of how many are done, so a source with no bookmark yet and a
+ * freshly-created one both start counting from the same place. See LAWS.md
+ * L7.
+ */
+export interface HydrationBookmark {
+  chunkIndex: number;
+}
+
+export async function persistHydrationBookmark(
+  id: string,
+  bookmark: HydrationBookmark,
+): Promise<void> {
+  const dir = await directory();
+  const handle = await dir.getFileHandle(hydrationBookmarkFileName(id), {
+    create: true,
+  });
+  const writable = await handle.createWritable();
+  try {
+    await writable.write(JSON.stringify(bookmark));
+  } finally {
+    await writable.close();
+  }
+}
+
+export async function readHydrationBookmark(
+  id: string,
+): Promise<HydrationBookmark | null> {
+  try {
+    const dir = await directory();
+    const handle = await dir.getFileHandle(hydrationBookmarkFileName(id));
+    return JSON.parse(await (await handle.getFile()).text());
+  } catch {
+    return null;
+  }
+}
+
 /** Write every original byte, losslessly, to browser-private disk. */
 export async function persistRawSource(
   id: string,
