@@ -62,6 +62,12 @@ import { resolveSpans } from "../app/client/eo-revision.ts";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const squash = (s) => s.replace(/\s+/g, " ").trim();
 const readSrc = (rel) => squash(readFileSync(join(ROOT, rel), "utf8"));
+// Line-preserving read, for guards that need to tell code from the comments
+// explaining it. squash() collapses newlines, which makes `//` run to EOF.
+const readCode = (rel) =>
+  readFileSync(join(ROOT, rel), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
 
 // ── Mirrors ───────────────────────────────────────────────────────────────
 
@@ -498,4 +504,147 @@ test("a ground with no material is examined:false, never silently clean", async 
   // is not evidence of absence.
   const atom = [...r.disagreements, ...r.unsupportedEverywhere].find((a) => a.text === "1136000000");
   if (atom) assert.ok(!atom.absentFrom.includes("your sources"));
+});
+
+// ── The void's bound ───────────────────────────────────────────────────────
+//
+// "Not found in anything that was searched" is only a finding if the reader
+// can see WHAT was searched. Without that it is unfalsifiable, and II.9's
+// revision test — a claim has to be the kind of thing someone else can come
+// back and disagree with — fails at the first step.
+
+test("a void records the scope it was found against, by identifier", async () => {
+  const { checkGroundsInParallel } = await import(
+    "../app/client/eo-citation-check.ts"
+  );
+  const r = checkGroundsInParallel("The commissioner is Dolores Vandermeer.", [
+    {
+      name: "your sources",
+      citations: [
+        { index: 1, source_id: "budget.pdf#0-90", text: "The department received funds." },
+        { index: 2, source_id: "budget.pdf#90-180", text: "Further appropriations followed." },
+        { index: 3, source_id: "charter.pdf#0-40", text: "The charter establishes the office." },
+      ],
+    },
+    {
+      name: "the web",
+      citations: [{ index: 1, source_id: "https://x/wiki", text: "An unrelated article." }],
+      query: "Nashville police commissioner",
+    },
+  ]);
+
+  const voided = r.unsupportedEverywhere.find((v) => v.text.includes("Vandermeer"));
+  assert.ok(voided, "an invented name absent everywhere must surface as a void");
+
+  const yours = r.grounds.find((g) => g.name === "your sources");
+  // Three citations, TWO documents — the scope is what was looked in, not how
+  // many slices it was cut into.
+  assert.deepEqual(
+    yours.sourceIds,
+    ["budget.pdf#0-90", "budget.pdf#90-180", "charter.pdf#0-40"],
+    "every identifier searched is recorded, deduplicated, in order",
+  );
+  const web = r.grounds.find((g) => g.name === "the web");
+  assert.equal(
+    web.query,
+    "Nashville police commissioner",
+    "a fetched ground carries the query, so the void is re-runnable",
+  );
+  assert.equal(yours.query, undefined, "a held ground has no query to carry");
+});
+
+test("void scope text names every examined ground and never an unexamined one", async () => {
+  const { voidScopeText } = await import("../app/client/eo-citation-check.ts");
+
+  const text = voidScopeText([
+    { name: "your sources", examined: true, atomsChecked: 1, findings: [], sourceIds: ["a.pdf", "b.pdf"] },
+    { name: "the web", examined: true, atomsChecked: 1, findings: [], sourceIds: ["https://x"], query: "dolphins" },
+    { name: "your notes", examined: false, atomsChecked: 0, findings: [], sourceIds: [] },
+  ]);
+
+  assert.ok(text.includes("your sources (2 sources)"), `got: ${text}`);
+  assert.ok(text.includes("the web (1 source)"), `singular is not pluralised: ${text}`);
+  assert.ok(text.includes("dolphins"), "the query is shown so the search can be re-run");
+  // The one that matters: a ground nobody looked in must not be listed as a
+  // place the thing was not found (L2e — "checked, nothing there" and "never
+  // checked" are different facts).
+  assert.ok(!text.includes("your notes"), `an unexamined ground is not part of the bound: ${text}`);
+});
+
+test("with nothing examined, a void claims no scope at all", async () => {
+  const { voidScopeText } = await import("../app/client/eo-citation-check.ts");
+  assert.equal(
+    voidScopeText([
+      { name: "your sources", examined: false, atomsChecked: 0, findings: [], sourceIds: [] },
+    ]),
+    "nothing was searched",
+  );
+});
+
+// ── The steering channel is visible and correctable ───────────────────────
+//
+// session.eoFocus is the one input to retrieval a reader could previously
+// neither see nor argue with. These guard the two properties that make it
+// answerable rather than merely displayed.
+
+test("a reader-pinned focus is never overwritten by a derived one", () => {
+  // II.2, the giver test: placement knowledge is RECEIVED, not derived. The
+  // System-2 pass may propose a focus; it may not overrule one the reader
+  // placed. Guarded against chat.ts's source because the check sits inside an
+  // updateCurrentSession callback that no headless harness can reach.
+  const src = readSrc("app/store/chat.ts");
+  assert.ok(
+    src.includes("if (session.eoFocusPinned) return;"),
+    "the derived-focus write-back lost its pinned guard — a reader's steering can now be silently overwritten",
+  );
+});
+
+test("the focus bar can both clear and re-pin, and clearing unpins", () => {
+  // "stop steering" and "steer here instead" are different acts, and a
+  // control offering only one of them leaves the reader stuck with a focus
+  // they can see and cannot leave.
+  const src = readSrc("app/components/chat.tsx");
+  assert.ok(
+    src.includes("props.onChange(next, next.length > 0);"),
+    "FocusBar's commit no longer unpins on an empty edit",
+  );
+  assert.ok(
+    src.includes('onClick={() => props.onChange("", false)}'),
+    "FocusBar lost its clear action — a focus must be leavable, not only editable",
+  );
+});
+
+test("the grounds panel renders disagreements above the reply, not below it", () => {
+  // The attention inversion, guarded structurally. A disagreement between
+  // grounds is the one reading the reader cannot get anywhere else (II.8);
+  // rendering it after the answer makes it a footnote to the thing it
+  // contradicts.
+  const src = readSrc("app/components/chat.tsx");
+  const panel = src.indexOf("<GroundsPanel");
+  const body = src.indexOf("<Markdown", panel);
+  assert.ok(panel > -1, "GroundsPanel is not mounted in the chat surface");
+  assert.ok(
+    body > panel,
+    "GroundsPanel moved below the reply body — the disagreement is no longer the first thing read",
+  );
+});
+
+test("the grounds panel never collapses a disagreement into one statement", () => {
+  // The last-mile version of "no averaging of grounds": the engine keeps the
+  // grounds parallel, and a UI that summarises them re-merges what it
+  // carefully refused to merge.
+  const raw = readSrc("app/components/terrain/grounds-panel.tsx");
+  assert.ok(
+    raw.includes("carried by") && raw.includes("absent from"),
+    "both columns must be rendered — a single column is a verdict",
+  );
+  // Comments stripped: the file's own header explains why it must not score
+  // or rank anything, and scanning that prose finds the very words it is
+  // forbidding. This guard is about what the code DOES.
+  const src = readCode("app/components/terrain/grounds-panel.tsx");
+  for (const forbidden of ["sort(", "slice(0,", "reduce(", "confidence", "score"])
+    assert.ok(
+      !src.includes(forbidden),
+      `grounds-panel.tsx must not ${forbidden} — that ranks, truncates or scores a disagreement`,
+    );
 });

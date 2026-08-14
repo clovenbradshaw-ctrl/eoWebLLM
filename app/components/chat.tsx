@@ -148,6 +148,7 @@ import {
   buildCitationNumbering,
 } from "./terrain/grounding-chip";
 import { CitationModal } from "./terrain/citation-modal";
+import { GroundsPanel } from "./terrain/grounds-panel";
 import type { GroundingSpan } from "../client/eo-grounding-spans";
 import { CiteySprite } from "./citey";
 
@@ -722,6 +723,95 @@ function useScrollToBottom(
     setAutoScroll,
     scrollDomToBottom,
   };
+}
+
+// The steering channel, made visible and correctable.
+//
+// session.eoFocus is what a referential message ("prove it", "find examples
+// of that", 「証明して」) gets resolved against before anything is searched.
+// It was derived silently and read silently, which made it the one input to
+// retrieval the reader could neither see nor argue with — and a focus that
+// has drifted onto the wrong subject sends every later search after the
+// wrong thing, invisibly.
+//
+// Two properties matter more than the styling:
+//   - it shows the words themselves, not a summary of them. groundReferent
+//     only ever stores spans that were actually said, so there is something
+//     literal to show, and showing it is what makes drift noticeable.
+//   - editing it PINS it (session.eoFocusPinned), and the System-2 pass then
+//     stops overwriting it. II.2: what the reader gives outranks what the
+//     machine infers. Clearing unpins and hands steering back.
+function FocusBar(props: {
+  focus?: string;
+  pinned?: boolean;
+  onChange: (focus: string, pinned: boolean) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  if (editing) {
+    const commit = () => {
+      const next = draft.trim();
+      // An empty edit clears AND unpins — "stop steering" and "steer here
+      // instead" are different acts and the reader can reach both.
+      props.onChange(next, next.length > 0);
+      setEditing(false);
+    };
+    return (
+      <div className={styles["focus-bar"]}>
+        <span className={styles["focus-bar-label"]}>in focus</span>
+        <input
+          className={styles["focus-bar-input"]}
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.currentTarget.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit();
+            if (e.key === "Escape") setEditing(false);
+          }}
+          placeholder="what later questions should be about"
+        />
+      </div>
+    );
+  }
+
+  if (!props.focus) return null;
+
+  return (
+    <div className={styles["focus-bar"]}>
+      <span className={styles["focus-bar-label"]}>in focus</span>
+      <span className={styles["focus-bar-text"]}>{props.focus}</span>
+      {props.pinned && (
+        <span
+          className={styles["focus-bar-pinned"]}
+          title="You set this. It won't be overwritten."
+        >
+          yours
+        </span>
+      )}
+      <span
+        className={styles["focus-bar-action"]}
+        role="button"
+        tabIndex={0}
+        onClick={() => {
+          setDraft(props.focus ?? "");
+          setEditing(true);
+        }}
+      >
+        change
+      </span>
+      <span
+        className={styles["focus-bar-action"]}
+        role="button"
+        tabIndex={0}
+        title="Stop carrying this into later questions."
+        onClick={() => props.onChange("", false)}
+      >
+        clear
+      </span>
+    </div>
+  );
 }
 
 export function ChatActions(props: {
@@ -3204,6 +3294,17 @@ function ChatInner() {
                                         snippets={message.webSnippets}
                                       />
                                     )}
+                                  {/* ABOVE the reply, not below it. A
+                                  disagreement between grounds is the one
+                                  reading the reader cannot get anywhere else
+                                  (II.8), so it is not a footnote to the
+                                  answer — it comes first. */}
+                                  {!isUser &&
+                                    config.groundingDisplayEnabled && (
+                                      <GroundsPanel
+                                        report={message.groundsReport}
+                                      />
+                                    )}
                                   <Markdown
                                     content={rest}
                                     loading={
@@ -3373,6 +3474,17 @@ function ChatInner() {
                   : `${session.queuedInputs!.length} messages queued — will send once this reply finishes`}
               </div>
             )}
+
+            <FocusBar
+              focus={session.eoFocus}
+              pinned={session.eoFocusPinned}
+              onChange={(focus, pinned) =>
+                chatStore.updateCurrentSession((s) => {
+                  s.eoFocus = focus || undefined;
+                  s.eoFocusPinned = pinned || undefined;
+                })
+              }
+            />
 
             <ChatActions
               uploadFile={uploadFile}

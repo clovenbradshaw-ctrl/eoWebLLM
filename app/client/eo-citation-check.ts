@@ -1026,6 +1026,10 @@ export interface Ground {
   /** What a reader would call it: "your sources", "the web". */
   name: string;
   citations: CitationEntry[];
+  /** The query that produced this ground's material, when it was FETCHED
+   *  rather than already held. Carried so a void can be re-run: "nothing
+   *  found" is only followable if the reader can see what was asked. */
+  query?: string;
 }
 
 export interface GroundVerdict {
@@ -1034,6 +1038,13 @@ export interface GroundVerdict {
   examined: boolean;
   atomsChecked: number;
   findings: GroundingFinding[];
+  /** The scope this verdict covers, by identifier — the source_ids actually
+   *  indexed. A void ("absent from every ground") is an assertion about a
+   *  bounded search, and an unbounded void is not a finding but a shrug.
+   *  Naming the bound is what makes it checkable by someone else (II.9). */
+  sourceIds: string[];
+  /** Mirrors Ground.query. Present only for a fetched ground. */
+  query?: string;
 }
 
 export interface AtomAcrossGrounds {
@@ -1059,6 +1070,31 @@ export interface ParallelGroundingReport {
 }
 
 /**
+ * The bound a void was found against, in a reader's words.
+ *
+ * Lives here rather than in the component that renders it because it is
+ * policy, not presentation: "not found" is an assertion about a BOUNDED
+ * search, and a void that cannot name its bound is a shrug wearing a
+ * finding's clothes. Keeping it beside the report that produces it means it
+ * can be tested headless, and can never drift from what was actually
+ * indexed.
+ *
+ * Unexamined grounds are excluded by construction — a ground that held no
+ * material did not fail to find anything, it was never looked in (L2e).
+ */
+export function voidScopeText(grounds: GroundVerdict[]): string {
+  const examined = grounds.filter((g) => g.examined);
+  if (!examined.length) return "nothing was searched";
+  return examined
+    .map((g) => {
+      const n = g.sourceIds.length;
+      const where = `${g.name} (${n} source${n === 1 ? "" : "s"})`;
+      return g.query ? `${where} for “${g.query}”` : where;
+    })
+    .join(" · ");
+}
+
+/**
  * Check a draft against several grounds WITHOUT merging them.
  *
  * Each ground gets its own index and its own verdict. The cross-tabulation
@@ -1080,6 +1116,10 @@ export function checkGroundsInParallel(
       examined: r.examined,
       atomsChecked: r.atomsChecked,
       findings: r.findings,
+      // Deduplicated in first-appearance order — a void's scope is the set of
+      // things looked in, not the count of snippets they were sliced into.
+      sourceIds: [...new Set(g.citations.map((c) => c.source_id))],
+      query: g.query,
     };
   });
 

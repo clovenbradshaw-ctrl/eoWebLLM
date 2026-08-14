@@ -278,6 +278,61 @@ X, searched at Y" — never "false." This is P1 and P2 applied to absence: the
 strongest available statement is about what was looked in, not about what is
 true.
 
+## 4.7 How it appears — the attention hierarchy
+
+A report that is correct and unread is not a report. The presentation is not
+downstream of the policy; for a reader it *is* the policy, and getting it wrong
+undoes the engine's refusals in the last mile.
+
+**The inversion.** Convention makes citations loud (footnotes, badges,
+superscripts) and disagreements invisible. That is backwards. A citation is the
+one thing a reader could already check for themselves; a disagreement between
+grounds is the one reading they cannot get anywhere else. So:
+
+| rank | what | treatment | why |
+|---|---|---|---|
+| 1 | **grounds disagree** | filled panel, warm border, **above** the reply | the only finding that no single ground contains |
+| 2 | contradicted / bleed | chip + Citey's note | a warning about one ground |
+| 3 | **void, with its scope named** | outlined panel, dashed | an assertion, and a followable one |
+| 4 | sourced / stated | chip only | quiet: it agreed |
+| 5 | general | chip, near-invisible | nothing bore on it |
+
+Rank 1 sits *above* the message body, not below it. A disagreement rendered
+after the answer is a footnote to the thing it contradicts.
+
+**Three refusals hold the surface** (`terrain/grounds-panel.tsx`), and each is
+guarded by a test rather than left to whoever edits it next:
+
+1. **Nothing ranks.** No score, no confidence, no ordering by strength, no
+   winner. A disagreement is two lists side by side, left standing. Deciding
+   what it means is the reader's (II.3). A UI that resolves it has averaged the
+   grounds after the engine carefully refused to — II.8 violated in the last
+   mile, where it is hardest to notice.
+2. **A void names its bound.** Every void prints what was looked in, by
+   identifier, plus the query where there was one. `Ground.query` and
+   `GroundVerdict.sourceIds` exist for this. An unbounded void is a shrug
+   wearing a finding's clothes: nobody can come back and disagree with it, so
+   it fails II.9's revision test at the first step.
+3. **An unexamined ground says so.** `examined: false` never renders as
+   agreement or as a clean bill (L2e). "Checked, nothing there" and "never
+   checked" are different facts, and a ground nobody looked in is not a place
+   the thing was *not found*.
+
+**The steering channel is visible and correctable.** `session.eoFocus` decides
+what a referential message (*"prove it"*, *"find examples of that"*, 「証明して」)
+gets resolved against before anything is searched. It was derived silently and
+read silently — the one input to retrieval a reader could neither see nor argue
+with, and a focus that has drifted sends every later search after the wrong
+subject, invisibly. It is now shown above the composer, in the words that were
+actually said (`groundReferent` only ever stores spans from the transcript, so
+there is something literal to show, and showing it is what makes drift
+noticeable). Editing it **pins** it, and the System-2 pass stops overwriting it
+— II.2's giver test applied to steering: what the reader gives outranks what
+the machine infers about what they gave. Clearing unpins and hands steering
+back, because *"stop steering"* and *"steer here instead"* are different acts
+and a control offering only one leaves the reader stuck with a focus they can
+see and cannot leave.
+
 ## 5. Where the work actually is
 
 | piece | status |
@@ -286,6 +341,10 @@ true.
 | `diffLinkViews` → added/removed/changed | **ships**, pure, tested |
 | `toEOTReader` → EOT surface | **ships**, used by source ingest |
 | the two connected into a claim-vs-reference check | **not wired** — this is the gap |
+| `checkGroundsInParallel` → per-ground verdicts, no merge | **ships** |
+| the grounds-disagreement surface (`GroundsPanel`) | **ships** — §4.7 |
+| void scope by identifier + query | **ships** |
+| focus visible and pinnable (`FocusBar`) | **ships** |
 | a **relations lens** so readings hold propositions | **not declared** — the real work |
 | `checkConsistency` in the grounding path | **built, unwired** |
 
