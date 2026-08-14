@@ -31,6 +31,7 @@ import {
   ensureHypergraphHydrated,
   describeHypergraphMovement,
   hypergraphScopeId,
+  isSourceFullyHydrated,
 } from "../client/eo-hypergraph";
 import { getMessageTextContent } from "../utils";
 
@@ -165,8 +166,13 @@ export function TerrainPanel(props: {
     let cancelled = false;
     (async () => {
       const hydrateSources: { id: string; text: string }[] = [];
+      // Skip a source only once fully hydrated — see isSourceFullyHydrated's
+      // header (eo-hypergraph.ts) and LAWS.md L7.
       for (const s of (session.eoSources ?? []).filter(
-        (s) => s.enabled && s.textReadable,
+        (s) =>
+          s.enabled &&
+          s.textReadable &&
+          !isSourceFullyHydrated(hypergraphScopeId(session), s.id),
       )) {
         try {
           const text = new TextDecoder("utf-8", { fatal: true }).decode(
@@ -185,7 +191,7 @@ export function TerrainPanel(props: {
       const hydrateTurns = session.messages
         .filter((m) => !m.isError && !m.streaming)
         .map((m) => ({ id: m.id, content: getMessageTextContent(m) }));
-      const movements = ensureHypergraphHydrated(
+      const movements = await ensureHypergraphHydrated(
         hypergraphScopeId(session),
         hydrateSources,
         hydrateTurns,

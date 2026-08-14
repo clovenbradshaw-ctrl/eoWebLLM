@@ -40,6 +40,11 @@
 import * as eoreaderHost from "../../eoreader6/packages/host/index.js";
 const eoreader: any = eoreaderHost;
 import { extractSelfFacts } from "./eo-self-facts";
+import {
+  persistHydrationBookmark,
+  readHydrationBookmark,
+  type HydrationBookmark,
+} from "./eo-corpus";
 
 export interface HypergraphMovement {
   /** The docId this admission was for (`source:<id>` or `turn:<id>`) — so a
@@ -62,6 +67,11 @@ export interface HypergraphMovement {
    *  merely an observation that arrived and was absorbed without moving
    *  anything. */
   shiftedAtTop: boolean;
+  /** Present only for a chunked (bookmarked) source admission — which
+   *  natural chunk (chapter/part/...) this admission was, and how many the
+   *  source was split into. Absent for a whole-document admission (the
+   *  source fit under MAX_HYDRATE_CHARS) and for every turn admission. */
+  chapter?: { title: string; index: number; total: number };
 }
 
 export interface HypergraphNavigation {
@@ -102,6 +112,15 @@ interface HypergraphWrapper {
   /** edge key -> every docId whose admission created it or changed its
    *  weight. Same reasoning/diffing as nodeDocIds above. */
   edgeDocIds: Map<string, Set<string>>;
+  /** source docId -> its naturalChunks() split, cached for this session so
+   *  a large source isn't re-scanned for chapter headings on every turn.
+   *  Text only, never persisted — cheap to recompute from OPFS bytes on a
+   *  fresh session, unlike sourceBookmarks below. */
+  sourceChunks: Map<string, NaturalChunk[]>;
+  /** source docId -> its OPFS-persisted hydration bookmark, mirrored in
+   *  memory so a same-session repeat call doesn't need a round trip just to
+   *  read back what this session already wrote. */
+  sourceBookmarks: Map<string, HydrationBookmark>;
 }
 
 function addProvenance(
@@ -138,6 +157,25 @@ export function hypergraphScopeId(session: {
 
 const wrappers = new Map<string, HypergraphWrapper>();
 
+/**
+ * Whether a source has been admitted in full — either it fit under
+ * MAX_HYDRATE_CHARS and was admitted in one call, or its bookmark has
+ * advanced past its last natural chunk. Callers that decode a source's raw
+ * bytes from OPFS before calling ensureHypergraphHydrated (chat.tsx,
+ * terrain-panel.tsx, store/chat.ts) check this FIRST so a fully-read large
+ * source stops being re-decoded every turn just to be handed to a call that
+ * will immediately no-op — the decode itself is cheap once, wasteful
+ * repeated forever. See LAWS.md L7.
+ */
+export function isSourceFullyHydrated(
+  chatSessionId: string,
+  sourceId: string,
+): boolean {
+  return (
+    wrappers.get(chatSessionId)?.admitted.has(`source:${sourceId}`) ?? false
+  );
+}
+
 function wrapperFor(chatSessionId: string): HypergraphWrapper {
   let w = wrappers.get(chatSessionId);
   if (!w) {
@@ -149,6 +187,8 @@ function wrapperFor(chatSessionId: string): HypergraphWrapper {
       tickToDocId: new Map(),
       nodeDocIds: new Map(),
       edgeDocIds: new Map(),
+      sourceChunks: new Map(),
+      sourceBookmarks: new Map(),
     };
     wrappers.set(chatSessionId, w);
   }
@@ -171,6 +211,126 @@ function wrapperFor(chatSessionId: string): HypergraphWrapper {
 // reproducible reading of that session's own turns.
 const TIER_SEED = 20260810;
 
+// The most characters ONE admitOnce call below is ever allowed to run
+// eoreader6's proper-noun extractor and tier folding over, synchronously,
+// on the main thread with no yield. This is the one choke point every
+// hypergraph admission (upload, terrain-panel open, every chat turn's own
+// re-hydration) funnels through, and until this cap existed it had none: a
+// full "War and Peace" upload (~3.2M characters) ran that pass over the
+// whole text in one call and froze the tab. It is a PER-ADMISSION bound,
+// not a per-source one — admitHypergraphSource below never admits more than
+// this many characters in a single call, but a source larger than this cap
+// still gets admitted in full, one natural chunk (chapter/part/...) per
+// call, via naturalChunks()'s bookmarked progression. See LAWS.md L7.
+export const MAX_HYDRATE_CHARS = 300_000;
+
+interface NaturalChunk {
+  title: string;
+  text: string;
+}
+
+// A standalone, short (<=100 chars), blank-line-delimited line beginning
+// "Chapter"/"Book"/"Part"/"Volume"/"Section"/"Act" — the convention plain-
+// text book transcriptions (e.g. Project Gutenberg) already use for this.
+const HEADING_LINE_RE =
+  /^(chapter|book|part|volume|section|act)\s+[0-9ivxlcdm]+\b.*$/i;
+
+/**
+ * Splits `text` into the chunks eo-hypergraph.ts admits one at a time: its
+ * own naturally-occurring sections when the material visibly has them (a
+ * book's chapters), or the whole document as a single chunk when it
+ * doesn't — a person reads an unstructured document in one sitting too, if
+ * it's short enough to admit whole (see the MAX_HYDRATE_CHARS check at the
+ * bottom). Falls back to fixed-size, paragraph/space-boundary-aware
+ * splitting (the same technique eo-corpus.ts's own chunkText uses for
+ * retrieval) only when fewer than two headings are found AND the whole
+ * document is still over the per-admission cap — no visible structure to
+ * chunk by, but still too large to admit in one call. Every returned chunk
+ * is then re-split if it's STILL over MAX_HYDRATE_CHARS regardless of which
+ * path produced it: a "chapter" in the source material is a hint for where
+ * to bookmark progress, never a promise this file's own admission cap can
+ * trust blindly (a Bible-length "Book" or a chapter-less wall of text both
+ * still need to be admitted safely).
+ */
+function naturalChunks(text: string): NaturalChunk[] {
+  const lines = text.split("\n");
+  const lineOffsets: number[] = [];
+  const headingLineIdx: number[] = [];
+  let offset = 0;
+  for (let i = 0; i < lines.length; i++) {
+    lineOffsets.push(offset);
+    const trimmed = lines[i].trim();
+    if (
+      trimmed.length > 0 &&
+      trimmed.length <= 100 &&
+      HEADING_LINE_RE.test(trimmed) &&
+      (i === 0 || lines[i - 1].trim() === "") &&
+      (i === lines.length - 1 || lines[i + 1].trim() === "")
+    ) {
+      headingLineIdx.push(i);
+    }
+    offset += lines[i].length + 1;
+  }
+
+  let sections: NaturalChunk[];
+  if (headingLineIdx.length >= 2) {
+    sections = [];
+    for (let k = 0; k < headingLineIdx.length; k++) {
+      const startLine = headingLineIdx[k];
+      const endLine =
+        k + 1 < headingLineIdx.length ? headingLineIdx[k + 1] : lines.length;
+      const startOffset = lineOffsets[startLine];
+      const endOffset =
+        endLine < lineOffsets.length ? lineOffsets[endLine] : text.length;
+      const body = text.slice(startOffset, endOffset);
+      if (body.trim())
+        sections.push({ title: lines[startLine].trim(), text: body });
+    }
+    // Whatever precedes the first heading (title page, table of contents)
+    // is real content too — folded into the first section rather than
+    // silently dropped from admission.
+    const firstHeadingOffset = lineOffsets[headingLineIdx[0]];
+    if (firstHeadingOffset > 0 && sections.length) {
+      const preface = text.slice(0, firstHeadingOffset);
+      if (preface.trim())
+        sections[0] = {
+          title: sections[0].title,
+          text: preface + sections[0].text,
+        };
+    }
+  } else {
+    sections = [{ title: "(whole document)", text }];
+  }
+
+  const bounded: NaturalChunk[] = [];
+  for (const section of sections) {
+    if (section.text.length <= MAX_HYDRATE_CHARS) {
+      bounded.push(section);
+      continue;
+    }
+    let start = 0;
+    let part = 1;
+    while (start < section.text.length) {
+      let end = Math.min(section.text.length, start + MAX_HYDRATE_CHARS);
+      if (end < section.text.length) {
+        const breakAt = Math.max(
+          section.text.lastIndexOf("\n", end),
+          section.text.lastIndexOf(" ", end),
+        );
+        if (breakAt > start + Math.floor(MAX_HYDRATE_CHARS / 2))
+          end = breakAt + 1;
+      }
+      bounded.push({
+        title: `${section.title} (part ${part})`,
+        text: section.text.slice(start, end),
+      });
+      start = end;
+      part++;
+    }
+  }
+  return bounded;
+}
+
 function admitOnce(
   w: HypergraphWrapper,
   docId: string,
@@ -178,6 +338,7 @@ function admitOnce(
 ): HypergraphMovement | null {
   if (!text.trim() || w.admitted.has(docId)) return null;
   w.admitted.add(docId);
+  if (text.length > MAX_HYDRATE_CHARS) return null;
   // Snapshot mentions/weights BEFORE this admission so the diff below can
   // tell which nodes/edges this specific docId actually touched — the
   // engine's own graph.nodes/edges carry no per-doc history, only a
@@ -243,15 +404,61 @@ function admitOnce(
   };
 }
 
-export function admitHypergraphSource(
+/**
+ * Admits one source, chapter by chapter when it's too large to admit whole.
+ * A source under MAX_HYDRATE_CHARS is admitted in one call, same as always.
+ * A larger one is split by naturalChunks() and admitted ONE chunk per call
+ * — never "catch up" several chunks at once, even resuming a bookmark from
+ * a prior session, the same way a person picks a book back up at the next
+ * unread chapter rather than re-reading everything since to "catch up." The
+ * chunk boundaries are cached per session (sourceChunks); which chunk is
+ * next is a bookmark persisted to OPFS (eo-corpus.ts's
+ * persistHydrationBookmark) so it survives a reload. See LAWS.md L7.
+ */
+export async function admitHypergraphSource(
   chatSessionId: string,
   source: { id: string; text: string },
-): HypergraphMovement | null {
-  return admitOnce(
-    wrapperFor(chatSessionId),
-    `source:${source.id}`,
-    source.text,
-  );
+): Promise<HypergraphMovement | null> {
+  const w = wrapperFor(chatSessionId);
+  const docId = `source:${source.id}`;
+  if (w.admitted.has(docId)) return null;
+
+  if (source.text.length <= MAX_HYDRATE_CHARS) {
+    return admitOnce(w, docId, source.text);
+  }
+
+  let chunks = w.sourceChunks.get(docId);
+  if (!chunks) {
+    chunks = naturalChunks(source.text);
+    w.sourceChunks.set(docId, chunks);
+  }
+  let bookmark = w.sourceBookmarks.get(docId);
+  if (!bookmark) {
+    bookmark = (await readHydrationBookmark(source.id)) ?? { chunkIndex: 0 };
+    w.sourceBookmarks.set(docId, bookmark);
+  }
+
+  if (bookmark.chunkIndex >= chunks.length) {
+    w.admitted.add(docId);
+    return null;
+  }
+
+  const chunk = chunks[bookmark.chunkIndex];
+  const movement = admitOnce(w, `${docId}#${bookmark.chunkIndex}`, chunk.text);
+  bookmark.chunkIndex += 1;
+  await persistHydrationBookmark(source.id, bookmark);
+  if (bookmark.chunkIndex >= chunks.length) w.admitted.add(docId);
+
+  if (!movement) return null;
+  return {
+    ...movement,
+    docId,
+    chapter: {
+      title: chunk.title,
+      index: bookmark.chunkIndex,
+      total: chunks.length,
+    },
+  };
 }
 
 export function admitHypergraphTurn(
@@ -718,16 +925,16 @@ export function isHypergraphHydrated(chatSessionId: string): boolean {
   return !!wrappers.get(chatSessionId)?.hydrated;
 }
 
-export function ensureHypergraphHydrated(
+export async function ensureHypergraphHydrated(
   chatSessionId: string,
   sources: { id: string; text: string }[],
   turns: { id: string; content: string }[],
-): HypergraphMovement[] {
+): Promise<HypergraphMovement[]> {
   const w = wrapperFor(chatSessionId);
   w.hydrated = true;
   const movements: HypergraphMovement[] = [];
   for (const s of sources) {
-    const m = admitOnce(w, `source:${s.id}`, s.text);
+    const m = await admitHypergraphSource(chatSessionId, s);
     if (m) movements.push(m);
   }
   // Mirrors admitHypergraphTurn's own reasoning below: eoreader6's
@@ -858,7 +1065,10 @@ export function describeHypergraphMovement(m: HypergraphMovement): string {
   const climb = m.reached.length
     ? `climbed to ${m.top}${m.shiftedAtTop ? " (shifted)" : " (observed, no shift)"} via ${m.reached.join("->")}`
     : "no relations stated — nothing to fold";
-  return `admitted ${m.docId}: ${m.newNodes} new node(s), ${m.newEdges} new edge(s), ${m.stated} relation(s) stated — ${climb}`;
+  const bookmark = m.chapter
+    ? ` — bookmarked ${m.chapter.index}/${m.chapter.total} ("${m.chapter.title}")`
+    : "";
+  return `admitted ${m.docId}: ${m.newNodes} new node(s), ${m.newEdges} new edge(s), ${m.stated} relation(s) stated — ${climb}${bookmark}`;
 }
 
 // ── Stage 2 — the targeted background call ──────────────────────────────

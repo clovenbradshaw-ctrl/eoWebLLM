@@ -39,10 +39,7 @@ import {
   formatWebSearchBlock,
   stripCitationBrackets,
 } from "../client/eo-websearch";
-import {
-  resolveSearchQuery,
-  groundReferent,
-} from "../client/eo-search-query";
+import { resolveSearchQuery, groundReferent } from "../client/eo-search-query";
 import {
   planTools,
   hasExplicitSearchIntent,
@@ -134,6 +131,7 @@ import {
   buildThoughtUserPrompt,
   queryUserFacts,
   hypergraphScopeId,
+  isSourceFullyHydrated,
   type HypergraphNavigation,
   type HypergraphMovement,
 } from "../client/eo-hypergraph";
@@ -648,8 +646,16 @@ const MAX_PRIOR_ART_INGEST_FILES = 15;
 // must never overlap each other or the streaming answer. eoFoldInFlight guards
 // the fold chain; eoEngineBusy tracks a background call that may still occupy
 // the engine (including a timed-out ghost) and the next user turn aborts it.
+// eoEngineBusyPromise is that call's own settlement — abort() only confirms
+// the interrupt signal was posted to the worker, not that the generation
+// loop has actually noticed it, stopped, and released the engine's internal
+// lock. Starting a new llm.chat() right after an unawaited abort() used to
+// race that teardown and throw "Object has already been disposed" from
+// inside web-llm's worker; awaiting this promise after abort() is what
+// actually guarantees the engine is idle.
 let eoFoldInFlight = false;
 let eoEngineBusy = false;
+let eoEngineBusyPromise: Promise<unknown> | null = null;
 
 // Run one non-streaming background model call, tracking engine occupancy.
 function eoRunBackground(
@@ -658,7 +664,7 @@ function eoRunBackground(
   config: LLMConfig,
   timeoutMs: number,
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
+  const promise = new Promise<string>((resolve, reject) => {
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
@@ -671,6 +677,7 @@ function eoRunBackground(
       // onUserInput force-reset it (see line ~1718) — too late to help the
       // turn that hit it.
       eoEngineBusy = false;
+      eoEngineBusyPromise = null;
       reject(new Error("eo background model call timed out"));
     }, timeoutMs);
     eoEngineBusy = true;
@@ -679,6 +686,7 @@ function eoRunBackground(
       config,
       onFinish(message) {
         eoEngineBusy = false;
+        eoEngineBusyPromise = null;
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -686,6 +694,7 @@ function eoRunBackground(
       },
       onError(err) {
         eoEngineBusy = false;
+        eoEngineBusyPromise = null;
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -693,6 +702,8 @@ function eoRunBackground(
       },
     });
   });
+  eoEngineBusyPromise = promise;
+  return promise;
 }
 
 // The judge for eo-revision.ts's post-display pass: given one flagged claim
@@ -2230,14 +2241,26 @@ export const useChatStore = createPersistStore(
         // too, and two chat() calls overlapping on one engine don't queue —
         // they blend tokens from both prompts into one corrupted stream.
         // That's what produced a startup greeting bleeding into (and
-        // garbling) the reader's first real answer: the abort used to be
-        // deferred until just before the real turn's own chat() call, well
-        // after these earlier background calls had already collided with
-        // the still-running warmup.
+        // garbling) the reader's first real answer.
+        //
+        // The upstream web-llm-chat this was forked from never calls
+        // interruptGenerate() automatically anywhere — it simply never
+        // starts a second engine call until the first one's onFinish/onError
+        // has fired, because its only background call (topic/summary) is
+        // rare enough that collisions never came up. eoWebLLM's background
+        // calls fire on nearly every turn, so that same "just wait" — never
+        // interrupt — discipline has to be enforced explicitly here.
+        // Interrupting was tried instead (calling llm.abort() and racing a
+        // new llm.chat() right after): interruptGenerate() only guarantees
+        // the worker received the signal, not that the busy call's
+        // generation loop has actually stopped and freed the engine, and
+        // starting a new call before that teardown finished threw "Object
+        // has already been disposed" out of web-llm's worker. Simply
+        // awaiting the busy call's own settlement — its timeout is already
+        // bounded by EO_ROUTER_TIMEOUT_MS — sidesteps that hazard entirely.
         if (eoEngineBusy) {
-          eoEngineBusy = false;
           eoFoldInFlight = false;
-          llm.abort();
+          await eoEngineBusyPromise?.catch(() => {});
         }
 
         const modelConfig = useAppConfig.getState().modelConfig;
@@ -2462,9 +2485,7 @@ export const useChatStore = createPersistStore(
               const resolved = await resolveSearchQuery({
                 message: rawQuestion,
                 conversation: focusWindow,
-                resolveReferent: carriedFocus
-                  ? async () => carriedFocus
-                  : null,
+                resolveReferent: carriedFocus ? async () => carriedFocus : null,
               });
 
               turnWebQuery = resolved.query;
@@ -2754,8 +2775,16 @@ export const useChatStore = createPersistStore(
             // admitOnce's own per-doc dedup already makes re-running this
             // safe and cheap on repeat calls).
             const hydrateSources: { id: string; text: string }[] = [];
+            // Skip a source only once its bookmark has fully caught up —
+            // see isSourceFullyHydrated's own header (eo-hypergraph.ts) and
+            // LAWS.md L7. Without this, a large enabled source got fully
+            // re-decoded from OPFS on EVERY turn even after every one of
+            // its chapters had already been admitted.
             for (const s of sources.filter(
-              (s) => s.enabled && s.textReadable,
+              (s) =>
+                s.enabled &&
+                s.textReadable &&
+                !isSourceFullyHydrated(hypergraphScopeId(session0), s.id),
             )) {
               try {
                 const text = new TextDecoder("utf-8", { fatal: true }).decode(
@@ -2778,7 +2807,7 @@ export const useChatStore = createPersistStore(
                 id: m.id,
                 content: getMessageTextContent(m),
               }));
-            const movements = ensureHypergraphHydrated(
+            const movements = await ensureHypergraphHydrated(
               hypergraphScopeId(session0),
               hydrateSources,
               hydrateTurns,
@@ -3157,12 +3186,17 @@ export const useChatStore = createPersistStore(
           session.isGenerating = true;
         });
 
-        // make request — the engine is single-flight, so first interrupt any
-        // background fold/topic call that may still occupy it
+        // make request — the engine is single-flight, so first wait out any
+        // background fold/topic call that may still occupy it (see the
+        // matching comment on the eoEngineBusy check near the top of this
+        // function — never interrupt, just wait; this turn's own
+        // pre-generation work above, web routing/surf/math, can itself have
+        // started a new background call after that earlier check ran, so
+        // this is often the wait that's still needed right before the real
+        // turn's own chat() call fires).
         if (eoEngineBusy) {
-          eoEngineBusy = false;
           eoFoldInFlight = false;
-          llm.abort();
+          await eoEngineBusyPromise?.catch(() => {});
         }
         llm.chat({
           messages: sendMessages,
@@ -4306,7 +4340,7 @@ export const useChatStore = createPersistStore(
         const modelConfig = useAppConfig.getState().modelConfig;
         eoEngineBusy = true;
         try {
-          await new Promise<void>((resolve) => {
+          const warmup = new Promise<void>((resolve) => {
             llm.chat({
               messages: [
                 createMessage({
@@ -4358,8 +4392,11 @@ export const useChatStore = createPersistStore(
               },
             });
           });
+          eoEngineBusyPromise = warmup;
+          await warmup;
         } finally {
           eoEngineBusy = false;
+          eoEngineBusyPromise = null;
         }
       },
 

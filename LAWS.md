@@ -343,3 +343,87 @@ whether the individual causes look unrelated — treat it as a signal the
 underlying assembly isn't stable yet (see the holonic-stability discussion
 this law's own audit produced), not as a string of coincidentally clustered
 bugs, and look for the shared root before the next patch.
+
+---
+
+## L7 — A document is quarantined stage by stage; capping one pass never caps its siblings
+
+`app/client/eo-source-ingest.ts`'s `ingestFile` was built carefully: raw
+bytes always persist to OPFS first, then `MAX_ANALYSIS_BYTES` gates the
+CPU-heavy decode/extract passes, then `MAX_READING_CHARS` separately gates
+the modifier-graph/EOT reading pass specifically, because a full "War and
+Peace" upload (~3.2M characters) was freezing the tab before that second
+cap existed. That fix was real and it held — for the one pass it covered.
+
+`app/client/eo-hypergraph.ts`'s `ensureHypergraphHydrated` is a completely
+separate full-text pass — eoreader6's proper-noun/relation extractor plus
+tier folding, run synchronously on the main thread with no chunking and no
+yield — reached from three call sites (`chat.tsx`'s upload flow,
+`terrain-panel.tsx`'s open effect, and `store/chat.ts`'s per-turn
+re-hydration) that all decode a source's *entire* text and hand it over
+unconditionally. None of them, and nothing inside `admitOnce` itself,
+checked size at all. Uploading the exact same War and Peace file that
+motivated `MAX_READING_CHARS` reproduced the exact same freeze, immediately
+on upload (via the `chat.tsx` call site) or on the very next message if
+upload happened to survive (via `store/chat.ts`'s unconditional per-turn
+scan) — because `MAX_READING_CHARS` was never in scope for this pass; it
+was only ever wired to the modifier-graph/EOT reading it was written next
+to. A cap that lives beside one organ protects that organ, not the
+document.
+
+The first fix was `MAX_HYDRATE_CHARS`, enforced inside `admitOnce` itself —
+the one choke point every hypergraph admission funnels through regardless
+of caller — plus a `byteLength` pre-filter at all three call sites so a
+large source isn't even decoded from OPFS just to be discarded. A source
+over the cap registered, stayed fully searchable through `eo-corpus.ts`'s
+`retrieveCorpus`, and simply never reached the hypergraph. That held, but
+it was a permanent exclusion, not a bound — a large document's cast and
+relations would *never* reach the graph, which is a different failure mode
+than the freeze (silent instead of loud) but still means the reader who
+uploaded War and Peace gets no Terrain reading of it, ever.
+
+**Update (2026-08-14):** the user's own framing — "we want to eventually
+ingest it ALL but a person can only read so much" — reframed the fix.
+`MAX_HYDRATE_CHARS` is now a PER-ADMISSION bound, not a per-source one:
+`naturalChunks()` splits a large source at its own visible structure
+(chapter/book/part/volume/section/act headings, the Project-Gutenberg-style
+convention; falls back to fixed-size splitting when no headings are
+detectable), and `admitHypergraphSource` admits exactly one chunk per call,
+remembering its place in a bookmark (`HydrationBookmark`, `eo-corpus.ts`'s
+`persistHydrationBookmark`/`readHydrationBookmark`) persisted to OPFS so a
+reload resumes from the next unread chunk rather than either restarting at
+chapter 1 or racing to catch up on everything read-so-far in one call — a
+person picks a book back up at the next chapter, not by re-reading
+everything since to "catch up." `isSourceFullyHydrated` replaced the
+`byteLength` pre-filter so a source stops being re-decoded from OPFS only
+once its bookmark has actually reached the end, not merely because it was
+large to begin with.
+
+**The metabolism, as it now stands** — every stage a document's full text
+can reach, and what bounds it before that stage runs:
+
+| Stage | File | Bound | Unbounded cost if skipped |
+|---|---|---|---|
+| Raw persist | `eo-corpus.ts::persistRawSource` | none (lossless by design) | — |
+| Decode/extract | `eo-source-ingest.ts::ingestFile` | `MAX_ANALYSIS_BYTES` (50MB) | UTF-8 decode / PDF·DOCX·XLSX·… extraction over the whole buffer |
+| Modifier-graph + EOT reading | `eo-source-ingest.ts::ingestFile` | `MAX_READING_CHARS` (300k chars) | two regex-based taggers over the whole decoded text |
+| Hypergraph admission | `eo-hypergraph.ts::admitHypergraphSource` (per `admitOnce` call) | `MAX_HYDRATE_CHARS` (300k chars) PER CHUNK, one chunk (natural or fallback-split) admitted per call, bookmarked in OPFS | eoreader6 relation extraction + tier folding over the whole text in one call |
+| Turn-time retrieval | `eo-corpus.ts::retrieveCorpus` | `RETRIEVAL_TOKEN_BUDGET` (3000 tokens) / `RETRIEVAL_MAX_PASSAGES` (6) over `CHUNK_CHARS`-sized (3000) chunks, yielding every 200 | — (already bounded and yielding by construction) |
+
+**The check for a future pass:** any new pass that reads a source's or a
+turn's *entire* text — not a chunk, not a byte range — must declare and
+enforce its own bound, checked before the expensive work runs, not
+inherited from a cap written for a different pass next door in the same
+file. "This file already has a size cap" is not evidence the pass being
+added is covered by it. When in doubt, add this stage's bound to the table
+above in the same edit — the table is what makes "did we cover every
+stage" a five-second check instead of a re-audit of every call site that
+touches document text. Separately: a size cap that silently, permanently
+excludes the material past it (the original `MAX_HYDRATE_CHARS` fix) is a
+narrower answer than one that admits it progressively, a bound chunk at a
+time, and remembers where it left off — prefer the latter shape for any
+pass whose whole point is building up a reading of a document over time,
+the same way `admitHypergraphSource` now does. A cap that just drops the
+excess is the right shape only for passes where the excess genuinely isn't
+needed (e.g. `eo-source-ingest.ts`'s binary-structure entropy scan on a
+source that turned out to be text-readable).
