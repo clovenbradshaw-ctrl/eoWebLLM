@@ -1055,6 +1055,29 @@ input.eot-graph-search {
   font-weight: 600;
 }
 
+// The History tab's prev/next scrub controls -- same terminal palette as
+// eot-panel-fold-clear above, but a real <button> (keyboard-focusable,
+// disables at the ends of the message list) rather than a click-target span.
+.eot-history-nav-btn {
+  background: #1a2119;
+  border: 1px solid #3a4d3e;
+  color: #7ee787;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    color: #9ff2a0;
+    border-color: #4d6b52;
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+}
+
 .eot-graph-edge {
   cursor: pointer;
   padding: 1px 0;

@@ -225,7 +225,13 @@ export function SideBar(props: { className?: string }) {
             icon={<Plus size={18} />}
             text={shouldNarrow ? undefined : Locale.Home.NewChat}
             onClick={() => {
-              chatStore.newSession();
+              // New chat stays inside the current project (see the
+              // currentProjectId comment in store/chat.ts) -- otherwise the
+              // sidebar's project filter would hide the fresh conversation.
+              chatStore.newSession(
+                undefined,
+                chatStore.currentProjectId ?? undefined,
+              );
               navigate(Path.Chat);
             }}
             shadow

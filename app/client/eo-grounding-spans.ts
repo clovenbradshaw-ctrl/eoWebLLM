@@ -15,27 +15,10 @@
 // correct name by sharing one span with it. Each atom's span is:
 //   - "sourced"  — backed by material this turn actually gathered
 //                  (web/corpus).
-//   - "stated"   — the reader themselves said it. The desk channel warrants
-//                  (eo-warrant.ts: conversational, canWarrant true) — this is
-//                  backed, just not by a source.
-//   - "general"   — nothing external bore on this turn at all, so general
-//                  knowledge is the legitimate basis (internal channel:
-//                  "a legitimate answer when nothing external bears on the
-//                  question").
-//   - "bleed"     — the ONLY thing carrying it is a channel that cannot
-//                  warrant: the folded PAST DISCOURSE paraphrase, or a
-//                  hypergraph thought. The dangerous one, and the reason this
-//                  split exists — it reads as grounded to the model and rests
-//                  on a paraphrase whose source is gone.
-//   - "unconfirmed" — material WAS gathered and this is not in it.
-//
-// Those four were one state, "owned", until this pass. Collapsing them put a
-// claim the reader had personally stated in the same colour as a claim resting
-// on a summary of a summary, and gave the two the same caption. That is the
-// project's own rule against synthesising several channels into one verdict
-// (eo-constitution II.8, "no averaging of grounds") violated in miniature, at
-// the smallest unit the system has. Each is now reported on its own footing
-// and the disagreement between channels stays visible.
+//   - "owned"    — nothing was gathered to check it against, or the atom is
+//                  a name (see eo-revision.ts for why names don't get an
+//                  asserted verdict) — the character's own assertion, held
+//                  as exactly that rather than left silently untagged.
 //   - "checking" — a number atom with nothing to check it against yet, but
 //                  eligible for the async search+judge pass in chat.ts.
 // Computed with zero model/network calls, so it can run on every streamed
@@ -54,28 +37,11 @@ import {
   wordSet,
   numberSet,
   type CitationEntry,
-  type Index,
 } from "./eo-citation-check";
+import type { StatedFact } from "./eo-memory";
 
 export type GroundingState =
-  | "sourced"
-  | "echoed"
-  | "stated"
-  | "general"
-  | "bleed"
-  | "unconfirmed"
-  | "checking"
-  | "contradicted";
-
-/** The four states that replaced "owned", for a caller that needs to treat
- *  them as a class (a display filter, a count) without re-listing them and
- *  falling behind when one is added. */
-export const UNSOURCED_STATES: readonly GroundingState[] = [
-  "stated",
-  "general",
-  "bleed",
-  "unconfirmed",
-];
+  "sourced" | "echoed" | "owned" | "checking" | "contradicted";
 
 // A multi-token name atom ("Metro Nashville Police Department") doesn't
 // have to be all-or-nothing against the union index the way a single-token
@@ -84,6 +50,9 @@ export const UNSOURCED_STATES: readonly GroundingState[] = [
 // the model's own unchecked wording. Majority, not "any", so a single
 // coincidental word match ("the") doesn't earn the tier.
 const ECHOED_MIN_TOKEN_FRACTION = 0.5;
+
+export type GroundingOriginChannel =
+  "desk" | "internal" | "discourse" | "hypergraph";
 
 export interface GroundingSpan {
   start: number;
@@ -101,6 +70,12 @@ export interface GroundingSpan {
    *  the right passage needs this checked separately, per citation. Empty
    *  for any span whose state isn't "sourced". */
   supportingCitationIndexes: number[];
+  /** Best-effort attribution of an "owned" atom to the channel it likely
+   *  came from, when one is identifiable — never a certainty claim. Unset
+   *  keeps the atom as plain, unattributed "owned" (the honest default).
+   *  See eo-grounding-spans.ts's originChannel note below for the matching
+   *  rules and the honesty constraint on how this may be phrased. */
+  originChannel?: GroundingOriginChannel;
 }
 
 export function buildGroundingSpans(
@@ -108,37 +83,78 @@ export function buildGroundingSpans(
   opts: {
     citations: CitationEntry[];
     question?: string;
-    /** The reader's own stated facts, verbatim (eo-memory.ts's StatedFact
-     *  texts). The desk channel warrants, so an atom found here is backed —
-     *  it just is not backed by a source. Omitted, no atom can be `stated`. */
-    deskFacts?: string[];
-    /** Text from channels typed canWarrant:false — the folded PAST DISCOURSE
-     *  summary, a hypergraph thought. An atom found ONLY here is `bleed`.
-     *  Omitted, no atom can be `bleed`, and the state it would have had is
-     *  the one it gets. */
-    unwarrantedText?: string[];
+    /** This turn's desk facts (see eo-memory.ts) — an "owned" atom that
+     *  matches one is attributed `desk`, since a reader-stated fact is more
+     *  trustworthy-looking than an unconfirmed guess, not equally uncertain. */
+    statedFacts?: StatedFact[];
+    /** The plain-text discourse fold summary this turn's prompt actually
+     *  carried, if any — `canWarrant: false` in eo-warrant.ts, so a match
+     *  here only ever flags a possible echo, never a source. */
+    discourseText?: string;
+    /** The drafted hypergraph "thought" string this turn's prompt actually
+     *  carried, if any — same `canWarrant: false` standing as discourse. */
+    hypergraphText?: string;
+    /** GroundingDemand.required for this turn (see eo-warrant.ts) — false
+     *  means nothing external bore on the question at all, the only
+     *  condition under which a residual "owned" atom may be attributed
+     *  `internal` rather than left unattributed. */
+    externalRequired?: boolean;
   },
 ): GroundingSpan[] {
   const citations = opts.citations ?? [];
   const index = citations.length ? buildUnionIndex(citations) : null;
   const questionWords = wordSet(opts.question || "");
 
-  // Built the same way the citation index is, so "does the desk say this" is
-  // the exact test "does the source say this" already is — same tokenisation,
-  // same number normalisation, no second looser guess (LAWS.md L11d).
-  const asIndex = (texts?: string[]) =>
-    texts && texts.length
-      ? buildUnionIndex(
-          texts.map((t, i) => ({ index: i, source_id: "", text: t })),
-        )
-      : null;
-  const deskIndex = asIndex(opts.deskFacts);
-  const unwarrantedIndex = asIndex(opts.unwarrantedText);
-  const coveredBy = (idx: Index | null, atom: { kind: string; tokens: string[] }) =>
-    !!idx &&
-    atom.tokens.every((t) =>
-      atom.kind === "number" ? hasNumber(idx.numbers, t) : hasWord(idx.words, t),
+  // Origin-channel attribution for "owned" atoms — desk first (most
+  // trustworthy), then the two forbidden channels (a possible echo of
+  // something that was never evidence), then the internal residual. Built
+  // once per call, not per atom, since none of it depends on the atom.
+  const deskWords = wordSet(
+    (opts.statedFacts ?? []).map((f) => f.text).join(". "),
+  );
+  const deskNumbers = numberSet(
+    (opts.statedFacts ?? []).map((f) => f.text).join(". "),
+  );
+  const discourseWords = wordSet(opts.discourseText || "");
+  const discourseNumbers = numberSet(opts.discourseText || "");
+  const hypergraphWords = wordSet(opts.hypergraphText || "");
+  const hypergraphNumbers = numberSet(opts.hypergraphText || "");
+
+  const matchFraction = (
+    tokens: string[],
+    kind: "number" | "name",
+    words: Set<string>,
+    numbers: Set<string>,
+  ): number => {
+    if (!tokens.length || (!words.size && !numbers.size)) return 0;
+    const hits = tokens.filter((t) =>
+      kind === "number" ? hasNumber(numbers, t) : hasWord(words, t),
     );
+    return hits.length / tokens.length;
+  };
+
+  const originChannelFor = (
+    tokens: string[],
+    kind: "number" | "name",
+  ): GroundingOriginChannel | undefined => {
+    if (
+      matchFraction(tokens, kind, deskWords, deskNumbers) >=
+      ECHOED_MIN_TOKEN_FRACTION
+    )
+      return "desk";
+    if (
+      matchFraction(tokens, kind, discourseWords, discourseNumbers) >=
+      ECHOED_MIN_TOKEN_FRACTION
+    )
+      return "discourse";
+    if (
+      matchFraction(tokens, kind, hypergraphWords, hypergraphNumbers) >=
+      ECHOED_MIN_TOKEN_FRACTION
+    )
+      return "hypergraph";
+    if (opts.externalRequired === false) return "internal";
+    return undefined;
+  };
 
   const spans: GroundingSpan[] = [];
   for (const s of splitSentences(String(content || ""))) {
@@ -198,27 +214,9 @@ export function buildGroundingSpans(
               );
             })
             .map((c) => c.index);
-        } else state = unsourcedState(atom, true);
+        } else state = atom.kind === "number" ? "checking" : "owned";
       } else {
-        state = unsourcedState(atom, false);
-      }
-
-      // The split. Order is precedence, and it is deliberate: the desk
-      // WARRANTS, so a fact the reader stated outranks every remaining
-      // possibility and is never reported as unconfirmed. `bleed` is checked
-      // before the fallbacks because it is the finding — an atom carried only
-      // by a paraphrase is not merely unbacked, it is unbacked in a way that
-      // looks backed from inside the prompt.
-      function unsourcedState(
-        a: { kind: "number" | "name"; tokens: string[] },
-        gathered: boolean,
-      ): GroundingState {
-        if (coveredBy(deskIndex, a)) return "stated";
-        if (coveredBy(unwarrantedIndex, a)) return "bleed";
-        // A number still earns the async resolve pass; that is about what can
-        // be CHECKED next, not about what is known now.
-        if (a.kind === "number") return "checking";
-        return gathered ? "unconfirmed" : "general";
+        state = atom.kind === "number" ? "checking" : "owned";
       }
 
       spans.push({
@@ -228,6 +226,10 @@ export function buildGroundingSpans(
         atomKind: atom.kind,
         state,
         supportingCitationIndexes,
+        originChannel:
+          state === "owned"
+            ? originChannelFor(atom.tokens, atom.kind)
+            : undefined,
       });
     }
   }
@@ -254,11 +256,16 @@ export function buildGroundingSpans(
  * with — which is why `unsupportedEverywhere` is deliberately not consulted
  * here.
  *
- * A demoted span becomes `unconfirmed`, and drops its citation indexes: those
+ * A demoted span becomes `owned`, and drops its citation indexes: those
  * point at the ground that DID carry the atom, and letting a chip open that
  * passage would answer "is this backed?" with the one ground that happens to
  * agree. The disagreement itself belongs to the panel (§4.7), which shows both
  * columns; the chip's job is only to stop claiming confidence it lost.
+ *
+ * The demoted span keeps `originChannel` undefined, which is deliberate and
+ * should stay that way: it was graded `sourced`, so no origin was ever
+ * determined for it, and "plain, unattributed owned" is the honest default.
+ * Filling it in here would attribute an origin nobody measured.
  *
  * Pure and span-local — no ranking, no resolution, no preferred ground.
  */
@@ -273,6 +280,6 @@ export function demoteDisagreedSpans(
     // Only a state that CLAIMS backing can be over-credited. An atom already
     // graded unsourced is not made worse by the grounds differing about it.
     if (s.state !== "sourced" && s.state !== "echoed") return s;
-    return { ...s, state: "unconfirmed", supportingCitationIndexes: [] };
+    return { ...s, state: "owned", supportingCitationIndexes: [] };
   });
 }

@@ -54,3 +54,19 @@ citation.
 **Not touched:** Ostrom's and Alexander's observations (no article reaches host-side doc prose, per the brief's own instruction not to force an engine-domain article onto host tooling) — left as observations, not findings, consistent with how they were filed.
 
 **Re-verified after fixes:** `npm test` in eoreader6 — same 1018/1020 baseline as before this diff (2 pre-existing, unrelated failures unchanged). `npm run check-docs` in eoWebLLM runs clean against its own (now honestly-disclosed) baseline of 15 known, explained gaps.
+
+---
+
+## 2026-08-13 — eoWebLLM sidebar project-filter feature (SCOPE RULING)
+
+**Maintainer ruling, effective for all future runs:** the Chorus review applies to **engine updates** (eoreader6 and the eoWebLLM reasoning/corpus engine layer). Surface/UX work in eoWebLLM (sidebar layout, navigation state, panels, styling) is explicitly **out of scope** — Chorus findings on it are not gating and are not escalated per the activation rule (Step 3).
+
+**Scope:** the staged project-filter diff — sidebar chat list filtered to the active project, active-project highlighting, store `currentProjectId` syncing (5 files: `chat-list.tsx`, `projects.tsx`, `sidebar.tsx`, `project.tsx`, `chat.tsx`, `store/chat.ts`, `home.module.scss`). Run was done before the ruling; reviewed against `LAWS.md` (L1-L6).
+
+**Method:** ten personas run (independent agents), scoped to the diff.
+
+**Engine-adjacent finding (fixed, kept):** `newSession` stamped a caller-passed `projectId` onto a fresh session before any resolution — if the project had just been deleted, the new chat permanently carried a dead id that silently swallowed its EOT log (`pushEoLog` no-ops) and shared a hypergraph scope with deleted-project orphans. Fixed by resolving before stamping (`resolveProjectId`) and by having `deleteProject` clear `currentProjectId` when it deletes the current project.
+
+**Non-gating UX findings (per the ruling, not escalated):** context-bar exit/sync behavior, header-menu project reassignment syncing, `/new` command project-awareness, ProjectPage null-state message, redundant `setCurrentProjectId` no-op (removed), keyboard activation on the new `role="button"` bars, `/project`-page chat-list duplication. Not logged individually per the ruling; the maintenance fixes themselves are in the same commit.
+
+**Debug logging:** the working tree's unstaged `[RACE]` console.logs in `store/chat.ts`/`webllm.ts` were deliberately left unstaged and out of the commit (not part of the feature diff).

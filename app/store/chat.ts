@@ -136,6 +136,7 @@ import {
   queryUserFacts,
   hypergraphScopeId,
   type HypergraphNavigation,
+  type HypergraphMovement,
 } from "../client/eo-hypergraph";
 import { buildSelfFactsBlock } from "../client/eo-self-facts";
 import {
@@ -153,7 +154,6 @@ import {
 import { createLiftRegistry, liftIfValidated } from "../client/eo-lift";
 import {
   buildFoldLedger,
-  buildWarrantBlock,
   classifyResponseSet,
   escalate,
   foldPressure,
@@ -284,6 +284,15 @@ export type ChatMessage = RequestMessage & {
   // claim this turn, what was folded away, and why the turn routed the way it
   // did. Attached to the message it governed, one step from the artifact.
   warrantTrace?: WarrantTrace;
+  // What this message's own admission into the hypergraph moved (see
+  // eo-hypergraph.ts's HypergraphMovement) — computed at admission time
+  // either way, but historically only ever turned into a prose EOT-log
+  // line and discarded. Persisted here so a turn-by-turn replay (the
+  // History tab) can show exactly what a message moved without re-running
+  // admission or trusting the capped EOT log ring buffer. Undefined on any
+  // message sent before this field existed, or when admission produced no
+  // movement (nothing stated).
+  hypergraphMovement?: HypergraphMovement;
   // Explore/the hypergraph is source-scoped by default — a chat turn is
   // admitted (see admitHypergraphTurn) but stays invisible there (see
   // isDocEnabled in eo-hypergraph.ts) unless the reader opts THIS message
@@ -292,6 +301,18 @@ export type ChatMessage = RequestMessage & {
   // eoConversationEnabled above, and deliberately so: uploaded sources are
   // what a reader meant to bring in, a chat reply is not, unless said so.
   eoIncludedInExplore?: boolean;
+  // The exact request this reply was generated from — every message sent to
+  // the engine, in order, plus the model/config it was sent with. Captured
+  // once, right before llm.chat() fires, so "what was this model actually
+  // prompted with" is an inspectable fact on the reply itself rather than
+  // something only the (capped, prose) EOT "send" log line gestures at.
+  // Undefined on any message sent before this field existed, and on
+  // messages that bypassed generation entirely (viaCalculator).
+  debugRequest?: {
+    model: string;
+    messages: RequestMessage[];
+    config: Record<string, unknown>;
+  };
 };
 
 export interface PlanTrace {
@@ -1725,14 +1746,28 @@ function fillTemplateWith(input: string, modelConfig: ConfigType) {
   return output;
 }
 
+// A session may still carry the id of a project that was later deleted (see
+// deleteProject -- sessions keep their projectId so ungrouped sessions behave
+// like they always did). Anything that picks the "current" project must not
+// resolve such a dangling id, or a deleted project's leftover tag would take
+// over the sidebar filter and project header.
+function resolveProjectId(
+  projectId: string | undefined,
+  projects: Project[],
+): string | undefined {
+  if (!projectId) return undefined;
+  return projects.some((p) => p.id === projectId) ? projectId : undefined;
+}
+
 const DEFAULT_CHAT_STATE = {
   sessions: [createEmptySession()],
   currentSessionIndex: 0,
   projects: [] as Project[],
-  // Which project the Project page (project.tsx) is showing, if any --
-  // this app has no per-entity URLs (Chat itself is just "whatever
-  // currentSessionIndex points at"), so this is the same store-driven
-  // navigation pattern applied to a project instead of a session.
+  // The project this app is currently "in" -- either the one the Project
+  // page (project.tsx) was opened for, or the project of whichever session
+  // is currently selected (see selectSession/newSession: currentProjectId
+  // tracks the current session, so "in a project" and "viewing one of its
+  // chats" are the same fact). null means general/unprojected chats.
   currentProjectId: null as string | null,
 };
 
@@ -1751,12 +1786,20 @@ export const useChatStore = createPersistStore(
         set(() => ({
           sessions: [createEmptySession()],
           currentSessionIndex: 0,
+          currentProjectId: null,
         }));
       },
 
       selectSession(index: number) {
+        const session = get().sessions[index];
         set({
           currentSessionIndex: index,
+          // "Which project are we in" follows the session you land on (see
+          // the currentProjectId comment on DEFAULT_CHAT_STATE) -- the
+          // sidebar filters its chat list on this, so navigating between
+          // sessions must keep it pointing at the newly-selected one.
+          currentProjectId:
+            resolveProjectId(session?.projectId, get().projects) ?? null,
         });
       },
 
@@ -1794,11 +1837,19 @@ export const useChatStore = createPersistStore(
           };
           session.topic = template.name;
         }
-        if (projectId) session.projectId = projectId;
+        // Resolve before stamping: a caller that hands over a dangling
+        // projectId (its project was deleted) must not permanently tag the
+        // fresh session with a dead id -- that would silently strand its EOT
+        // log and hypergraph scope under a project that no longer exists.
+        const resolvedProjectId = resolveProjectId(projectId, get().projects);
+        if (resolvedProjectId) session.projectId = resolvedProjectId;
 
         set((state) => ({
           currentSessionIndex: 0,
           sessions: [session].concat(state.sessions),
+          // A fresh session is the session you're now "in", so the current
+          // project follows it too -- same rule as selectSession.
+          currentProjectId: resolvedProjectId ?? null,
         }));
       },
 
@@ -1834,10 +1885,14 @@ export const useChatStore = createPersistStore(
       // deleted, the same way eochat leaves a conversation's spaceId alone
       // on project delete -- they just fall back to behaving like any other
       // ungrouped session (see projectSources: a dangling id simply never
-      // matches a project again).
+      // matches a project again). But the store's own "current project"
+      // navigation state is not a session: deleting the project we're in
+      // puts us back in general chats, not stranded on a dead id.
       deleteProject(id: string) {
         set((state) => ({
           projects: state.projects.filter((p) => p.id !== id),
+          currentProjectId:
+            state.currentProjectId === id ? null : state.currentProjectId,
         }));
       },
 
@@ -1872,11 +1927,18 @@ export const useChatStore = createPersistStore(
         const restoreState = {
           currentSessionIndex: get().currentSessionIndex,
           sessions: get().sessions.slice(),
+          currentProjectId: get().currentProjectId,
         };
 
+        const nextSession = sessions[nextIndex];
         set(() => ({
           currentSessionIndex: nextIndex,
           sessions,
+          // Deletion moves the current session, so the current project moves
+          // with it -- otherwise the sidebar would keep showing a project
+          // whose current chat just vanished.
+          currentProjectId:
+            resolveProjectId(nextSession?.projectId, get().projects) ?? null,
         }));
 
         showToast(
@@ -1897,7 +1959,12 @@ export const useChatStore = createPersistStore(
 
         if (index < 0 || index >= sessions.length) {
           index = Math.min(sessions.length - 1, Math.max(0, index));
-          set(() => ({ currentSessionIndex: index }));
+          const session = sessions[index];
+          set(() => ({
+            currentSessionIndex: index,
+            currentProjectId:
+              resolveProjectId(session?.projectId, get().projects) ?? null,
+          }));
         }
 
         const session = sessions[index];
@@ -2686,6 +2753,11 @@ export const useChatStore = createPersistStore(
         // the whole search.
         let hypergraphEdgesConsidered = 0;
         let hypergraphThoughtDrafted = false;
+        // Hoisted so Citey's grounding layer (below, both the live onUpdate
+        // pass and the finalized onFinish pass) can check an "owned" atom
+        // against the exact prose this turn's prompt carried, not just
+        // whether a thought was drafted at all.
+        let hypergraphThoughtText = "";
         if (userContent.trim()) {
           try {
             // Always re-scan for anything not yet admitted — no longer
@@ -2766,6 +2838,7 @@ export const useChatStore = createPersistStore(
                     priority: EO_BLOCK_PRIORITY.SURF,
                   });
                   hypergraphThoughtDrafted = true;
+                  hypergraphThoughtText = thought;
                   get().pushEoLog("hypergraph", `thought: ${thought}`);
                 }
               }
@@ -2906,7 +2979,10 @@ export const useChatStore = createPersistStore(
             { id: userMessage.id, content: userContent },
             turnIndex,
           );
-          if (m) get().pushEoLog("hypergraph", describeHypergraphMovement(m));
+          if (m) {
+            userMessage.hypergraphMovement = m;
+            get().pushEoLog("hypergraph", describeHypergraphMovement(m));
+          }
         }
 
         // Every message this turn emits shares a turn id. The first one is the
@@ -3000,18 +3076,19 @@ export const useChatStore = createPersistStore(
         });
         const demand = groundingDemand(ledger);
         const preRoute = routeTurn(ledger, demand);
-        const warrantBlock = buildWarrantBlock(ledger, demand);
         get().pushEoLog("warrant", warrantLogLine(ledger, demand, preRoute));
 
+        // buildWarrantBlock's banner-and-bracket-tag rendering (e.g. "[rules]
+        // 7 in force, 24 folded to fingerprints") used to be spliced into the
+        // system prompt here. Dropped from what the model actually sees — a
+        // small local model has nowhere near the margin to both track that
+        // notation AND answer in prose, and format in is format out: prose
+        // out asks for prose in. The ledger/demand/route arithmetic behind it
+        // still runs and still drives routing and the warrantTrace panel
+        // (see eoWarrantTrace below) — only the literal block text sent to
+        // the model is gone.
         const budgetResult = eoEnforceContextBudget(
-          buildMessages(
-            warrantBlock
-              ? [
-                  { text: warrantBlock, priority: EO_BLOCK_PRIORITY.PROTECTED },
-                  ...extraSystemBlocks,
-                ]
-              : extraSystemBlocks,
-          ),
+          buildMessages(extraSystemBlocks),
           contextWindow,
           "chat turn",
         );
@@ -3048,6 +3125,20 @@ export const useChatStore = createPersistStore(
         );
 
         log.debug("Messages: ", sendMessages);
+
+        botMessage.debugRequest = {
+          model: modelConfig.model,
+          messages: sendMessages.map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+          config: {
+            ...modelConfig,
+            cache: useAppConfig.getState().cacheType,
+            stream: true,
+            enable_thinking: useAppConfig.getState().enableThinking,
+          },
+        };
 
         // Citey's grounding layer needs to know what this turn already
         // gathered (web/corpus) to tell "sourced" from unsourced — and needs
@@ -3111,6 +3202,10 @@ export const useChatStore = createPersistStore(
               botMessage.groundingSpans = buildGroundingSpans(message, {
                 citations: liveCitations,
                 question: userContent.trim(),
+                statedFacts: session0.eoMemory?.facts,
+                discourseText: assembled.discourseText || undefined,
+                hypergraphText: hypergraphThoughtText || undefined,
+                externalRequired: demand.required,
               });
             }
             get().updateCurrentSession((session) => {
@@ -3139,11 +3234,13 @@ export const useChatStore = createPersistStore(
                 { id: botMessage.id, content: message },
                 turnIndex,
               );
-              if (botMovement)
+              if (botMovement) {
+                botMessage.hypergraphMovement = botMovement;
                 get().pushEoLog(
                   "hypergraph",
                   describeHypergraphMovement(botMovement),
                 );
+              }
 
               // System 2: DEFINE now, against the System-1 draft that
               // already exists — unconditional, every turn, no mechanical
@@ -3704,6 +3801,10 @@ export const useChatStore = createPersistStore(
               botMessage.groundingSpans = buildGroundingSpans(message, {
                 citations: allCitations,
                 question: userContent.trim(),
+                statedFacts: session0.eoMemory?.facts,
+                discourseText: assembled.discourseText || undefined,
+                hypergraphText: hypergraphThoughtText || undefined,
+                externalRequired: demand.required,
               });
               // ...then un-merge what that union index over-credited. The
               // spans above are graded against every ground at once, so an
@@ -3787,14 +3888,14 @@ export const useChatStore = createPersistStore(
                               ? "contradicted"
                               : c.verdict === "confirmed"
                                 ? "sourced"
-                                : "unconfirmed";
+                                : "owned";
                           span.correction = c.correction;
                         } else if (span.state === "checking") {
                           // Searched and nothing conclusive came back. That
-                          // is "gathered and absent", not "nothing bore on
-                          // this turn" — the two were the same word before
-                          // the split.
-                          span.state = "unconfirmed";
+                          // is "gathered and absent" — the atom stays held as
+                          // the character's own assertion ("owned"), just not
+                          // one backed by any gathered material.
+                          span.state = "owned";
                         }
                       }
                     });
@@ -3969,6 +4070,12 @@ export const useChatStore = createPersistStore(
             verbatimTurns,
             summaryInPrompt,
           },
+          // The actual folded-summary prose this turn's prompt carried, if
+          // any — not just its stats above. Citey's grounding layer needs
+          // the plain text itself to check an "owned" atom for a possible
+          // echo (see originChannel in eo-grounding-spans.ts); null when no
+          // summary was in the prompt this turn.
+          discourseText: summaryText,
         };
       },
 

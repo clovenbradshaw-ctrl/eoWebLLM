@@ -18,6 +18,7 @@ import { ChatOptions, LLMApi, LLMConfig, RequestMessage } from "./api";
 import { LogLevel } from "@mlc-ai/web-llm";
 import { fixMessage } from "../utils";
 import { DEFAULT_MODELS } from "../constant";
+import { CacheType, useAppConfig } from "../store/config";
 
 const KEEP_ALIVE_INTERVAL = 5_000;
 
@@ -57,7 +58,10 @@ export class WebLLMApi implements LLMApi {
     const engineConfig = {
       appConfig: {
         ...prebuiltAppConfig,
-        useIndexedDBCache: this.llmConfig?.cache === "index_db",
+        cacheBackend:
+          useAppConfig.getState().cacheType === CacheType.IndexDB
+            ? ("indexeddb" as const)
+            : ("cache" as const),
       },
       logLevel,
     };

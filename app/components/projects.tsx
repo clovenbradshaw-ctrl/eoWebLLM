@@ -96,12 +96,25 @@ export function ProjectsPanel(props: { narrow?: boolean }) {
             (s) => s.projectId === project.id,
           ).length;
           const sourceCount = projectSources(sessions, project.id).length;
+          const active = project.id === chatStore.currentProjectId;
           return (
-            <div key={project.id} className={styles["projects-panel-item"]}>
+            <div
+              key={project.id}
+              className={
+                styles["projects-panel-item"] +
+                (active ? " " + styles["projects-panel-item-active"] : "")
+              }
+            >
               <div
                 className={styles["projects-panel-item-main"]}
                 onClick={() => openProject(project.id)}
               >
+                {active && (
+                  <span
+                    className={styles["projects-panel-item-dot"]}
+                    title="Current project"
+                  />
+                )}
                 <FolderSimple
                   size={14}
                   className={styles["projects-panel-item-icon"]}
