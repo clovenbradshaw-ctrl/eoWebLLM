@@ -5,6 +5,12 @@ import Locale, { getLang } from "../locales";
 import { showToast } from "../components/ui-lib";
 import { ModelConfig, Model, useAppConfig, ConfigType } from "./config";
 import { createEmptyTemplate, Template } from "./template";
+import {
+  isEngineBusy,
+  engineFreeSignal,
+  waitForEngineFree,
+  markEngineBusy,
+} from "./engine";
 import { DEFAULT_INPUT_TEMPLATE, DEFAULT_MODELS, StoreKey } from "../constant";
 import {
   RequestMessage,
@@ -132,6 +138,7 @@ import {
   queryUserFacts,
   hypergraphScopeId,
   isSourceFullyHydrated,
+  releaseHypergraphScope,
   type HypergraphNavigation,
   type HypergraphMovement,
 } from "../client/eo-hypergraph";
@@ -611,6 +618,12 @@ const EO_DESK_WINDOW_MARGIN_TURNS = 2;
 // sequenced.
 const EO_ROUTER_TIMEOUT_MS = 75000;
 
+// Backstop for eoRunBackground's engine-busy tracking, far above every
+// timeoutMs any caller passes it (EO_ROUTER_TIMEOUT_MS above is the
+// largest, 75s) — see eoRunBackground's own comment for why this has to be
+// a wholly separate, much longer ceiling than the per-call timeout.
+const EO_ENGINE_BUSY_HARD_CEILING_MS = 180000;
+
 // How many recent messages the focus resolver reads. Small on purpose: it is
 // answering "what is this about right now", and a long window makes an old
 // subject compete with the current one. Bounded the same way every other
@@ -642,68 +655,106 @@ const EO_FOCUS_PROMPT =
 // model has to be able to surf over, not a one-time cost.
 const MAX_PRIOR_ART_INGEST_FILES = 15;
 
-// The WebLLM engine is single-flight: background calls (fold/summary, topic)
-// must never overlap each other or the streaming answer. eoFoldInFlight guards
-// the fold chain; eoEngineBusy tracks a background call that may still occupy
-// the engine (including a timed-out ghost) and the next user turn aborts it.
-// eoEngineBusyPromise is that call's own settlement — abort() only confirms
-// the interrupt signal was posted to the worker, not that the generation
-// loop has actually noticed it, stopped, and released the engine's internal
-// lock. Starting a new llm.chat() right after an unawaited abort() used to
-// race that teardown and throw "Object has already been disposed" from
-// inside web-llm's worker; awaiting this promise after abort() is what
-// actually guarantees the engine is idle.
+// The WebLLM engine is single-flight: no two llm.chat() calls — background
+// (fold/summary, topic, System 2) or the turn's own streaming answer — may
+// ever be in flight at once. eoFoldInFlight guards the fold chain
+// specifically. The engine-busy signal itself now lives in
+// app/store/engine.ts (isEngineBusy/engineFreeSignal/waitForEngineFree/
+// markEngineBusy) rather than as chat-local state, because it isn't really
+// a chat concept — app/coding/page.tsx's tool-loop dispatches real
+// llm.chat() calls against this exact same engine instance too (see
+// app/store/engine.ts's own file header on why both routes share one
+// instance), and needs to coordinate against the same signal chat.ts does,
+// not a copy of it. EVERY caller that touches the engine (eoRunBackground,
+// the main turn's own llm.chat() dispatch below, runStartupGreeting, and
+// now eo-code-generate.ts's coding-route dispatch) waits out whoever holds
+// it first rather than checking-and-racing. That "wait, never interrupt"
+// discipline matters: calling llm.abort() and starting a new llm.chat()
+// right after used to race the interrupted call's own teardown and throw
+// "Object has already been disposed" from inside web-llm's worker, since
+// interruptGenerate() resolving only confirms the signal reached the
+// worker, not that its generation loop actually stopped and freed the
+// engine.
 let eoFoldInFlight = false;
-let eoEngineBusy = false;
-let eoEngineBusyPromise: Promise<unknown> | null = null;
+// A turn's post-draft tail (System 2's check pass, the focus-deposit call,
+// foldNextTurn — everything that now runs after the reader is unblocked,
+// see onFinish's "System 1 ends here") makes several SEQUENTIAL background
+// calls, not one. engine.ts's own engineFreeSignal() only ever holds
+// whichever single eoRunBackground call is currently in flight, so a turn
+// waiting on it can resolve between two of the tail's calls and race into
+// the engine against whichever one starts next — the exact hazard that
+// signal exists to prevent, one level up. eoTurnTailPromise spans the
+// WHOLE tail: set once when it starts, resolved once when every step of it
+// (including the detached citation-resolve pass) is done. Unlike the
+// engine-busy signal, this genuinely is a chat concept (only a
+// conversational turn has a "tail"), so it stays local here.
+let eoTurnTailPromise: Promise<void> | null = null;
 
 // Run one non-streaming background model call, tracking engine occupancy.
-function eoRunBackground(
+async function eoRunBackground(
   llm: LLMApi,
   messages: RequestMessage[],
   config: LLMConfig,
   timeoutMs: number,
 ): Promise<string> {
-  const promise = new Promise<string>((resolve, reject) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      // A timeout is a terminal outcome for this call too — release the
-      // busy flag exactly like onError does. Left unset before this fix,
-      // a single slow/timed-out background call anywhere in a turn could
-      // leave eoEngineBusy stuck true for the rest of that turn's onFinish,
-      // silently blocking topic-naming and foldNextTurn until the next
-      // onUserInput force-reset it (see line ~1718) — too late to help the
-      // turn that hit it.
-      eoEngineBusy = false;
-      eoEngineBusyPromise = null;
+  // Wait for the engine to actually be free before claiming it — see
+  // waitForEngineFree's own comment in app/store/engine.ts for why this has
+  // to be a loop, not a one-shot check.
+  await waitForEngineFree();
+  // The engine must stay claimed until the REAL llm.chat() call below
+  // actually settles, not until this function's own caller loses patience
+  // with it — see markEngineBusy's own comment in app/store/engine.ts. A
+  // timeout here used to release the busy flag itself, on the reasoning
+  // that a single slow background call shouldn't leave it stuck true for
+  // the rest of a turn (blocking topic-naming/foldNextTurn indefinitely) —
+  // but the engine is single-flight (see module header) and llm.chat() was
+  // never actually told to stop: the "timed out" call kept running
+  // underneath, and the next thing that saw the engine as free and
+  // dispatched a fresh llm.chat() collided two live calls on one worker
+  // exactly like the hazard this whole guard exists to prevent — except
+  // silently, since nothing above believed it was waiting on anything.
+  // That collision is what orphaned a turn's own main answer once,
+  // permanently: its callbacks never fired again for the rest of the
+  // session. So releaseEngine() below is now called ONLY by the real call
+  // actually settling (onFinish/onError, whenever that truly happens, even
+  // long after callerTimer has already given up and told this function's
+  // own caller to move on) or by EO_ENGINE_BUSY_HARD_CEILING_MS as a
+  // last-resort backstop for a call that never calls either — a real
+  // engine-level wedge, not just a slow model, and rare enough that a
+  // multi-minute ceiling is fine.
+  const releaseEngine = markEngineBusy();
+
+  return new Promise<string>((resolve, reject) => {
+    let callerSettled = false;
+    const callerTimer = setTimeout(() => {
+      if (callerSettled) return;
+      callerSettled = true;
       reject(new Error("eo background model call timed out"));
     }, timeoutMs);
-    eoEngineBusy = true;
+    const hardCeiling = setTimeout(() => {
+      releaseEngine();
+    }, EO_ENGINE_BUSY_HARD_CEILING_MS);
     llm.chat({
       messages,
       config,
       onFinish(message) {
-        eoEngineBusy = false;
-        eoEngineBusyPromise = null;
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
+        clearTimeout(hardCeiling);
+        releaseEngine();
+        if (callerSettled) return;
+        callerSettled = true;
+        clearTimeout(callerTimer);
         resolve(message);
       },
       onError(err) {
-        eoEngineBusy = false;
-        eoEngineBusyPromise = null;
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
+        clearTimeout(hardCeiling);
+        releaseEngine();
+        if (callerSettled) return;
+        callerSettled = true;
+        clearTimeout(callerTimer);
         reject(err);
       },
     });
   });
-  eoEngineBusyPromise = promise;
-  return promise;
 }
 
 // The judge for eo-revision.ts's post-display pass: given one flagged claim
@@ -1781,6 +1832,14 @@ export const useChatStore = createPersistStore(
 
     const methods = {
       clearSessions() {
+        // No undo here (unlike deleteSession below), so every retained
+        // hypergraph scope can be dropped immediately — nothing will ever
+        // reference the cleared sessions again. eo-hypergraph.ts otherwise
+        // keeps one scope alive per chat (or per project) for the life of
+        // the page; this is the one point that actually empties it out.
+        for (const session of get().sessions) {
+          releaseHypergraphScope(hypergraphScopeId(session));
+        }
         set(() => ({
           sessions: [createEmptySession()],
           currentSessionIndex: 0,
@@ -1949,6 +2008,23 @@ export const useChatStore = createPersistStore(
           },
           5000,
         );
+
+        // eo-hypergraph.ts otherwise retains this scope's graph state for
+        // the life of the page even after the chat that built it is gone —
+        // never released on its own. Can't drop it right above: the toast's
+        // own 5s undo window can still bring this exact session back via
+        // restoreState, and hypergraphScopeId's own rule is that a
+        // project's sessions all share one scope, so another session here
+        // may still be reading it. Wait out the undo window with margin,
+        // then release only if nothing left in the store (including a
+        // restored copy of this same session) still points at that scope.
+        const releasedScopeId = hypergraphScopeId(deletedSession);
+        setTimeout(() => {
+          const stillReferenced = get().sessions.some(
+            (s) => hypergraphScopeId(s) === releasedScopeId,
+          );
+          if (!stillReferenced) releaseHypergraphScope(releasedScopeId);
+        }, 6000);
       },
 
       currentSession() {
@@ -2258,9 +2334,32 @@ export const useChatStore = createPersistStore(
         // has already been disposed" out of web-llm's worker. Simply
         // awaiting the busy call's own settlement — its timeout is already
         // bounded by EO_ROUTER_TIMEOUT_MS — sidesteps that hazard entirely.
-        if (eoEngineBusy) {
+        //
+        // A prior turn's tail (see eoTurnTailPromise) is waited on FIRST and
+        // separately from the shared engine-busy signal (app/store/
+        // engine.ts): the tail makes several sequential background calls,
+        // and that signal only ever describes whichever single one of them
+        // is currently in flight — this turn could otherwise resolve the
+        // wait in the gap between two of the tail's own calls and race into
+        // the engine against whichever one starts next.
+        //
+        // Both loops, not one-shot waits: a second rapid message can reach
+        // this same point while THIS wait is still pending (isGenerating
+        // clears before the tail is done, on purpose — see "System 1 ends
+        // here"), so eoTurnTailPromise and engine.ts's own signal can each
+        // have more than one concurrent awaiter. Re-checking after every
+        // wake-up is what keeps a losing awaiter from barging in on
+        // whatever the winning one just claimed (see eoRunBackground's own
+        // comment on this same pattern) — read isEngineBusy()/
+        // engineFreeSignal() fresh on every iteration rather than calling
+        // waitForEngineFree() here, specifically so eoFoldInFlight keeps
+        // getting reset on every wake-up too, not just the first.
+        while (eoTurnTailPromise) {
+          await eoTurnTailPromise.catch(() => {});
+        }
+        while (isEngineBusy()) {
           eoFoldInFlight = false;
-          await eoEngineBusyPromise?.catch(() => {});
+          await engineFreeSignal()?.catch(() => {});
         }
 
         const modelConfig = useAppConfig.getState().modelConfig;
@@ -3188,16 +3287,33 @@ export const useChatStore = createPersistStore(
 
         // make request — the engine is single-flight, so first wait out any
         // background fold/topic call that may still occupy it (see the
-        // matching comment on the eoEngineBusy check near the top of this
-        // function — never interrupt, just wait; this turn's own
-        // pre-generation work above, web routing/surf/math, can itself have
-        // started a new background call after that earlier check ran, so
-        // this is often the wait that's still needed right before the real
-        // turn's own chat() call fires).
-        if (eoEngineBusy) {
-          eoFoldInFlight = false;
-          await eoEngineBusyPromise?.catch(() => {});
+        // matching comment on the eoTurnTailPromise/engine-busy check near
+        // the top of this function — never interrupt, just wait, in a loop
+        // since either signal can have more than one concurrent awaiter;
+        // this turn's own pre-generation work above, web routing/surf/math,
+        // can itself have started a new background call after that earlier
+        // check ran, so this is often the wait that's still needed right
+        // before the real turn's own chat() call fires).
+        while (eoTurnTailPromise) {
+          await eoTurnTailPromise.catch(() => {});
         }
+        while (isEngineBusy()) {
+          eoFoldInFlight = false;
+          await engineFreeSignal()?.catch(() => {});
+        }
+        // This dispatch is ALSO "the engine busy" — not just background
+        // eoRunBackground calls. Without marking it here, a background call
+        // that starts (or, worse, retries after an earlier "engine busy,
+        // skipped" deferral — see foldNextTurn) while this streaming answer
+        // is still in flight sees the engine as free and barges in,
+        // colliding two live llm.chat() calls on one non-reentrant engine.
+        // eoRunBackground's own wait-if-busy check (see there) is what
+        // actually respects this — as does eo-code-generate.ts's coding-
+        // route dispatch now, via the same app/store/engine.ts functions.
+        // Released the instant onFinish/onError fires — the engine itself
+        // is free then even though this turn's own background tail
+        // (eoTurnTailPromise) keeps running after.
+        const releaseEngine = markEngineBusy();
         llm.chat({
           messages: sendMessages,
           config: {
@@ -3235,9 +3351,19 @@ export const useChatStore = createPersistStore(
             });
           },
           async onFinish(message, stopReason, usage) {
+            // The engine itself is free the instant webllm.ts calls this —
+            // everything from here down is our own post-processing, not
+            // more engine work, until eoTurnTailPromise's own calls start.
+            releaseEngine();
             botMessage.streaming = false;
             botMessage.usage = usage;
             botMessage.stopReason = stopReason;
+            // Declared here, not inside `if (message)` below where it's
+            // actually assigned — both places that resolve it (the
+            // detached citation-resolve pass and the fallthrough at the
+            // bottom of this function) need it in scope, and the
+            // fallthrough sits after that block closes.
+            let resolveTurnTail: (() => void) | undefined;
             if (message) {
               if (!this.config.enable_thinking) {
                 message = message.replace(/<think>\s*<\/think>/g, "");
@@ -3573,6 +3699,33 @@ export const useChatStore = createPersistStore(
                 allCitations.map((c) => c.source_id),
               );
 
+              // System 1 ends here: the streamed draft (DEFINE/EVALUATE/
+              // RECONCILE above already ran, awaited, as part of getting
+              // here — it can revise `message`, but that revision lands
+              // before anything below is unblocked) is on screen. The
+              // reader is unblocked NOW rather than after System 2 —
+              // spitball first, check the work after — instead of holding
+              // `isGenerating` through the model calls below (System 2's own
+              // check pass, the focus-deposit call, foldNextTurn). Those
+              // still can't collide with a next real turn's own engine
+              // calls: eoTurnTailPromise (set below) spans this whole tail,
+              // and onUserInput awaits it before touching the engine again.
+              // What `isGenerating` protects — a second onUserInput call
+              // sharing this closure's `botMessage`/`session0` — isn't at
+              // risk here: each turn owns its own fresh botMessage, and the
+              // shared mutable state (the engine) is eoTurnTailPromise's job
+              // (and engine.ts's own busy signal, for background work
+              // outside a tracked tail), not this flag's.
+              get().updateCurrentSession((session) => {
+                session.isGenerating = false;
+                session.modelLoadProgress = null;
+              });
+              get().flushQueuedInput(llm);
+
+              eoTurnTailPromise = new Promise<void>((resolve) => {
+                resolveTurnTail = resolve;
+              });
+
               // ── System 2 ──────────────────────────────────────────────
               //
               // The monitor pass. Everything above was mechanical; this is
@@ -3581,6 +3734,14 @@ export const useChatStore = createPersistStore(
               // many checkable claims it made, how many failed — so a turn
               // that looked ordinary going in can still escalate on what it
               // actually said.
+              //
+              // Wrapped start to finish: an uncaught throw anywhere in this
+              // tail, left unguarded, would skip both places that resolve
+              // eoTurnTailPromise (the fallthrough below and the detached
+              // citation-resolve pass's own finally) and leave it pending
+              // forever — wedging every turn after this one, which awaits it
+              // before touching the engine again.
+              try {
               const claimAtoms = countClaimAtoms(message);
               const draftRoute = reviewDraft({
                 ledger,
@@ -3814,19 +3975,19 @@ export const useChatStore = createPersistStore(
               const toResolve = botMessage.groundingSpans.filter(
                 (s) => s.state === "checking" || s.atomKind === "name",
               );
-              if (toResolve.length && !eoEngineBusy) {
+              if (toResolve.length && !isEngineBusy()) {
                 // NOT `botMessage.streaming` — the answer is fully rendered
                 // at this point, and reusing `streaming` here used to make
                 // a finished reply visibly "think some more" a beat after
                 // the last token (chat.tsx's showTyping/ThinkingPanel both
                 // key off it as the single source of truth for "still
-                // composing"). The actual race this used to guard against —
-                // chat.tsx's onSubmit guard (and the store-level
-                // re-entrancy check in onUserInput) — keys off
-                // `session.isGenerating`, which stays true through this
-                // whole background pass regardless (see the `finally` below
-                // and this pass's onFinish caller), so that protection is
-                // untouched.
+                // composing"). `session.isGenerating` already cleared back
+                // at the System 1/System 2 boundary above (the reader is
+                // free to send the next turn while this resolves), so it's
+                // not what's protecting this pass from colliding with one —
+                // app/store/engine.ts's shared busy signal is (see this
+                // branch's own `!isEngineBusy()` guard and onUserInput's
+                // wait on it).
                 botMessage.checkingCitations = true;
                 get().onNewMessage(botMessage, llm);
                 const msgId = botMessage.id;
@@ -3904,11 +4065,19 @@ export const useChatStore = createPersistStore(
                       session.messages = session.messages.concat();
                     });
                     get().flushQueuedInput(llm);
+                    resolveTurnTail?.();
+                    eoTurnTailPromise = null;
                   }
                 })();
                 return;
               } else {
                 get().onNewMessage(botMessage, llm);
+              }
+              } catch (err) {
+                get().pushEoLog(
+                  "error",
+                  `turn tail: unexpected failure — ${(err as Error).message}`,
+                );
               }
             }
             get().updateCurrentSession((session) => {
@@ -3916,8 +4085,11 @@ export const useChatStore = createPersistStore(
               session.modelLoadProgress = null;
             });
             get().flushQueuedInput(llm);
+            resolveTurnTail?.();
+            eoTurnTailPromise = null;
           },
           onError(error) {
+            releaseEngine();
             const errorMessage =
               error.message || error.toString?.() || undefined;
             const isAborted = errorMessage?.includes("aborted");
@@ -4112,7 +4284,7 @@ export const useChatStore = createPersistStore(
           );
           const topicMessages = topicBudget.messages;
           get().pushEoLog("fold", topicBudget.logText);
-          if (!eoEngineBusy) {
+          if (!isEngineBusy()) {
             get().pushEoLog("task", "task: topic-naming started");
             eoRunBackground(
               llm,
@@ -4154,7 +4326,7 @@ export const useChatStore = createPersistStore(
         // took the `if` branch above and foldNextTurn was never reached at
         // all — not delayed, skipped outright, every turn, for as long as
         // topic-naming kept failing/timing out on a slow local model.
-        // foldNextTurn has its own eoFoldInFlight/eoEngineBusy guard, so
+        // foldNextTurn has its own eoFoldInFlight/isEngineBusy() guard, so
         // it's safe to always attempt it here regardless of whether
         // topic-naming just took the engine slot above.
         get().foldNextTurn(llm);
@@ -4165,7 +4337,7 @@ export const useChatStore = createPersistStore(
       // it never overlaps another engine call; the next user turn interrupts
       // it. A fold that never completes is retried after the next turn.
       foldNextTurn(llm: LLMApi) {
-        if (eoFoldInFlight || eoEngineBusy) {
+        if (eoFoldInFlight || isEngineBusy()) {
           get().pushEoLog(
             "fold",
             eoFoldInFlight
@@ -4318,14 +4490,18 @@ export const useChatStore = createPersistStore(
       // cold-start latency (first-call compile, KV-cache warm), and a brand-new
       // session opens with the model's OWN words instead of the static BOT_HELLO
       // render-time injection. Same single-flight discipline as every background
-      // call here: eoEngineBusy is set, so a reader who starts typing a real
-      // question has onUserInput abort this warmup (see the eoEngineBusy check
-      // before llm.chat) rather than collide on the engine.
+      // call here: the engine is marked busy for the duration, so a reader who
+      // starts typing a real question has onUserInput wait it out (see the
+      // isEngineBusy() check before llm.chat) rather than collide on the engine.
       async runStartupGreeting(llm: LLMApi) {
         const session = get().currentSession();
         // Never interrupt a real turn, never double-fire alongside a background
         // call, and never drop a greeting into a conversation already underway.
-        if (session.isGenerating || eoEngineBusy || session.messages.length > 0)
+        if (
+          session.isGenerating ||
+          isEngineBusy() ||
+          session.messages.length > 0
+        )
           return;
 
         const greeting = createMessage({
@@ -4338,7 +4514,7 @@ export const useChatStore = createPersistStore(
         });
 
         const modelConfig = useAppConfig.getState().modelConfig;
-        eoEngineBusy = true;
+        const releaseEngine = markEngineBusy();
         try {
           const warmup = new Promise<void>((resolve) => {
             llm.chat({
@@ -4392,11 +4568,9 @@ export const useChatStore = createPersistStore(
               },
             });
           });
-          eoEngineBusyPromise = warmup;
           await warmup;
         } finally {
-          eoEngineBusy = false;
-          eoEngineBusyPromise = null;
+          releaseEngine();
         }
       },
 

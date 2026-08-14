@@ -196,6 +196,20 @@ function wrapperFor(chatSessionId: string): HypergraphWrapper {
 }
 
 /**
+ * Drops one scope's retained hypergraph state (its eoreader6 session, graph
+ * nodes/edges, tier-shift history, chunk bookmarks) — this module's only
+ * exit from `wrappers`, which otherwise holds every scope for the life of
+ * the page. Callers must pass a `hypergraphScopeId` result, not a raw
+ * session id — deleting a scope that a project's OTHER sessions still
+ * share would silently empty their reading out from under them (see
+ * hypergraphScopeId's own header). A no-op for a scope with nothing
+ * hydrated yet, so callers don't need to check first.
+ */
+export function releaseHypergraphScope(scopeId: string): void {
+  wrappers.delete(scopeId);
+}
+
+/**
  * Admit one piece of content (an uploaded source, or one conversation turn)
  * into the session's corpus AND fold its relations into the running graph.
  * Guarded by `docId` — eoreader6's admitChunked is itself content-addressed

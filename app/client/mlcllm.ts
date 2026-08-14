@@ -10,11 +10,35 @@ export class MlcLLMApi implements LLMApi {
   private endpoint: string;
   private abortController: AbortController | null = null;
 
+  // Same structural backstop as app/client/webllm.ts's engineQueue — see
+  // that field's own comment for the full rationale (a caller that doesn't
+  // coordinate through app/store/chat.ts's eoEngineBusy mutex, like the
+  // /coding route, can otherwise fire a second real request while one is
+  // in flight). This backend has a second, narrower reason to serialize
+  // too: `abortController` below is a single shared field, reassigned on
+  // every call — two calls in flight at once means the second call's
+  // chat() silently points a later abort() at the wrong request.
+  private requestQueue: Promise<void> = Promise.resolve();
+
   constructor(endpoint: string) {
     this.endpoint = endpoint;
   }
 
-  async chat(options: ChatOptions) {
+  async chat(options: ChatOptions): Promise<void> {
+    const previous = this.requestQueue;
+    let releaseNext: (() => void) | undefined;
+    this.requestQueue = new Promise<void>((resolve) => {
+      releaseNext = resolve;
+    });
+    await previous;
+    try {
+      await this.dispatchChat(options);
+    } finally {
+      releaseNext?.();
+    }
+  }
+
+  private async dispatchChat(options: ChatOptions) {
     const { messages, config } = options;
 
     const payload = {

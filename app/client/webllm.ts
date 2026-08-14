@@ -40,6 +40,28 @@ export class WebLLMApi implements LLMApi {
   private initializing?: Promise<void>;
   webllm: WebLLMHandler;
 
+  // The underlying WebGPU worker is single-flight: it can only ever run one
+  // generation at a time. app/store/chat.ts enforces that with its own
+  // eoEngineBusy mutex, but that mutex is a convention every CALLER has to
+  // opt into — and not every caller does. app/client/eo-code-generate.ts's
+  // own header explains, correctly on its own terms, why the /coding route
+  // dispatches through a separate sequential loop instead of chat.ts's
+  // mutex; the two routes still share this one engine instance
+  // (app/store/engine.ts), so nothing outside this class currently stops a
+  // coding-route call from landing while a chat turn's own call (or its
+  // background tail) is still in flight. Two real llm.chat() calls
+  // colliding on one non-reentrant worker is exactly the failure chat.ts's
+  // own mutex-rationale comment describes: the newer call's callbacks can
+  // simply stop firing, permanently, for the rest of the session. Rather
+  // than trust every present and future caller to remember an external
+  // mutex, this queue makes that collision structurally impossible at the
+  // one place the constraint actually lives — inside the engine wrapper
+  // itself. For a caller that already coordinates through chat.ts's mutex,
+  // this queue is always empty by the time it gets here, so it costs
+  // nothing; it only ever does real work for the cases that mutex doesn't
+  // cover.
+  private engineQueue: Promise<void> = Promise.resolve();
+
   // Monotonic progress across the download + load phases of a single model
   // reload: reported progress is never allowed to go backwards, so the UI
   // shows one continuous bar instead of resetting between phases.
@@ -125,23 +147,55 @@ export class WebLLMApi implements LLMApi {
     }
   }
 
+  // Thin queueing wrapper — see engineQueue's own comment above for why this
+  // exists as a structural backstop rather than trusting every caller to
+  // coordinate through app/store/chat.ts's own mutex. All the real work is
+  // in dispatchChat(); this only ever serializes calls against each other.
   async chat(options: ChatOptions): Promise<void> {
-    if (!this.initialized || this.isDifferentConfig(options.config)) {
-      this.llmConfig = { ...(this.llmConfig || {}), ...options.config };
-      // Check if this is a Qwen3 model with thinking mode enabled
-      const isQwen3Model = this.llmConfig?.model
-        ?.toLowerCase()
-        .startsWith("qwen3");
-      const isThinkingEnabled = this.llmConfig?.enable_thinking === true;
+    const previous = this.engineQueue;
+    let releaseNext: (() => void) | undefined;
+    this.engineQueue = new Promise<void>((resolve) => {
+      releaseNext = resolve;
+    });
+    await previous;
+    try {
+      await this.dispatchChat(options);
+    } finally {
+      releaseNext?.();
+    }
+  }
 
-      // Apply special config for Qwen3 models with thinking mode enabled
-      if (isQwen3Model && isThinkingEnabled && this.llmConfig) {
-        this.llmConfig = {
-          ...this.llmConfig,
-          temperature: 0.6,
-          top_p: 0.95,
-        };
-      }
+  private async dispatchChat(options: ChatOptions): Promise<void> {
+    // Decided from the OLD config, before it's overwritten below — this is
+    // the only correct point to ask "does this call need the engine to
+    // reload the model." isDifferentConfig only looks at fields that
+    // actually change what's loaded into WebGPU (model, context window
+    // size); sampling params like temperature/top_p/stream are per-request
+    // and get threaded through chatCompletion's own genConfig on every call
+    // regardless, never baked into the loaded pipeline.
+    const needsReload = !this.initialized || this.isDifferentConfig(options.config);
+    // Always kept current, independent of whether a reload was needed —
+    // chatCompletion() below reads Qwen3/enable_thinking off this.llmConfig
+    // on every call, and a background call's own config (tool routing, math
+    // extraction, etc. — all stream:false, none of which warrant a reload)
+    // must not leave it holding a stale value from whichever call last
+    // triggered a reload.
+    this.llmConfig = { ...(this.llmConfig || {}), ...options.config };
+    // Check if this is a Qwen3 model with thinking mode enabled
+    const isQwen3Model = this.llmConfig?.model
+      ?.toLowerCase()
+      .startsWith("qwen3");
+    const isThinkingEnabled = this.llmConfig?.enable_thinking === true;
+
+    // Apply special config for Qwen3 models with thinking mode enabled
+    if (isQwen3Model && isThinkingEnabled && this.llmConfig) {
+      this.llmConfig = {
+        ...this.llmConfig,
+        temperature: 0.6,
+        top_p: 0.95,
+      };
+    }
+    if (needsReload) {
       try {
         await this.initModel(options.onProgress);
       } catch (err: any) {
@@ -224,16 +278,18 @@ export class WebLLMApi implements LLMApi {
       return true;
     }
 
-    // Compare optional fields
-    const optionalFields: (keyof LLMConfig)[] = [
-      "temperature",
-      "context_window_size",
-      "top_p",
-      "stream",
-      "presence_penalty",
-      "frequency_penalty",
-      "enable_thinking",
-    ];
+    // Only fields that change what's actually loaded into WebGPU belong
+    // here. temperature/top_p/presence_penalty/frequency_penalty/stream are
+    // per-request generation params (see LLMChatPipeline's genConfig,
+    // threaded through prefillStep/decodeStep on every call) and
+    // enable_thinking is applied per-request too, via chatCompletion's
+    // extra_body — none of them are baked into the loaded pipeline. Treating
+    // them as reload triggers used to mean any call whose `stream` differs
+    // from the previous one (every background eoRunBackground call is
+    // stream:false, immediately followed or preceded by the streaming main
+    // turn) forced a full unload()+reload() of the model — see MLCEngine's
+    // reload(), which unloads everything first — on nearly every turn.
+    const optionalFields: (keyof LLMConfig)[] = ["context_window_size"];
 
     for (const field of optionalFields) {
       if (
