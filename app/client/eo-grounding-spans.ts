@@ -235,3 +235,51 @@ export function buildGroundingSpans(
   }
   return spans;
 }
+
+/**
+ * Correct the merged index's over-crediting from a parallel report.
+ *
+ * `buildGroundingSpans` decides `state` against ONE union index built from
+ * every citation of every ground. That union can only ever over-credit: an
+ * atom carried by any single ground reads as backed, even when the ground the
+ * sentence is actually about does not carry it. It is the same merge
+ * `checkGroundsInParallel` exists to refuse, and until now the panel refused
+ * it while the chips underneath still performed it — the surface said "your
+ * grounds disagree" directly above a chip saying "sourced", about the same
+ * atom.
+ *
+ * This is not a patch over an average. The parallel report is strictly more
+ * informative than the merged one (the merge is a lossy function of it), so
+ * this restores information the merge destroyed rather than second-guessing
+ * it. Only `disagreements` can be over-credited this way: an atom absent from
+ * every ground is absent from the union too, so it was never sourced to begin
+ * with — which is why `unsupportedEverywhere` is deliberately not consulted
+ * here.
+ *
+ * A demoted span becomes `owned`, and drops its citation indexes: those
+ * point at the ground that DID carry the atom, and letting a chip open that
+ * passage would answer "is this backed?" with the one ground that happens to
+ * agree. The disagreement itself belongs to the panel (§4.7), which shows both
+ * columns; the chip's job is only to stop claiming confidence it lost.
+ *
+ * The demoted span keeps `originChannel` undefined, which is deliberate and
+ * should stay that way: it was graded `sourced`, so no origin was ever
+ * determined for it, and "plain, unattributed owned" is the honest default.
+ * Filling it in here would attribute an origin nobody measured.
+ *
+ * Pure and span-local — no ranking, no resolution, no preferred ground.
+ */
+export function demoteDisagreedSpans(
+  spans: GroundingSpan[],
+  disagreements: { start: number; end: number }[],
+): GroundingSpan[] {
+  if (!disagreements.length) return spans;
+  const split = new Set(disagreements.map((d) => `${d.start}:${d.end}`));
+  return spans.map((s) => {
+    if (!split.has(`${s.start}:${s.end}`)) return s;
+    // Only a state that CLAIMS backing can be over-credited. An atom already
+    // graded unsourced is not made worse by the grounds differing about it.
+    if (s.state !== "sourced" && s.state !== "echoed") return s;
+    return { ...s, state: "owned", supportingCitationIndexes: [] };
+  });
+}

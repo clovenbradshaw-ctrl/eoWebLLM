@@ -1630,6 +1630,179 @@ input.eot-graph-search {
   white-space: normal;
 }
 
+// The focus bar (FocusBar, chat.tsx) — sits directly above the composer,
+// because it describes what the NEXT message will be resolved against. Quiet
+// by design: it is standing state, not a finding, and the attention hierarchy
+// reserves loudness for disagreement.
+.focus-bar {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px 12px 6px;
+  font-size: 12px;
+  color: var(--light-gray);
+  min-width: 0;
+}
+
+.focus-bar-label {
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+
+.focus-bar-text {
+  color: var(--black);
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 42ch;
+}
+
+.focus-bar-pinned {
+  font-size: 10.5px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--eo-citey-soft);
+  color: var(--eo-citey);
+  flex-shrink: 0;
+}
+
+.focus-bar-action {
+  cursor: pointer;
+  text-decoration: underline dotted;
+  flex-shrink: 0;
+
+  &:hover {
+    color: var(--eo-citey);
+  }
+}
+
+.focus-bar-input {
+  flex: 1;
+  min-width: 12ch;
+  border: none;
+  border-bottom: 1px solid var(--eo-citey);
+  background: transparent;
+  color: var(--black);
+  font-size: 12px;
+  font-style: italic;
+  font-family: inherit;
+  outline: none;
+  padding: 1px 0;
+}
+
+// The grounds surface (GroundsPanel, terrain/grounds-panel.tsx). Deliberately
+// the LOUDEST thing attached to a message — filled, warm-bordered, above the
+// reply rather than below it. The attention hierarchy this sits at the top of
+// (docs/citey-fact-check-policy.md):
+//
+//   grounds disagree        <- here. filled, bordered, first.
+//   contradicted / bleed    <- chip + citey-note, warned
+//   void with a named scope <- here, quieter: outlined, not filled
+//   sourced / stated        <- chip only, quiet
+//   general                 <- chip only, nearly invisible
+//
+// The inversion is the point: today's convention makes citations loud and
+// disagreements invisible, which is backwards — a citation is the one thing
+// the reader could already check for themselves.
+.grounds-panel {
+  margin: 0 0 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.grounds-disagree {
+  padding: 8px 10px;
+  border: 1px solid var(--eo-warn);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: var(--eo-warn-soft);
+}
+
+.grounds-void {
+  padding: 8px 10px;
+  border: 1px dashed var(--border-in-light);
+  border-radius: 6px;
+}
+
+.grounds-heading {
+  font-weight: 600;
+  color: var(--eo-warn);
+  margin-bottom: 6px;
+  letter-spacing: 0.01em;
+}
+
+.grounds-void .grounds-heading {
+  color: var(--light-gray);
+  font-weight: 500;
+}
+
+.grounds-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 4px 0;
+
+  & + & {
+    border-top: 1px solid var(--border-in-light);
+  }
+}
+
+.grounds-atom {
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+  color: var(--black);
+  word-break: break-word;
+}
+
+// Side by side, never stacked into a verdict. Two columns that both stay
+// on screen is the whole design: the reader sees the split, not a summary.
+.grounds-sides {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
+.grounds-side {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.grounds-side-label {
+  color: var(--light-gray);
+  font-size: 11.5px;
+  text-transform: lowercase;
+}
+
+.grounds-side-names {
+  color: var(--black);
+}
+
+.grounds-void-atoms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.grounds-scope,
+.grounds-unexamined {
+  margin-top: 6px;
+  font-size: 11.5px;
+  font-style: italic;
+  color: var(--light-gray);
+}
+
+.grounds-unexamined {
+  margin-top: 0;
+}
+
 // Citey's inline note — appears once per message, only when there's an
 // unresolved span, teasing the full WarrantPanel trace below it rather
 // than duplicating it. Clickable, not a hover tooltip: the reasoning has

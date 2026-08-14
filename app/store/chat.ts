@@ -91,6 +91,7 @@ import {
 } from "../client/eo-citation-check";
 import {
   buildGroundingSpans,
+  demoteDisagreedSpans,
   type GroundingSpan,
 } from "../client/eo-grounding-spans";
 import {
@@ -446,6 +447,18 @@ export interface ChatSession {
    * steers retrieval and may never ground anything.
    */
   eoFocus?: string;
+
+  /**
+   * True when the reader typed the focus themselves rather than the System-2
+   * pass deriving it. A pinned focus is never overwritten by a derived one —
+   * II.2's giver test, applied to steering: what a reader placed there is
+   * testimony, and testimony outranks inference about testimony.
+   *
+   * This is the correction channel for eoFocus. Without it the focus is a
+   * thing done TO the reader, visible at best; with it, steering that has
+   * gone wrong is something they can take back.
+   */
+  eoFocusPinned?: boolean;
 
   // DISPLAY-ONLY toggle, deliberately not a computation toggle: checkGrounding
   // and the System 2 escalation it can trigger (chat.ts's onUserInput) run
@@ -3511,7 +3524,14 @@ export const useChatStore = createPersistStore(
                 if (sourceCits.length)
                   grounds.push({ name: "your sources", citations: sourceCits });
                 if (webCitations.length)
-                  grounds.push({ name: "the web", citations: webCitations });
+                  // The query travels with the ground so a void it produces
+                  // stays re-runnable: "not on the web" is only a finding if
+                  // the reader can see what was asked of the web.
+                  grounds.push({
+                    name: "the web",
+                    citations: webCitations,
+                    query: turnWebQuery || undefined,
+                  });
                 if (grounds.length) {
                   const parallel = checkGroundsInParallel(message, grounds, {
                     question: userContent.trim(),
@@ -3522,10 +3542,18 @@ export const useChatStore = createPersistStore(
                       "warrant",
                       `grounds disagree on "${d.text}" — carried by ${d.supportedBy.join(", ")}, absent from ${d.absentFrom.join(", ")}`,
                     );
-                  if (parallel.unsupportedEverywhere.length)
+                  // A void names its bound. Logging the count alone was the
+                  // unbounded version — a shrug, not an assertion (II.9).
+                  for (const v of parallel.unsupportedEverywhere)
                     get().pushEoLog(
                       "warrant",
-                      `${parallel.unsupportedEverywhere.length} claim(s) carried by no ground that was checked`,
+                      `void: "${v.text}" not found in ${parallel.grounds
+                        .filter((g) => g.examined)
+                        .map(
+                          (g) =>
+                            `${g.name} (${g.sourceIds.length} source(s)${g.query ? `, query "${g.query}"` : ""})`,
+                        )
+                        .join(" or ")}`,
                     );
                 }
               }
@@ -3745,9 +3773,19 @@ export const useChatStore = createPersistStore(
                 if (focus.length) {
                   const line = focus.join(" ");
                   get().updateCurrentSession((session) => {
+                    // A focus the reader set themselves is a GIVEN, and a
+                    // derived one must never quietly overwrite it (II.2 — the
+                    // giver test: placement knowledge is received, not
+                    // derived). The reader can unpin to hand steering back.
+                    if (session.eoFocusPinned) return;
                     session.eoFocus = line;
                   });
-                  get().pushEoLog("web", `in focus: ${line}`);
+                  get().pushEoLog(
+                    "web",
+                    get().currentSession().eoFocusPinned
+                      ? `in focus: ${get().currentSession().eoFocus} (pinned by you — derived "${line}" not applied)`
+                      : `in focus: ${line}`,
+                  );
                 }
               } catch {
                 // keep whatever focus the previous turn left
@@ -3768,6 +3806,17 @@ export const useChatStore = createPersistStore(
                 hypergraphText: hypergraphThoughtText || undefined,
                 externalRequired: demand.required,
               });
+              // ...then un-merge what that union index over-credited. The
+              // spans above are graded against every ground at once, so an
+              // atom only ONE ground carries reads as sourced — the same
+              // merge checkGroundsInParallel exists to refuse. Without this
+              // the panel says "your grounds disagree" directly above a chip
+              // saying "sourced", about the same atom (II.8, §4.7).
+              if (botMessage.groundsReport?.disagreements.length)
+                botMessage.groundingSpans = demoteDisagreedSpans(
+                  botMessage.groundingSpans,
+                  botMessage.groundsReport.disagreements,
+                );
               botMessage.groundingCitations = allCitations;
               botMessage.content = message;
 
