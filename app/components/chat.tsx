@@ -1590,7 +1590,12 @@ function ChatInner() {
 
   // chat commands shortcuts
   const chatCommands = useChatCommand({
-    new: () => chatStore.newSession(),
+    new: () =>
+      // Same rule as the sidebar's New-chat button: a fresh conversation
+      // stays inside the current project, or the sidebar's project filter
+      // would hide it. newSession resolves the id, so a dangling
+      // currentProjectId can't leak onto the session.
+      chatStore.newSession(undefined, chatStore.currentProjectId ?? undefined),
     prev: () => chatStore.nextSession(-1),
     next: () => chatStore.nextSession(1),
     clear: () =>
@@ -2404,6 +2409,17 @@ function ChatInner() {
                           chatStore.updateCurrentSession((s) => {
                             s.projectId = nextId;
                           });
+                          // Keep "which project we're in" tracking the
+                          // session (see currentProjectId in store/chat.ts)
+                          // -- the sidebar filters its chat list on it, so
+                          // reassigning this chat must not leave the filter
+                          // pointing at a project this chat just left.
+                          chatStore.setCurrentProjectId(
+                            nextId &&
+                              chatStore.projects.some((p) => p.id === nextId)
+                              ? nextId
+                              : null,
+                          );
                         }}
                       >
                         <option value="">No project</option>

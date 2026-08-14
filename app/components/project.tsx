@@ -32,7 +32,9 @@ export function ProjectPage() {
     return (
       <div className={styles["project-page"]}>
         <div className={styles["project-chats-empty"]}>
-          This project no longer exists.
+          {chatStore.currentProjectId
+            ? "This project no longer exists."
+            : "Select a project to view it."}
         </div>
       </div>
     );

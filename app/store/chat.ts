@@ -1733,14 +1733,28 @@ function fillTemplateWith(input: string, modelConfig: ConfigType) {
   return output;
 }
 
+// A session may still carry the id of a project that was later deleted (see
+// deleteProject -- sessions keep their projectId so ungrouped sessions behave
+// like they always did). Anything that picks the "current" project must not
+// resolve such a dangling id, or a deleted project's leftover tag would take
+// over the sidebar filter and project header.
+function resolveProjectId(
+  projectId: string | undefined,
+  projects: Project[],
+): string | undefined {
+  if (!projectId) return undefined;
+  return projects.some((p) => p.id === projectId) ? projectId : undefined;
+}
+
 const DEFAULT_CHAT_STATE = {
   sessions: [createEmptySession()],
   currentSessionIndex: 0,
   projects: [] as Project[],
-  // Which project the Project page (project.tsx) is showing, if any --
-  // this app has no per-entity URLs (Chat itself is just "whatever
-  // currentSessionIndex points at"), so this is the same store-driven
-  // navigation pattern applied to a project instead of a session.
+  // The project this app is currently "in" -- either the one the Project
+  // page (project.tsx) was opened for, or the project of whichever session
+  // is currently selected (see selectSession/newSession: currentProjectId
+  // tracks the current session, so "in a project" and "viewing one of its
+  // chats" are the same fact). null means general/unprojected chats.
   currentProjectId: null as string | null,
 };
 
@@ -1759,12 +1773,20 @@ export const useChatStore = createPersistStore(
         set(() => ({
           sessions: [createEmptySession()],
           currentSessionIndex: 0,
+          currentProjectId: null,
         }));
       },
 
       selectSession(index: number) {
+        const session = get().sessions[index];
         set({
           currentSessionIndex: index,
+          // "Which project are we in" follows the session you land on (see
+          // the currentProjectId comment on DEFAULT_CHAT_STATE) -- the
+          // sidebar filters its chat list on this, so navigating between
+          // sessions must keep it pointing at the newly-selected one.
+          currentProjectId:
+            resolveProjectId(session?.projectId, get().projects) ?? null,
         });
       },
 
@@ -1802,11 +1824,19 @@ export const useChatStore = createPersistStore(
           };
           session.topic = template.name;
         }
-        if (projectId) session.projectId = projectId;
+        // Resolve before stamping: a caller that hands over a dangling
+        // projectId (its project was deleted) must not permanently tag the
+        // fresh session with a dead id -- that would silently strand its EOT
+        // log and hypergraph scope under a project that no longer exists.
+        const resolvedProjectId = resolveProjectId(projectId, get().projects);
+        if (resolvedProjectId) session.projectId = resolvedProjectId;
 
         set((state) => ({
           currentSessionIndex: 0,
           sessions: [session].concat(state.sessions),
+          // A fresh session is the session you're now "in", so the current
+          // project follows it too -- same rule as selectSession.
+          currentProjectId: resolvedProjectId ?? null,
         }));
       },
 
@@ -1842,10 +1872,14 @@ export const useChatStore = createPersistStore(
       // deleted, the same way eochat leaves a conversation's spaceId alone
       // on project delete -- they just fall back to behaving like any other
       // ungrouped session (see projectSources: a dangling id simply never
-      // matches a project again).
+      // matches a project again). But the store's own "current project"
+      // navigation state is not a session: deleting the project we're in
+      // puts us back in general chats, not stranded on a dead id.
       deleteProject(id: string) {
         set((state) => ({
           projects: state.projects.filter((p) => p.id !== id),
+          currentProjectId:
+            state.currentProjectId === id ? null : state.currentProjectId,
         }));
       },
 
@@ -1880,11 +1914,18 @@ export const useChatStore = createPersistStore(
         const restoreState = {
           currentSessionIndex: get().currentSessionIndex,
           sessions: get().sessions.slice(),
+          currentProjectId: get().currentProjectId,
         };
 
+        const nextSession = sessions[nextIndex];
         set(() => ({
           currentSessionIndex: nextIndex,
           sessions,
+          // Deletion moves the current session, so the current project moves
+          // with it -- otherwise the sidebar would keep showing a project
+          // whose current chat just vanished.
+          currentProjectId:
+            resolveProjectId(nextSession?.projectId, get().projects) ?? null,
         }));
 
         showToast(
@@ -1905,7 +1946,12 @@ export const useChatStore = createPersistStore(
 
         if (index < 0 || index >= sessions.length) {
           index = Math.min(sessions.length - 1, Math.max(0, index));
-          set(() => ({ currentSessionIndex: index }));
+          const session = sessions[index];
+          set(() => ({
+            currentSessionIndex: index,
+            currentProjectId:
+              resolveProjectId(session?.projectId, get().projects) ?? null,
+          }));
         }
 
         const session = sessions[index];

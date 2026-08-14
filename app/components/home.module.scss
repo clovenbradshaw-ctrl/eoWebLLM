@@ -190,6 +190,32 @@
   }
 }
 
+// The project the sidebar is currently "in" (see currentProjectId in
+// store/chat.ts) -- the only project row that picks up any weight, so a
+// glance at this panel says which project's chats the list below shows.
+.projects-panel-item-active {
+  background-color: var(--hover-color);
+
+  .projects-panel-item-icon {
+    opacity: 1;
+    color: var(--primary);
+  }
+
+  .projects-panel-item-name {
+    color: var(--primary);
+  }
+}
+
+// The "you are here" marker on the active project row.
+.projects-panel-item-dot {
+  flex-shrink: 0;
+  align-self: center;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: var(--primary);
+}
+
 .projects-panel-item-main {
   display: flex;
   align-items: baseline;
@@ -308,6 +334,71 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+// The "chats shown below are <project>'s" bar at the top of the filtered
+// session list (chat-list.tsx). Only renders while a project is active, so
+// the general view stays exactly as decluttered as before.
+.chat-list-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 10px;
+  margin-bottom: 10px;
+  border-radius: 8px;
+  background-color: var(--hover-color);
+  font-size: 12px;
+  color: var(--light-gray);
+}
+
+.chat-list-context-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  cursor: pointer;
+  color: var(--black);
+  font-weight: 600;
+
+  svg {
+    flex-shrink: 0;
+    color: var(--primary);
+  }
+
+  &:hover .chat-list-context-name {
+    color: var(--primary);
+  }
+}
+
+.chat-list-context-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-list-context-count {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--light-gray);
+  font-family: var(--font-plex-mono), "SF Mono", "Fira Code", Consolas, Menlo, monospace;
+}
+
+.chat-list-context-exit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  flex-shrink: 0;
+  color: var(--light-gray);
+  cursor: pointer;
+
+  &:hover {
+    background-color: var(--white);
+    color: var(--black);
+  }
 }
 
 .narrow-sidebar {
