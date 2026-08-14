@@ -318,6 +318,23 @@ guarded by a test rather than left to whoever edits it next:
    checked" are different facts, and a ground nobody looked in is not a place
    the thing was *not found*.
 
+**The chips must not contradict the panel.** `buildGroundingSpans` grades every
+atom against ONE union index built from every ground, so an atom carried by a
+single ground reads as `sourced` — and the panel above it, built from the
+parallel report, says the grounds disagree about that same atom. Two surfaces,
+one message, opposite claims. `demoteDisagreedSpans` un-merges the chips after
+they are built: a disagreed atom drops to `unconfirmed` and loses its citation
+indexes, because those point at the ground that *did* carry it, and letting the
+chip open that passage answers *"is this backed?"* with the one ground that
+happens to agree.
+
+This is not a patch over an average. The parallel report is strictly more
+informative than the merged one — the merge is a lossy function of it — so the
+demotion restores information the merge destroyed. And only `disagreements` can
+be over-credited this way: an atom absent from every ground is absent from the
+union too, so it was never `sourced` to begin with, which is why
+`unsupportedEverywhere` is deliberately not consulted.
+
 **The steering channel is visible and correctable.** `session.eoFocus` decides
 what a referential message (*"prove it"*, *"find examples of that"*, 「証明して」)
 gets resolved against before anything is searched. It was derived silently and
@@ -345,6 +362,7 @@ see and cannot leave.
 | the grounds-disagreement surface (`GroundsPanel`) | **ships** — §4.7 |
 | void scope by identifier + query | **ships** |
 | focus visible and pinnable (`FocusBar`) | **ships** |
+| chips un-merged to agree with the panel (`demoteDisagreedSpans`) | **ships** |
 | a **relations lens** so readings hold propositions | **not declared** — the real work |
 | `checkConsistency` in the grounding path | **built, unwired** |
 

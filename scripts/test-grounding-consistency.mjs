@@ -648,3 +648,109 @@ test("the grounds panel never collapses a disagreement into one statement", () =
       `grounds-panel.tsx must not ${forbidden} — that ranks, truncates or scores a disagreement`,
     );
 });
+
+// ── The panel and the chips must not contradict each other ────────────────
+//
+// The last place the merge survived. buildGroundingSpans grades against ONE
+// union index across every ground, so an atom carried by a single ground
+// reads as `sourced` — and the panel above it, built from the parallel
+// report, simultaneously says the grounds disagree about that same atom.
+// Two surfaces, one message, opposite claims.
+
+test("an atom the grounds disagree about is not left rendering as sourced", async () => {
+  const { checkGroundsInParallel } = await import(
+    "../app/client/eo-citation-check.ts"
+  );
+  const { buildGroundingSpans, demoteDisagreedSpans } = await import(
+    "../app/client/eo-grounding-spans.ts"
+  );
+
+  const yours = {
+    name: "your sources",
+    citations: [
+      { index: 1, source_id: "budget.pdf#0-90", text: "The department received 1022900000 for fiscal year 2031." },
+    ],
+  };
+  const web = {
+    name: "the web",
+    citations: [
+      { index: 2, source_id: "https://x/wiki", text: "An article mentioning 1136000000 in another context." },
+    ],
+  };
+  const claim = "Your document states the budget is 1136000000 for fiscal year 2031.";
+  const all = [...yours.citations, ...web.citations];
+
+  // Precondition — the merged grading over-credits, which is the whole bug.
+  const merged = buildGroundingSpans(claim, { citations: all });
+  const before = merged.find((s) => s.text === "1136000000");
+  assert.equal(
+    before.state,
+    "sourced",
+    "precondition: the union index credits an atom only one ground carries",
+  );
+
+  const report = checkGroundsInParallel(claim, [yours, web]);
+  const after = demoteDisagreedSpans(merged, report.disagreements).find(
+    (s) => s.text === "1136000000",
+  );
+  assert.equal(after.state, "unconfirmed", "a disagreed atom must stop claiming backing");
+  assert.deepEqual(
+    after.supportingCitationIndexes,
+    [],
+    "and must not offer the one ground that happens to agree as its citation",
+  );
+
+  // The coherence property, stated directly: nothing the panel reports as a
+  // disagreement may still be rendered by a chip as backed.
+  const spans = demoteDisagreedSpans(merged, report.disagreements);
+  for (const d of report.disagreements) {
+    const span = spans.find((s) => s.start === d.start && s.end === d.end);
+    if (!span) continue;
+    assert.ok(
+      span.state !== "sourced" && span.state !== "echoed",
+      `"${d.text}" is shown as a disagreement and graded ${span.state}`,
+    );
+  }
+});
+
+test("demotion touches only the disagreed spans, and only claiming states", async () => {
+  const { demoteDisagreedSpans } = await import(
+    "../app/client/eo-grounding-spans.ts"
+  );
+  const spans = [
+    { start: 0, end: 5, text: "a", atomKind: "name", state: "sourced", supportingCitationIndexes: [1] },
+    { start: 10, end: 15, text: "b", atomKind: "name", state: "sourced", supportingCitationIndexes: [2] },
+    { start: 20, end: 25, text: "c", atomKind: "number", state: "checking", supportingCitationIndexes: [] },
+  ];
+  const out = demoteDisagreedSpans(spans, [
+    { start: 10, end: 15 },
+    { start: 20, end: 25 },
+  ]);
+
+  assert.equal(out[0].state, "sourced", "an undisputed span is untouched");
+  assert.deepEqual(out[0].supportingCitationIndexes, [1], "and keeps its citation");
+  assert.equal(out[1].state, "unconfirmed", "the disputed span is demoted");
+  // An already-unsourced state is not made worse by the grounds differing:
+  // "checking" says a resolve pass is still owed, and overwriting it would
+  // silently cancel that pass.
+  assert.equal(out[2].state, "checking", "an unsourced state is left alone");
+});
+
+test("with no disagreements, demotion is identity", async () => {
+  const { demoteDisagreedSpans } = await import(
+    "../app/client/eo-grounding-spans.ts"
+  );
+  const spans = [
+    { start: 0, end: 5, text: "a", atomKind: "name", state: "sourced", supportingCitationIndexes: [1] },
+  ];
+  assert.equal(demoteDisagreedSpans(spans, []), spans, "the same array, not a copy");
+});
+
+test("drift guard: chat.ts still un-merges the chips after building them", () => {
+  const src = readSrc("app/store/chat.ts");
+  const build = src.indexOf("botMessage.groundingSpans = buildGroundingSpans(message,");
+  const demote = src.indexOf("demoteDisagreedSpans(", build);
+  const commit = src.indexOf("botMessage.groundingCitations = allCitations;", build);
+  assert.ok(build > -1 && demote > build, "the finalize pass no longer demotes disagreed spans");
+  assert.ok(demote < commit, "demotion must happen before the spans are committed to the message");
+});

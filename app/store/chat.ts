@@ -91,6 +91,7 @@ import {
 } from "../client/eo-citation-check";
 import {
   buildGroundingSpans,
+  demoteDisagreedSpans,
   type GroundingSpan,
 } from "../client/eo-grounding-spans";
 import {
@@ -3704,6 +3705,17 @@ export const useChatStore = createPersistStore(
                 citations: allCitations,
                 question: userContent.trim(),
               });
+              // ...then un-merge what that union index over-credited. The
+              // spans above are graded against every ground at once, so an
+              // atom only ONE ground carries reads as sourced — the same
+              // merge checkGroundsInParallel exists to refuse. Without this
+              // the panel says "your grounds disagree" directly above a chip
+              // saying "sourced", about the same atom (II.8, §4.7).
+              if (botMessage.groundsReport?.disagreements.length)
+                botMessage.groundingSpans = demoteDisagreedSpans(
+                  botMessage.groundingSpans,
+                  botMessage.groundsReport.disagreements,
+                );
               botMessage.groundingCitations = allCitations;
               botMessage.content = message;
 
