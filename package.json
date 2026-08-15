@@ -23,7 +23,7 @@
     "@mlc-ai/web-llm": "^0.2.81",
     "@phosphor-icons/react": "^2.1.7",
     "@serwist/next": "^9.0.2",
-    "@svgr/webpack": "^6.5.1",
+    "@svgr/webpack": "^8.1.0",
     "@types/d3-force": "^3.0.10",
     "@types/mdast": "^4.0.4",
     "buffer": "^6.0.3",
