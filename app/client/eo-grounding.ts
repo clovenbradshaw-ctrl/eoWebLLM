@@ -1,20 +1,20 @@
-// eo-warrant.ts — what a claim is allowed to rest on this turn, decided
+// eo-grounding.ts — what a claim is allowed to rest on this turn, decided
 // mechanically, before any model is asked anything.
 //
 // The question this module answers is not "is this a hard question?" It is
-// "where would the warrant for an answer have to come from?" Those are
+// "where would the grounding for an answer have to come from?" Those are
 // different questions and only the second one is decidable without a model.
 //
 // A turn assembles material from several channels — the reader's own source
 // bytes, a web fetch, an uploaded file, the verbatim desk of stated facts,
 // the folded PAST DISCOURSE paraphrase, the instruction folds in force — and
-// each channel carries a different kind of warrant. Reader bytes can back a
+// each channel offers a different kind of grounding. Reader bytes can back a
 // factual claim and can be checked byte for byte. A 100-character paraphrase
 // of a turn from twenty exchanges ago cannot back anything: its source is
 // gone, so a claim resting on it is indistinguishable from a claim resting on
 // nothing. The model's own weights can answer plenty on their own, but only
 // when nothing external was in play — the moment a reader hands over a
-// document, "from general knowledge" stops being an acceptable warrant for a
+// document, "from general knowledge" stops being acceptable grounding for a
 // claim about that document.
 //
 // So the grounding trigger is not the shape of the question. It is the
@@ -32,15 +32,15 @@
 //
 // This module deliberately has no value imports. It is pure policy over plain
 // numbers, which is what makes it runnable under `node --test` (see
-// scripts/test-warrant.mjs) and auditable without booting a browser.
+// scripts/test-grounding.mjs) and auditable without booting a browser.
 
 import type { ThinkingSystem } from "./eo-task-plan";
 
 export type { ThinkingSystem };
 
-// ── Channels and what each one can warrant ────────────────────────────────
+// ── Channels and what each one can ground ─────────────────────────────────
 
-export type WarrantChannel =
+export type GroundingChannel =
   | "corpus" // the reader's own source bytes, held in OPFS, byte-addressed
   | "web" // snippets fetched this turn
   | "file" // a one-shot uploaded file's structure block
@@ -52,7 +52,7 @@ export type WarrantChannel =
   | "priors" // a measured background register (eo-priors.ts) that may only re-parameterize the corpus channel's own search — never shown as content, never a source
   | "internal"; // the model's own weights
 
-export type WarrantKind =
+export type GroundingKind =
   | "external" // bytes that exist outside the model and can be re-read
   | "conversational" // what was actually said, held verbatim
   | "paraphrase" // a lossy fold whose source is not in the prompt
@@ -60,58 +60,58 @@ export type WarrantKind =
   | "steering" // adjusts another channel's own hyperparameters; carries no fact and is never shown as content
   | "internal"; // the model's own knowledge
 
-export interface ChannelWarrant {
-  kind: WarrantKind;
+export interface ChannelGrounding {
+  kind: GroundingKind;
   /** May a factual claim rest on this channel alone? */
-  canWarrant: boolean;
+  canGround: boolean;
   /** Must a claim drawn from this channel be checked against surfaced bytes? */
   demandsCheck: boolean;
   /** The sentence handed to the model when this channel is in play. */
   rule: string;
 }
 
-// The one place the warrant rules are written down. A channel added later
-// declares its warrant here rather than growing a special case at a call site.
-export const CHANNEL_WARRANT: Record<WarrantChannel, ChannelWarrant> = {
+// The one place the grounding rules are written down. A channel added later
+// declares its grounding here rather than growing a special case at a call site.
+export const CHANNEL_GROUNDING: Record<GroundingChannel, ChannelGrounding> = {
   corpus: {
     kind: "external",
-    canWarrant: true,
+    canGround: true,
     demandsCheck: true,
     rule: "Reader source passages are surfaced with their file name and byte range. A claim about what a source says must be traceable to a passage surfaced here; name the source when you make one.",
   },
   web: {
     kind: "external",
-    canWarrant: true,
+    canGround: true,
     demandsCheck: true,
     rule: "Web material surfaced this turn can back a claim about the world outside this conversation. A specific figure or proper name you state must appear in what was actually fetched.",
   },
   file: {
     kind: "external",
-    canWarrant: true,
+    canGround: true,
     demandsCheck: true,
     rule: "An uploaded file's structure was read mechanically. Claims about the file must stay inside what that reading actually reports.",
   },
   desk: {
     kind: "conversational",
-    canWarrant: true,
+    canGround: true,
     demandsCheck: true,
     rule: "The desk holds, word for word, facts the reader already stated. It settles what was said. Never deny or contradict something recorded there.",
   },
   discourse: {
     kind: "paraphrase",
-    canWarrant: false,
+    canGround: false,
     demandsCheck: true,
     rule: "PAST DISCOURSE is a short paraphrase of earlier turns, not a record of them. It can remind you what the thread is about. It can never be the evidence for a factual claim: if a claim needs an earlier turn, say that you would need to check it rather than reconstructing it from the summary.",
   },
   rules: {
     kind: "normative",
-    canWarrant: false,
+    canGround: false,
     demandsCheck: false,
     rule: "The rules in force govern how you answer. They are not evidence about the world and never supply a fact.",
   },
   hypergraph: {
     kind: "paraphrase",
-    canWarrant: false,
+    canGround: false,
     demandsCheck: true,
     rule: "A HYPERGRAPH THOUGHT is a background model's own synthesis over entities and relations gathered from this conversation and its sources — not a quotation of anything. It can orient you toward what is connected to what. It can never be the evidence for a factual claim: if a claim needs a source, point to the actual passage, not to the thought.",
   },
@@ -122,7 +122,7 @@ export const CHANNEL_WARRANT: Record<WarrantChannel, ChannelWarrant> = {
     // examples of that", 「証明して」, «докажи это» — and the subject those
     // refer to lives in the thread, not in the sentence.
     //
-    // Its warrant is the weakest kind on purpose. It is a paraphrase of the
+    // Its grounding is the weakest kind on purpose. It is a paraphrase of the
     // thread, one interpretive step from anything anyone actually said, and it
     // is maintained by a model rather than quoted from a source — so it has
     // exactly the standing `hypergraph` has and for the same reason. It steers
@@ -135,7 +135,7 @@ export const CHANNEL_WARRANT: Record<WarrantChannel, ChannelWarrant> = {
     // reader can correct, and a wrong one that steers silently is the failure
     // this channel exists to make visible.
     kind: "paraphrase",
-    canWarrant: false,
+    canGround: false,
     demandsCheck: true,
     rule: "IN FOCUS names what this conversation has been about, carried forward from earlier turns so a message that names no subject still has one. It orients retrieval and nothing else. It is a running summary, not a record of what was said: never cite it, never treat it as having established a fact, and if a claim needs what it refers to, go to the passage rather than to this line.",
   },
@@ -144,27 +144,27 @@ export const CHANNEL_WARRANT: Record<WarrantChannel, ChannelWarrant> = {
     // weakness than focus's or discourse's: those two are paraphrases the
     // model actually reads and must be warned off citing. Priors is never
     // read at all — see eo-priors.ts — so its rule exists for the audit
-    // trail (warrantLogLine, buildWarrantBlock) rather than for the model,
+    // trail (groundingLogLine, buildGroundingBlock) rather than for the model,
     // which has nothing here to be tempted to quote.
     kind: "steering",
-    canWarrant: false,
+    canGround: false,
     demandsCheck: false,
     rule: "PRIORS is a measured background register (eo-priors.ts) that is never surfaced to you as content this turn. Its only effect is to widen or narrow how many passages the corpus channel keeps, decided before you see anything. It has no content to cite, was not consulted about this question's substance, and can never be named as where a fact came from.",
   },
   internal: {
     kind: "internal",
-    canWarrant: true,
+    canGround: true,
     demandsCheck: false,
     rule: "General knowledge of your own is a legitimate answer when nothing external bears on the question — say plainly that it is general knowledge rather than implying it came from something surfaced here.",
   },
 };
 
-export const EXTERNAL_CHANNELS: WarrantChannel[] = ["corpus", "web", "file"];
+export const EXTERNAL_CHANNELS: GroundingChannel[] = ["corpus", "web", "file"];
 
 // ── The fold ledger ───────────────────────────────────────────────────────
 
 export interface ChannelLedger {
-  channel: WarrantChannel;
+  channel: GroundingChannel;
   /** Units of material this channel holds that bear on this turn. */
   present: number;
   /** Units handed to the model verbatim this turn. */
@@ -246,7 +246,7 @@ export interface LedgerInputs {
 }
 
 function channel(
-  ch: WarrantChannel,
+  ch: GroundingChannel,
   counts: {
     present: number;
     surfaced: number;
@@ -387,7 +387,7 @@ export function buildFoldLedger(inputs: LedgerInputs): FoldLedger {
   if (priors) {
     // present:1/surfaced:0, always — unlike corpus/web/file, priors is a
     // standing background register, not per-turn material, and it is never
-    // handed to the model as text (see CHANNEL_WARRANT.priors above). The
+    // handed to the model as text (see CHANNEL_GROUNDING.priors above). The
     // interesting number here is stacksFound, carried in the note for the
     // audit log, not in surfaced/present (which would wrongly imply this
     // channel has content that could have been shown and wasn't).
@@ -443,7 +443,7 @@ export function buildFoldLedger(inputs: LedgerInputs): FoldLedger {
 
 export function channelOf(
   ledger: FoldLedger,
-  ch: WarrantChannel,
+  ch: GroundingChannel,
 ): ChannelLedger | null {
   return ledger.channels.find((c) => c.channel === ch) ?? null;
 }
@@ -463,19 +463,19 @@ export function lostPressure(ledger: FoldLedger): number {
 // ── The grounding demand ──────────────────────────────────────────────────
 
 export interface GroundingDemand {
-  /** Does any claim this turn need a warrant beyond the model's own word? */
+  /** Does any claim this turn need grounding beyond the model's own word? */
   required: boolean;
   /** Channels a claim must be checkable against. */
-  check: WarrantChannel[];
+  check: GroundingChannel[];
   /** Channels whose folded material must be re-opened before a claim rests on it. */
-  mustUnfold: WarrantChannel[];
+  mustUnfold: GroundingChannel[];
   /** Channels that may never carry a factual claim on their own. */
-  forbidden: WarrantChannel[];
+  forbidden: GroundingChannel[];
   reasons: string[];
   /**
    * True when the demand was raised because provenance could NOT be
    * established, rather than because a specific channel was in play. An
-   * unknown warrant is treated as a missing one — the same fail-toward-work
+   * unknown ground is treated as a missing one — the same fail-toward-work
    * discipline the tool router uses for an unparseable verdict.
    */
   byDefault: boolean;
@@ -492,9 +492,9 @@ export interface GroundingDemand {
  * turn actually got to see it.
  */
 export function groundingDemand(ledger: FoldLedger): GroundingDemand {
-  const check = new Set<WarrantChannel>();
-  const mustUnfold = new Set<WarrantChannel>();
-  const forbidden = new Set<WarrantChannel>();
+  const check = new Set<GroundingChannel>();
+  const mustUnfold = new Set<GroundingChannel>();
+  const forbidden = new Set<GroundingChannel>();
   const reasons: string[] = [];
   let byDefault = false;
 
@@ -545,9 +545,9 @@ export function groundingDemand(ledger: FoldLedger): GroundingDemand {
 
   const discourse = channelOf(ledger, "discourse");
   if (discourse && discourse.foldedNamed + discourse.foldedLost > 0) {
-    // A paraphrase can never warrant. This is the sharpest rule here and the
-    // one the rest of the system leans on: it is what stops a claim from being
-    // reconstructed out of a summary of a summary.
+    // A paraphrase can never ground a claim. This is the sharpest rule here
+    // and the one the rest of the system leans on: it is what stops a claim
+    // from being reconstructed out of a summary of a summary.
     forbidden.add("discourse");
     if (discourse.foldedLost > 0) {
       mustUnfold.add("discourse");
@@ -565,9 +565,9 @@ export function groundingDemand(ledger: FoldLedger): GroundingDemand {
   const hypergraph = channelOf(ledger, "hypergraph");
   if (hypergraph && hypergraph.surfaced > 0) {
     // A drafted thought is a paraphrase of structure, same standing as
-    // discourse's own paraphrase of turns: it can orient, it cannot warrant,
-    // and it is IN the prompt this turn, so it must be named forbidden, not
-    // merely left uncounted.
+    // discourse's own paraphrase of turns: it can orient, it cannot ground a
+    // claim, and it is IN the prompt this turn, so it must be named
+    // forbidden, not merely left uncounted.
     forbidden.add("hypergraph");
     reasons.push(
       `hypergraph: ${hypergraph.surfaced} relation(s) synthesized into a thought — orientation only, never evidence`,
@@ -578,10 +578,11 @@ export function groundingDemand(ledger: FoldLedger): GroundingDemand {
   if (priors) {
     // Declared forbidden even though it is never surfaced as content (so
     // never at risk of being quoted) — this keeps the "which channels may
-    // never warrant" set complete by construction rather than complete by
-    // omission, and it is what CHANNEL_WARRANT.priors.canWarrant === false
-    // is actually enforcing here. Consulting it never raises `required` on
-    // its own: it did not withhold anything from this turn to unfold.
+    // never ground a claim" set complete by construction rather than
+    // complete by omission, and it is what
+    // CHANNEL_GROUNDING.priors.canGround === false is actually enforcing
+    // here. Consulting it never raises `required` on its own: it did not
+    // withhold anything from this turn to unfold.
     forbidden.add("priors");
     reasons.push(
       `priors: consulted to set the corpus channel's own hyperparameters only — never evidence, never surfaced`,
@@ -691,8 +692,8 @@ export function routeTurn(
  * going in — no sources, no search, an ordinary question — and come back with
  * an answer full of specific figures and proper names. Those are checkable
  * claims, and if nothing in this turn could have supported them, the fast
- * answer just asserted things on no warrant at all. Kahneman's System 2 is
- * exactly this: the check that reads what System 1 produced and decides
+ * answer just asserted things with no grounding at all. Kahneman's System 2
+ * is exactly this: the check that reads what System 1 produced and decides
  * whether to take it.
  *
  * `claimAtoms` is the mechanical count of checkable atoms in the draft (see
@@ -716,7 +717,7 @@ export function reviewDraft(input: {
 
   if (claimAtoms > 0 && demand.forbidden.length)
     reasons.push(
-      `the draft makes ${claimAtoms} checkable claim(s) while ${demand.forbidden.join(", ")} is the only carrier of the earlier thread — a paraphrase cannot warrant them`,
+      `the draft makes ${claimAtoms} checkable claim(s) while ${demand.forbidden.join(", ")} is the only carrier of the earlier thread — a paraphrase cannot ground them`,
     );
 
   if (claimAtoms > 0 && ledger.foldedLost > 0)
@@ -735,7 +736,7 @@ export function reviewDraft(input: {
  *
  * This is not a convention bolted on. A turn emits a second message only
  * because it found something the first one could not hold — a live alternative
- * reading, a claim needing its own separate warrant, a correction of its own
+ * reading, a claim needing its own separate grounding, a correction of its own
  * first pass. Those are the same conditions routeTurn and reviewDraft test
  * for, read off the output side instead of the input side. So the count is not
  * evidence ABOUT the route; at two or more it IS the route.
@@ -785,30 +786,30 @@ export function escalate(
 
 // ── The block the model actually receives ─────────────────────────────────
 
-const WARRANT_HEADER = "===== WHAT CAN CARRY A CLAIM THIS TURN =====";
-const WARRANT_FOOTER = "===== END WARRANT =====";
+const GROUNDING_HEADER = "===== WHAT CAN GROUND A CLAIM THIS TURN =====";
+const GROUNDING_FOOTER = "===== END GROUNDING =====";
 
 /**
- * Render the ledger as the turn's warrant block. This goes in with the System
- * 1 prompt — it is cheap, it costs no model call, and it is the difference
- * between a model that knows a paraphrase is not evidence and one that does
- * not.
+ * Render the ledger as the turn's grounding block. This goes in with the
+ * System 1 prompt — it is cheap, it costs no model call, and it is the
+ * difference between a model that knows a paraphrase is not evidence and one
+ * that does not.
  */
-export function buildWarrantBlock(
+export function buildGroundingBlock(
   ledger: FoldLedger,
   demand: GroundingDemand,
 ): string | null {
   if (!ledger.channels.length) return null;
-  const lines: string[] = [WARRANT_HEADER];
+  const lines: string[] = [GROUNDING_HEADER];
 
   for (const c of ledger.channels) {
-    const w = CHANNEL_WARRANT[c.channel];
-    lines.push(`\n[${c.channel}] ${c.note}\n${w.rule}`);
+    const g = CHANNEL_GROUNDING[c.channel];
+    lines.push(`\n[${c.channel}] ${c.note}\n${g.rule}`);
   }
 
   if (demand.forbidden.length) {
     lines.push(
-      `\nNot warrant this turn: ${demand.forbidden.join(", ")}. Material from these channels can orient you and can never be the grounds for a factual claim.`,
+      `\nCannot ground a claim this turn: ${demand.forbidden.join(", ")}. Material from these channels can orient you and can never be the grounds for a factual claim.`,
     );
   }
 
@@ -826,12 +827,12 @@ export function buildWarrantBlock(
     );
   }
 
-  lines.push(WARRANT_FOOTER);
+  lines.push(GROUNDING_FOOTER);
   return lines.join("\n");
 }
 
 /** One line for the EOT log — the whole decision, auditable at a glance. */
-export function warrantLogLine(
+export function groundingLogLine(
   ledger: FoldLedger,
   demand: GroundingDemand,
   turnRoute: TurnRoute,
@@ -839,7 +840,7 @@ export function warrantLogLine(
   const pressure = Math.round(foldPressure(ledger) * 100);
   const lost = Math.round(lostPressure(ledger) * 100);
   return (
-    `warrant: ${turnRoute.system} (${turnRoute.mechanical ? "mechanical" : "model-raised"}, ${turnRoute.stage}) — ` +
+    `grounding: ${turnRoute.system} (${turnRoute.mechanical ? "mechanical" : "model-raised"}, ${turnRoute.stage}) — ` +
     `${ledger.surfaced}/${ledger.present} surfaced, fold pressure ${pressure}%, lost ${lost}%; ` +
     `grounding ${demand.required ? "required" : "not required"}` +
     (demand.check.length ? ` against ${demand.check.join(", ")}` : "") +
