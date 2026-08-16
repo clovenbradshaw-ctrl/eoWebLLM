@@ -915,7 +915,7 @@
 .eot-entry-file {
   color: #f2cc60;
 }
-.eot-entry-warrant {
+.eot-entry-grounding {
   color: #ff9bce;
 }
 .eot-entry-hypergraph {
@@ -1494,7 +1494,7 @@ input.eot-graph-search {
   margin-top: 10px;
 }
 
-// Shared shell for every collapsible reasoning trace (Thinking/Plan/Warrant
+// Shared shell for every collapsible reasoning trace (Thinking/Plan/Grounding
 // panels, see TracePanel in chat.tsx), styled like Claude's extended-
 // thinking display: collapsed, it's just a dim clickable text row (no box,
 // no border, no fill) -- the disclosure marker and the hover state are the
@@ -1804,12 +1804,12 @@ input.eot-graph-search {
 }
 
 // Citey's inline note — appears once per message, only when there's an
-// unresolved span, teasing the full WarrantPanel trace below it rather
+// unresolved span, teasing the full GroundingPanel trace below it rather
 // than duplicating it. Clickable, not a hover tooltip: the reasoning has
 // to be discoverable, not stumbled on.
 // Quiet by default — a left-border accent strip under the reply, not a
 // filled callout box, matching the reference design's collapsible-strip
-// treatment. Still opens the warrant panel on click (see CiteyNote in
+// treatment. Still opens the grounding panel on click (see CiteyNote in
 // chat.tsx); this is a chrome restyle, not a behavior change.
 .citey-note {
   display: flex;

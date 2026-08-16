@@ -27,8 +27,8 @@
 // "hypergraph" channel, so a reader can see the whole search even on a turn
 // where nothing bounded reached the model.
 //
-// eo-warrant.ts's "hypergraph" channel marks a drafted thought
-// kind: "paraphrase", canWarrant: false — it can orient the model, it can
+// eo-grounding.ts's "hypergraph" channel marks a drafted thought
+// kind: "paraphrase", canGround: false — it can orient the model, it can
 // never be the evidence for a claim.
 
 // eoreader6 ships no type declarations (it is a plain-JS library, deliberately

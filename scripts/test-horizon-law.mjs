@@ -2,7 +2,7 @@
 // no operation reads the whole, and whatever a read withholds is reported,
 // never silent. Two surfaces:
 //
-//   1. foldToMouth (eo-warrant.ts) — the mouth is a named budget: bounded
+//   1. foldToMouth (eo-grounding.ts) — the mouth is a named budget: bounded
 //      output for arbitrarily large input, withheld counted and named,
 //      k < 1 refused.
 //   2. defineTaskPlan (eo-task-plan.ts) — plan as sediment: each fold step
@@ -15,7 +15,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { foldToMouth } from "../app/client/eo-warrant.ts";
+import { foldToMouth } from "../app/client/eo-grounding.ts";
 import { defineTaskPlan } from "../app/client/eo-task-plan.ts";
 
 // ── the mouth ─────────────────────────────────────────────────────────────

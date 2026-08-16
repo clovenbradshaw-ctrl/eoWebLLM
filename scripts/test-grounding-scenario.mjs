@@ -1,12 +1,12 @@
-// test-warrant-scenario.mjs — the assay for a long conversation, not a single turn.
+// test-grounding-scenario.mjs — the assay for a long conversation, not a single turn.
 //
-// test-warrant.mjs checks the arithmetic in isolation: hand buildFoldLedger a
+// test-grounding.mjs checks the arithmetic in isolation: hand buildFoldLedger a
 // set of counts, check what groundingDemand and routeTurn do with them. This
 // file checks the thing that arithmetic is FOR — that as an actual multi-turn
 // conversation runs, a fact surfaced early stays checkable while it is
-// verbatim, becomes an unwarrantable gist once it falls out of the recency
+// verbatim, becomes an ungroundable gist once it falls out of the recency
 // window, and forces grounding on its own once it falls out of the fold list
-// entirely. That is the "surf vs. fold" claim in eo-warrant.ts's file header,
+// entirely. That is the "surf vs. fold" claim in eo-grounding.ts's file header,
 // played out turn by turn instead of asserted about a single snapshot.
 //
 // The turn math mirrors what app/store/chat.ts actually sends: a verbatim
@@ -28,13 +28,13 @@ import {
   routeTurn,
   reviewDraft,
   channelOf,
-} from "../app/client/eo-warrant.ts";
+} from "../app/client/eo-grounding.ts";
 
 import {
   MAX_FOLDS_IN_PROMPT,
   RECORDS_IN_PROMPT,
-  buildWarrantRecord,
-  addWarrantRecord,
+  buildGroundingRecord,
+  addGroundingRecord,
   buildRecordSystemMessage,
   emptySummary,
 } from "../app/client/eo-discourse.ts";
@@ -92,9 +92,9 @@ test(`turn coverage holds through turn ${LOSS_HORIZON} and breaks at turn ${LOSS
 
 // ── A fact that lives only as a paraphrase decays on schedule ─────────────
 
-test("a fact surfaced early stays checkable while verbatim, becomes an unwarrantable gist once folded, and forces grounding once lost", () => {
+test("a fact surfaced early stays checkable while verbatim, becomes an ungroundable gist once folded, and forces grounding once lost", () => {
   // Turn 3: the reader asks something the model has to look up. Web material
-  // is surfaced this turn and can warrant a claim about it.
+  // is surfaced this turn and can ground a claim about it.
   const surfacingTurn = buildFoldLedger({
     ...NOTHING_ELSE,
     web: { attempted: true, results: 1 },
@@ -120,14 +120,14 @@ test("a fact surfaced early stays checkable while verbatim, becomes an unwarrant
   // that turn-3 fact. Nothing else external is in play this turn, so the
   // pre-answer route does not fire on the fold alone — that would make every
   // long conversation System 2 regardless of what the current turn actually
-  // asks (see test-warrant.mjs: "folded past discourse ... does not alone
+  // asks (see test-grounding.mjs: "folded past discourse ... does not alone
   // escalate"). What fires is the DRAFT: once the model's answer actually
   // states the figure, that is a checkable claim resting on a paraphrase.
   const foldedLedger = ledgerAtTurn(15);
   const foldedDemand = groundingDemand(foldedLedger);
   assert.ok(
     foldedDemand.forbidden.includes("discourse"),
-    "turn 3's fact is now gist-only and cannot itself warrant a claim",
+    "turn 3's fact is now gist-only and cannot itself ground a claim",
   );
   const quietPreAnswer = routeTurn(foldedLedger, foldedDemand);
   assert.equal(
@@ -170,7 +170,7 @@ test("a System 2 fold (addressed) survives past the horizon where the matching S
   // Turn 3 gets BOTH kinds of fold: the plain one-line gist that feeds
   // eoSummary.folds (and eventually the discourse channel above), and a
   // System 2 record naming the byte range it was actually checked against.
-  const turn3Record = buildWarrantRecord({
+  const turn3Record = buildGroundingRecord({
     turn: 3,
     gist: "reader asked about the API rate limit",
     channels: ["web"],
@@ -185,9 +185,9 @@ test("a System 2 fold (addressed) survives past the horizon where the matching S
   // of whether that turn needed grounding). By turn 25, well past
   // LOSS_HORIZON, only 5 record-producing turns have happened, so the record
   // window (bounded to RECORDS_IN_PROMPT = 8) has not had to evict turn 3 yet.
-  let summary = addWarrantRecord(emptySummary(), turn3Record);
+  let summary = addGroundingRecord(emptySummary(), turn3Record);
   for (const n of [10, 15, 22, 25]) {
-    summary = addWarrantRecord(summary, {
+    summary = addGroundingRecord(summary, {
       ...turn3Record,
       turn: n,
       gist: `turn ${n} was also checked`,
@@ -209,7 +209,7 @@ test("a System 2 fold (addressed) survives past the horizon where the matching S
   // quietly became a paraphrase", which is what happens to a plain fold.
   let evictingSummary = emptySummary();
   for (let n = 1; n <= RECORDS_IN_PROMPT + 3; n += 1) {
-    evictingSummary = addWarrantRecord(evictingSummary, {
+    evictingSummary = addGroundingRecord(evictingSummary, {
       ...turn3Record,
       turn: n,
       refs: [`source-${n}.txt#0-100`],

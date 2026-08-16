@@ -21,7 +21,7 @@ import {
   type TaskController,
   type TaskDefinition,
 } from "./eo-task-controller";
-import { foldToMouth } from "./eo-warrant";
+import { foldToMouth } from "./eo-grounding";
 
 const FOLD_PLANNER_PROMPT = `Propose the NEXT task for a reader request — one task only, never a whole plan. You are one worker in a fold: the tasks already proposed are listed below, and they are the only world you see. A new task may depend ONLY on an id already in that list. If the listed tasks already cover the work, or nothing remains worth doing, return {"tasks":[]}. Return ONLY JSON:
 {"tasks":[{"id":"short id","goal":"self-contained research/writing task","dependsOn":["one of the listed ids"]}]}
@@ -360,7 +360,7 @@ export async function runTaskPlan({
   if (mouth.working.length) {
     parts.push(
       [
-        "TASK WORKING RESULTS — these are bounded task outputs already checked by the controller. Synthesize them into one warranted answer. Distinguish direct support from inference, compare any live alternative, and preserve unresolved gaps; do not mention task planning.",
+        "TASK WORKING RESULTS — these are bounded task outputs already checked by the controller. Synthesize them into one grounded answer. Distinguish direct support from inference, compare any live alternative, and preserve unresolved gaps; do not mention task planning.",
         ...mouth.working.map((task) => `TASK: ${task.goal}\n${task.result}`),
         ...(mouth.withheld
           ? [

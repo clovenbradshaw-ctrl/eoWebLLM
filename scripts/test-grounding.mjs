@@ -1,4 +1,4 @@
-// test-warrant.mjs — the assay for the grounding trigger.
+// test-grounding.mjs — the assay for the grounding trigger.
 //
 // The claim this file exists to check is narrow and testable: grounding fires
 // whenever material outside the model bears on a turn, and it fires without
@@ -10,7 +10,7 @@
 //
 // Run: node --test scripts/       (or  yarn test)
 //
-// Node 22 strips the types off app/client/eo-warrant.ts directly, which is why
+// Node 22 strips the types off app/client/eo-grounding.ts directly, which is why
 // that module carries no value imports: the policy is checkable on its own,
 // with no browser, no engine, and no network.
 
@@ -26,10 +26,10 @@ import {
   escalate,
   foldPressure,
   lostPressure,
-  buildWarrantBlock,
+  buildGroundingBlock,
   channelOf,
-  CHANNEL_WARRANT,
-} from "../app/client/eo-warrant.ts";
+  CHANNEL_GROUNDING,
+} from "../app/client/eo-grounding.ts";
 
 /** The turn loop's own numbers for an ordinary chat turn with nothing attached. */
 const PLAIN_TURN = {
@@ -134,9 +134,9 @@ test("an uploaded file demands grounding", () => {
   assert.ok(demand.check.includes("file"));
 });
 
-// ── Fold provenance: a paraphrase is never warrant ────────────────────────
+// ── Fold provenance: a paraphrase is never grounding ──────────────────────
 
-test("folded past discourse is forbidden as warrant but does not alone escalate", () => {
+test("folded past discourse is forbidden as grounding but does not alone escalate", () => {
   const { demand, route } = decide({
     ...PLAIN_TURN,
     discourse: {
@@ -168,7 +168,7 @@ test("turns folded past the fold list are lost, and lost material always escalat
   assert.equal(
     demand.byDefault,
     true,
-    "unrecoverable material is an unknown warrant",
+    "unrecoverable material is an unknown ground",
   );
   assert.ok(demand.mustUnfold.includes("discourse"));
 });
@@ -200,7 +200,7 @@ test("a rule that matched and did not fit the budget escalates by default", () =
   assert.ok(demand.mustUnfold.includes("rules"));
 });
 
-test("context the clamp dropped is unknown warrant, so the turn escalates", () => {
+test("context the clamp dropped is an unknown ground, so the turn escalates", () => {
   const { demand, route } = decide({
     ...PLAIN_TURN,
     budget: { droppedMessages: 3, truncated: false },
@@ -341,7 +341,7 @@ test("escalate survives missing routes rather than throwing mid-turn", () => {
 
 // ── The block the model receives ──────────────────────────────────────────
 
-test("the warrant block names each channel in play and what it can carry", () => {
+test("the grounding block names each channel in play and what it can carry", () => {
   const { ledger, demand } = decide({
     ...PLAIN_TURN,
     corpus: { enabledSources: 2, sourcesSurfaced: 1, passages: 3 },
@@ -352,28 +352,28 @@ test("the warrant block names each channel in play and what it can carry", () =>
       summaryInPrompt: true,
     },
   });
-  const block = buildWarrantBlock(ledger, demand);
+  const block = buildGroundingBlock(ledger, demand);
   assert.match(block, /\[corpus\]/);
   assert.match(block, /\[discourse\]/);
-  assert.match(block, /Not warrant this turn: discourse/);
+  assert.match(block, /Cannot ground a claim this turn: discourse/);
   assert.match(block, /Folded and not read this turn/);
 });
 
 test("a turn needing no grounding says so, rather than saying nothing", () => {
   const { ledger, demand } = decide(PLAIN_TURN);
-  const block = buildWarrantBlock(ledger, demand);
+  const block = buildGroundingBlock(ledger, demand);
   assert.match(block, /Nothing outside your own knowledge bears on this turn/);
 });
 
-test("every channel declares a warrant rule, so a new channel cannot be silent", () => {
-  for (const [name, w] of Object.entries(CHANNEL_WARRANT)) {
+test("every channel declares a grounding rule, so a new channel cannot be silent", () => {
+  for (const [name, w] of Object.entries(CHANNEL_GROUNDING)) {
     assert.ok(w.rule && w.rule.length > 20, `${name} has no usable rule text`);
-    assert.equal(typeof w.canWarrant, "boolean");
+    assert.equal(typeof w.canGround, "boolean");
   }
   assert.equal(
-    CHANNEL_WARRANT.discourse.canWarrant,
+    CHANNEL_GROUNDING.discourse.canGround,
     false,
-    "a paraphrase must never warrant",
+    "a paraphrase must never ground a claim",
   );
-  assert.equal(CHANNEL_WARRANT.corpus.canWarrant, true);
+  assert.equal(CHANNEL_GROUNDING.corpus.canGround, true);
 });

@@ -337,7 +337,7 @@ export interface CorpusHyperparams {
  * only returns the passages selected for the current turn.
  *
  * `hyperparams` is optional and, when passed, must come from a channel
- * declared `canWarrant: false` in eo-warrant.ts (today: priors, see
+ * declared `canGround: false` in eo-grounding.ts (today: priors, see
  * eo-priors.ts) — it can only widen or narrow how many passages are kept,
  * never which ones score, never what they say.
  */

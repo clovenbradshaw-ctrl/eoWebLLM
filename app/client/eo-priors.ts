@@ -2,7 +2,7 @@
 // register that may steer how the corpus channel searches, and may never
 // carry a claim itself.
 //
-// eo-warrant.ts already draws the line eoreader6's own Assembly-C spec names
+// eo-grounding.ts already draws the line eoreader6's own Assembly-C spec names
 // (11-terrain-occupancy-and-the-two-ascents.md §5, "Lens from channel
 // disagreement"): "the high tier sets the low tier's own hyperparameters and
 // only the residual ... climbs back up ... it may not contribute a score to
@@ -10,7 +10,7 @@
 // passages eo-corpus.ts's retrieveCorpus is willing to keep before the
 // reader ever sees anything. It may never inject text, never touch a
 // candidate's own score, and never appear in a prompt as something to cite —
-// see CHANNEL_WARRANT.priors in eo-warrant.ts, which declares canWarrant
+// see CHANNEL_GROUNDING.priors in eo-grounding.ts, which declares canGround
 // false for exactly that reason.
 //
 // Assembly C itself is not built (its own file says so — reading-regime.js's

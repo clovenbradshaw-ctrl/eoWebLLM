@@ -15,15 +15,15 @@
 // correct name by sharing one span with it. Each atom's span is:
 //   - "sourced"  — backed by material this turn actually gathered
 //                  (web/corpus).
-//   - "stated"   — the reader themselves said it. The desk channel warrants
-//                  (eo-warrant.ts: conversational, canWarrant true) — this is
+//   - "stated"   — the reader themselves said it. The desk channel grounds
+//                  (eo-grounding.ts: conversational, canGround true) — this is
 //                  backed, just not by a source.
 //   - "general"  — nothing external bore on this turn at all, so general
 //                  knowledge is the legitimate basis (internal channel: "a
 //                  legitimate answer when nothing external bears on the
 //                  question").
 //   - "bleed"    — the ONLY thing carrying it is a channel that cannot
-//                  warrant: the folded PAST DISCOURSE paraphrase, or a
+//                  ground it: the folded PAST DISCOURSE paraphrase, or a
 //                  hypergraph thought. The dangerous one, and the reason this
 //                  split exists — it reads as grounded to the model and rests
 //                  on a paraphrase whose source is gone.
@@ -37,7 +37,7 @@
 // predicate switching on `state` still treated them as one thing. That is
 // eo-constitution II.8 ("no averaging of grounds") violated at the smallest
 // unit the system has. The split makes the distinction a type; `originChannel`
-// below keeps the finer detail (which unwarrantable channel it was) without
+// below keeps the finer detail (which channel could not ground it) without
 // giving it back the power to pass as backed.
 // Computed with zero model/network calls, so it can run on every streamed
 // chunk, not just once generation finishes. Nothing here mutates `content`
@@ -71,7 +71,7 @@ export type GroundingState =
   // has, and a comment cannot enforce it where a type can.
   | "stated" // desk — the reader said it. Backed, just not by a source.
   | "general" // internal — nothing external bore on the turn.
-  | "bleed" // an unwarrantable channel is the ONLY thing carrying it.
+  | "bleed" // a channel that cannot ground a claim is the ONLY thing carrying it.
   | "unconfirmed" // material WAS gathered and this is not in it.
   | "checking"
   | "contradicted";
@@ -117,7 +117,7 @@ export interface GroundingSpan {
    *  came from, when one is identifiable — never a certainty claim. Unset
    *  keeps the atom unattributed (the honest default). Strictly finer than
    *  `state`: `bleed` collapses discourse and hypergraph because both are
-   *  canWarrant:false, and this still says which. It may sharpen a caption;
+   *  canGround:false, and this still says which. It may sharpen a caption;
    *  it may never be used to decide whether something is backed — that is
    *  what `state` is for, and the two must not be made to compete. */
   originChannel?: GroundingOriginChannel;
@@ -130,16 +130,16 @@ export function buildGroundingSpans(
     question?: string;
     /** This turn's desk facts (see eo-memory.ts) — an unsourced atom that
      *  matches one is `stated`, since a reader-stated fact is backed by a
-     *  warranting channel, not equally uncertain with a guess. */
+     *  channel that can ground it, not equally uncertain with a guess. */
     statedFacts?: StatedFact[];
     /** The plain-text discourse fold summary this turn's prompt actually
-     *  carried, if any — `canWarrant: false` in eo-warrant.ts, so a match
+     *  carried, if any — `canGround: false` in eo-grounding.ts, so a match
      *  here only ever flags a possible echo, never a source. */
     discourseText?: string;
     /** The drafted hypergraph "thought" string this turn's prompt actually
-     *  carried, if any — same `canWarrant: false` standing as discourse. */
+     *  carried, if any — same `canGround: false` standing as discourse. */
     hypergraphText?: string;
-    /** GroundingDemand.required for this turn (see eo-warrant.ts) — false
+    /** GroundingDemand.required for this turn (see eo-grounding.ts) — false
      *  means nothing external bore on the question at all, the only
      *  condition under which a residual atom may be attributed `internal`
      *  rather than left unattributed. */
@@ -208,7 +208,7 @@ export function buildGroundingSpans(
   // are read off it instead of re-deriving them:
   //
   //   desk                    -> stated       (backed, just not by a source)
-  //   discourse | hypergraph  -> bleed        (canWarrant:false, both)
+  //   discourse | hypergraph  -> bleed        (canGround:false, both)
   //   otherwise, gathered     -> unconfirmed  (we looked; it is not there)
   //   otherwise               -> general      (nothing external bore on this)
   //
@@ -302,7 +302,7 @@ export function buildGroundingSpans(
         supportingCitationIndexes,
         // Kept alongside the split state rather than replaced by it: the
         // channel is strictly finer than the type. `bleed` deliberately
-        // collapses discourse and hypergraph — both are canWarrant:false, so
+        // collapses discourse and hypergraph — both are canGround:false, so
         // they are the same KIND of failure — while originChannel still says
         // which one, for a caption that wants to name it.
         originChannel: UNSOURCED_STATES.includes(state)

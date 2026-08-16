@@ -4,7 +4,7 @@ A living design doc. States what is true now, what is measured, and what is
 proposed, and marks which is which. Companion to
 [`citey-grounding-policy.md`](citey-grounding-policy.md) (what gets checked and
 in what language) and [`citey-structured-grounding.md`](citey-structured-grounding.md)
-(the warrant/channel model).
+(the grounding/channel model).
 
 Every number here was reproduced against the running modules on 2026-08-13,
 headless, via `node --import ./scripts/register-ts-resolve.mjs`. None is
@@ -166,11 +166,11 @@ not an input to a score. This is eo-constitution II.8 ("no averaging of
 grounds") — the compliant move is not "gather several sources, then rate the
 claim," it is "report each finding and let the conflict stand."
 
-**P2 — Field is the only warrant.** A byte-addressed span is the sole atomic
-warrant unit. Entity, Kind, Link, Network, Atmosphere, Lens and Paradigm are
+**P2 — Field is the only grounding.** A byte-addressed span is the sole atomic
+grounding unit. Entity, Kind, Link, Network, Atmosphere, Lens and Paradigm are
 navigation: each must carry a live pointer down to a Field span and may never
-stand in for one. Enforced by construction in `eo-warrant.ts` — `hypergraph` is
-typed `paraphrase`, `canWarrant: false`.
+stand in for one. Enforced by construction in `eo-grounding.ts` — `hypergraph` is
+typed `paraphrase`, `canGround: false`.
 
 This binds the reading diff too, and sharply: **a diff of two readings is not
 evidence.** It says two structures differ. Which one is right is a Field
@@ -210,8 +210,8 @@ now derived from that same detection rather than from a second, looser guess
 
 | originChannel | state | why |
 |---|---|---|
-| `desk` | `stated` | conversational channel, `canWarrant: true` — backed, just not by a source |
-| `discourse` / `hypergraph` | `bleed` | both `canWarrant: false` — the same *kind* of failure |
+| `desk` | `stated` | conversational channel, `canGround: true` — backed, just not by a source |
+| `discourse` / `hypergraph` | `bleed` | both `canGround: false` — the same *kind* of failure |
 | — (material gathered) | `unconfirmed` | we looked; it is not there |
 | — (nothing gathered) | `general` | nothing external bore on the turn |
 
@@ -279,7 +279,7 @@ ledger.
 
 ### The principle
 
-**A citation's warrant is a byte address. A void's warrant is a reproducible
+**A citation's grounding is a byte address. A void's grounding is a reproducible
 search.** Same discipline, different object — and both meet the same standard:
 someone else can repeat the trip and get the same answer.
 
@@ -294,7 +294,7 @@ would let a reader challenge a void instead of taking it on trust.
 reported, addressed, and auditable, never a silent absence or a bare
 "unsupported."
 
-**V2 — A void's warrant is a reproducible search.** Record the scope by
+**V2 — A void's grounding is a reproducible search.** Record the scope by
 identifier, the query, and the cursor. A void nobody can re-run is an assertion.
 
 **V3 — "Never checked" is never "clean."** The distinction must live at the

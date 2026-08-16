@@ -56,7 +56,7 @@ export interface GroundingReport {
    * A caller wanting "verified clean" reads `examined && clean`.
    */
   examined: boolean;
-  // Which warrant channels this check actually covered (see eo-warrant.ts).
+  // Which grounding channels this check actually covered (see eo-grounding.ts).
   // "clean" means clean AGAINST THESE — a report that doesn't say what it
   // checked reads as a whole-answer verdict when it is a partial one
   // (LAWS.md L6 — no implied completeness).
@@ -521,7 +521,7 @@ const MAX_FINDINGS = 40;
  * asserts, using the same extraction the grounding check itself uses.
  *
  * This is the mechanical signal System 2 monitors the System-1 draft with
- * (see reviewDraft in eo-warrant.ts). A turn can look unremarkable going in
+ * (see reviewDraft in eo-grounding.ts). A turn can look unremarkable going in
  * and come back full of specific numbers; that count, not the wording of the
  * question, is what says the answer made claims someone could check. Deriving
  * it from the same extractAtoms the checker uses is the point — a second,
@@ -579,7 +579,7 @@ export function extractClaimAtoms(content: string, question = ""): ClaimAtom[] {
  * must occur SOMEWHERE across the material retrieved this turn, or it's
  * flagged as unsupported by the evidence that was supposed to ground it.
  *
- * The citations passed in are no longer web-only: any external warrant
+ * The citations passed in are no longer web-only: any external grounding
  * channel surfaced this turn contributes them (see corpusCitations in
  * eo-corpus.ts). A reader's uploaded document was the conspicuous gap — the
  * answer was checked when a search ran and not when the answer was about

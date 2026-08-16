@@ -113,11 +113,11 @@ test("some rules are in force on every turn", () => {
   );
 });
 
-test("the warrant fold is in force on every turn", () => {
+test("the grounding fold is in force on every turn", () => {
   // The rule that a paraphrase cannot carry a claim is not a conditional
   // nicety — it governs the turns that never mention grounding at all, which
   // are exactly the turns most likely to reconstruct a fact from a summary.
-  const warrant = loadedFolds().find((f) => f.id === "core-warrant");
-  assert.ok(warrant, "core-warrant is missing from the corpus");
-  assert.equal(warrant.always, true, "core-warrant must be always-on");
+  const grounding = loadedFolds().find((f) => f.id === "core-grounding");
+  assert.ok(grounding, "core-grounding is missing from the corpus");
+  assert.equal(grounding.always, true, "core-grounding must be always-on");
 });

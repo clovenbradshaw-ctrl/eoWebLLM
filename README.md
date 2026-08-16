@@ -22,15 +22,15 @@
 - **fold** — every completed turn is folded to its discourse contribution and rolled into a running **PAST DISCOURSE** summary (`app/client/eo-discourse.ts`).
 - **prompt** — the model is prompted with the gate block + summary + a bounded recency window; raw history is never resent past a fixed ceiling.
 
-## Warrant: when grounding fires
+## Grounding: when it fires
 
 Bounding the context window means most of what bears on a turn is *folded* —
 held back — at any moment. That makes one question decidable that "is this a
-hard question?" never was: **where would the warrant for this answer have to
-come from?** `app/client/eo-warrant.ts` answers it from the fold ledger, with
-no model call, before a token is generated.
+hard question?" never was: **where would the grounding for this answer have
+to come from?** `app/client/eo-grounding.ts` answers it from the fold ledger,
+with no model call, before a token is generated.
 
-Each channel carries a different kind of warrant:
+Each channel carries a different kind of grounding:
 
 | channel | can carry a claim | why |
 | --- | --- | --- |
@@ -42,7 +42,7 @@ Each channel carries a different kind of warrant:
 
 Grounding fires whenever external material bears on the turn, whenever material
 was folded away or crowded out, and whenever provenance cannot be established —
-unknown warrant is treated as missing warrant. A search that ran and came back
+an unknown ground is treated as a missing one. A search that ran and came back
 empty fires it too: that is the one check that could have confirmed the answer,
 and it didn't.
 

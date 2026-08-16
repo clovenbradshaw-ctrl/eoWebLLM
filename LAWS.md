@@ -11,7 +11,7 @@ past the session that made it.
 
 ## L1 — A reasoning panel discloses; it does not sit on the page
 
-Thinking, Plan, and Warrant are all built on the same `TracePanel` shell in
+Thinking, Plan, and Grounding are all built on the same `TracePanel` shell in
 `app/components/chat.tsx`, styled by `.trace-panel` in `chat.module.scss`,
 and the whole point of that shell is to look like Claude's own
 extended-thinking display: collapsed, it is a single dim line of text with a
@@ -23,7 +23,7 @@ around it, not more.
 
 This got built wrong twice. The first version gave `.trace-panel` a
 permanent `border`, `background: var(--gray)`, and `padding` — regardless of
-whether the `<details>` was open or closed — so every Plan and every Warrant
+whether the `<details>` was open or closed — so every Plan and every Grounding
 sat on the transcript as a shaded card whether or not anyone had asked to
 look inside. A comment right above the rule even claimed it was "styled like
 Claude's extended-thinking display," which was aspirational, not true: real
@@ -39,7 +39,7 @@ opened the thing.
 carries a `border`, a `background`, or padding that makes it read as a card
 rather than a line of text, that's this law being violated again, not a
 harmless restyle. Any new collapsible reasoning surface — not just Thinking,
-Plan, and Warrant — should be built on `TracePanel` rather than growing its
+Plan, and Grounding — should be built on `TracePanel` rather than growing its
 own box, so this stays enforced by construction instead of by memory.
 
 ---
@@ -273,9 +273,9 @@ shown), (b) fabricating a budget figure ("$1.136 billion, a 17.4% increase"
 against a source that said $1,022,900,000 and +$210,600,000), and separately,
 in the climb-response prompt (corrected 2026-08-13: this lives in
 `app/store/chat.ts`'s `climbedNav`/`buildThoughtUserPrompt` call, not in
-`eo-warrant.ts` — that file has never contained a climb-response prompt or
-`containsPromptScaffold`; `eo-warrant.ts`'s actual job is deciding grounding-
-warrant from fold-ledger arithmetic, a different concern), echoing the
+`eo-grounding.ts` — that file has never contained a climb-response prompt or
+`containsPromptScaffold`; `eo-grounding.ts`'s actual job is deciding
+grounding from fold-ledger arithmetic, a different concern), echoing the
 prompt's own closing instruction back as if it were an answer rather than
 either a verdict or the literal sentinel it was told to emit
 (`containsPromptScaffold`, imported into `chat.ts` from

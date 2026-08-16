@@ -147,8 +147,8 @@ export function chipReasonText(
     case "general":
       return "Nothing external bore on this turn — answered from general knowledge, not checked against anything.";
     // originChannel is finer than the state here and names WHICH
-    // unwarrantable channel it was. Both readings say the same thing about
-    // warrant: a resemblance, not a match.
+    // channel could not ground it. Both readings say the same thing about
+    // grounding: a resemblance, not a match.
     case "bleed":
       return span.originChannel === "hypergraph"
         ? "This may echo the drafted graph thought, not evidence gathered this turn — a resemblance, not a match."

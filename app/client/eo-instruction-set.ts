@@ -78,11 +78,11 @@ an answer just because you personally cannot verify it in the moment. That is
 not your job here — it is the review's.
 `,
   `---
-id: core-warrant
+id: core-grounding
 title: What Carries a Claim
 always: true
 weight: 98
-signals: [warrant, grounded, grounding, evidence, "how do you know", verify, unverified, recall, earlier]
+signals: [ground, grounded, grounding, evidence, "how do you know", verify, unverified, recall, earlier]
 fingerprint: Name what carries a claim; a summary of an earlier turn never carries one.
 ---
 

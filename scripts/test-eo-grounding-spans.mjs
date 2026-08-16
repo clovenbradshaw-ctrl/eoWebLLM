@@ -200,7 +200,7 @@ test("25-fixture sweep: buildGroundingSpans + resolveSpans never mutate content,
 test("split states are derived from the same detection attribution uses", () => {
   const content = "The budget was 1022900000 dollars for Metro Nashville.";
 
-  // desk — the reader said it. A warranting channel (eo-warrant.ts).
+  // desk — the reader said it. A channel that can ground a claim (eo-grounding.ts).
   const stated = buildGroundingSpans(content, {
     citations: [],
     statedFacts: [{ text: "Metro Nashville set a budget of 1022900000." }],
@@ -209,7 +209,7 @@ test("split states are derived from the same detection attribution uses", () => 
   assert.equal(statedName.state, "stated");
   assert.equal(statedName.originChannel, "desk", "the finer detail is kept too");
 
-  // discourse — canWarrant:false. Reads as grounded, rests on a paraphrase.
+  // discourse — canGround:false. Reads as grounded, rests on a paraphrase.
   const bled = buildGroundingSpans(content, {
     citations: [],
     discourseText: "Earlier we discussed Metro Nashville and its budget.",
@@ -224,18 +224,18 @@ test("split states are derived from the same detection attribution uses", () => 
   assert.notEqual(
     statedName.state,
     bledName.state,
-    "a reader-stated atom and one resting on an unwarrantable paraphrase must not share a state",
+    "a reader-stated atom and one resting on an ungroundable paraphrase must not share a state",
   );
 });
 
-test("bleed collapses the unwarrantable channels; originChannel still names which", () => {
+test("bleed collapses the ungroundable channels; originChannel still names which", () => {
   const content = "The report named Metro Nashville.";
   const viaHypergraph = buildGroundingSpans(content, {
     citations: [],
     hypergraphText: "a drafted thought about Metro Nashville",
   });
   const span = viaHypergraph.find((s) => s.atomKind === "name");
-  // Same KIND of failure as discourse — both are canWarrant:false — so the
+  // Same KIND of failure as discourse — both are canGround:false — so the
   // state is the same. The channel is finer and keeps the difference.
   assert.equal(span.state, "bleed");
   assert.equal(span.originChannel, "hypergraph");
@@ -261,7 +261,7 @@ test("'gathered and absent' and 'nothing gathered' are different states", () => 
   );
 });
 
-test("a warranting channel is never overwritten by the number shortcut", () => {
+test("a grounding channel is never overwritten by the number shortcut", () => {
   // A number the reader themselves stated must not be sent back out to be
   // re-verified: `checking` is decided AFTER the channels for this reason.
   const spans = buildGroundingSpans("The budget was 1022900000 dollars.", {

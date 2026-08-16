@@ -11,7 +11,7 @@ import { resolveDocLabel, type TerrainCardProps } from "./types";
 // docs/citey-structured-grounding.md §0/§8): mentions/edges here help a
 // reader navigate, they are never themselves the evidence for a claim —
 // each edge row below hops to the Link card, which in turn points at the
-// Field spans that actually warrant it.
+// Field spans that actually ground it.
 
 export function EntityCard({ session, params, onNavigate }: TerrainCardProps) {
   const entity = params.entity ?? "";

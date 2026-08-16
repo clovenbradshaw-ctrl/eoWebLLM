@@ -27,7 +27,7 @@
 // the sentence "the report put the figure at 21%" fold to the same line, and
 // nothing in the prompt can tell them apart or get back to the source. That is
 // harmless for keeping track of a conversation and disqualifying as evidence,
-// which is why eo-warrant.ts marks the discourse channel as unable to warrant
+// which is why eo-grounding.ts marks the discourse channel as unable to ground
 // a claim at all.
 //
 // The System 2 fold is the answer to that, and it is a different KIND of
@@ -35,16 +35,16 @@
 // established, which channels carried it, the byte ranges and URLs the check
 // actually ran against, what failed that check, and what was left open. All of
 // it is already computed by the time a turn finishes — the grounding report,
-// the citations, the warrant demand — so building it costs no model call
+// the citations, the grounding demand — so building it costs no model call
 // (LAWS.md L11c). A System 2 fold can be re-opened; a System 1 fold can only
 // be recalled.
 
-export interface WarrantRecord {
+export interface GroundingRecord {
   /** Index of the user turn this record folds. */
   turn: number;
-  /** The System 1 gist — a handle for the turn, never its warrant. */
+  /** The System 1 gist — a handle for the turn, never its grounding. */
   gist: string;
-  /** Warrant channels that actually carried this turn (see eo-warrant.ts). */
+  /** Grounding channels that actually carried this turn (see eo-grounding.ts). */
   channels: string[];
   /**
    * Addresses the answer was checked against: "file.txt#1200-4200" for source
@@ -71,7 +71,7 @@ export interface EoSummary {
   flow: string | null;
   folds: string[];
   /** The System 2 folds — bounded, addressed, re-openable. */
-  records?: WarrantRecord[];
+  records?: GroundingRecord[];
 }
 
 export const SUMMARY_MAX_CHARS = 200;
@@ -102,7 +102,7 @@ export function buildSummarySystemMessage(
   parts.push(
     "PAST DISCOURSE — context from earlier turns ONLY. It is background for threads that started earlier, not the subject of the current turn. Answer the user's current question as a fresh request; use this only to follow along when it clearly refers to something already discussed.",
   );
-  // Said here as well as in the warrant block, because this is the block a
+  // Said here as well as in the grounding block, because this is the block a
   // model is most tempted to mine for a fact: it is the only thing in the
   // prompt that looks like a memory of what was established.
   parts.push(
@@ -150,14 +150,14 @@ export function buildRecordSystemMessage(
  * is read off work the turn already did, so a turn's record cannot disagree
  * with its own grounding check.
  */
-export function buildWarrantRecord(input: {
+export function buildGroundingRecord(input: {
   turn: number;
   gist: string;
   channels: string[];
   refs: string[];
   unsupported: string[];
   open: string[];
-}): WarrantRecord {
+}): GroundingRecord {
   const clean = (list: string[], max: number, chars: number) =>
     [...new Set(list.filter(Boolean).map((s) => truncate(s, chars)))].slice(
       0,
@@ -174,9 +174,9 @@ export function buildWarrantRecord(input: {
 }
 
 /** Append a record, bounded the same way the fold list is. */
-export function addWarrantRecord(
+export function addGroundingRecord(
   summary: EoSummary | null | undefined,
-  record: WarrantRecord,
+  record: GroundingRecord,
 ): EoSummary {
   const prev = summary || emptySummary();
   return {

@@ -20,11 +20,11 @@ import {
 import type { TerrainCardProps } from "./types";
 
 // Network — the literal hypergraph, per docs/citey-structured-grounding.md
-// §3. Orientation only (eo-warrant.ts: hypergraph is kind:"paraphrase",
-// canWarrant:false) — this view helps a reader find structure, it is never
+// §3. Orientation only (eo-grounding.ts: hypergraph is kind:"paraphrase",
+// canGround:false) — this view helps a reader find structure, it is never
 // itself the evidence for a claim; every node/edge here is one hop from a
 // real Entity/Link card that in turn points at the Field spans that do the
-// actual warranting.
+// actual grounding.
 
 interface SimNode extends SimulationNodeDatum {
   id: string;

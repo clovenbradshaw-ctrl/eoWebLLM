@@ -4,8 +4,8 @@ import styles from "../chat.module.scss";
 import { readRawSourceRange, UNFOLD_WIDEN_BYTES } from "../../client/eo-corpus";
 import type { TerrainCardProps } from "./types";
 
-// Field — the atomic warrant unit (eo-warrant.ts's "corpus" channel,
-// canWarrant: true). Every citation chip in chat bottoms out here, full
+// Field — the atomic grounding unit (eo-grounding.ts's "corpus" channel,
+// canGround: true). Every citation chip in chat bottoms out here, full
 // stop; see docs/citey-structured-grounding.md §0. Reads eo-corpus.ts, not
 // host/corpus.js's searchSpans/readSpan — the latter operates on the
 // separate in-memory eoreader session eo-hypergraph.ts privately owns,

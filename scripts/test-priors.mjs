@@ -17,7 +17,7 @@ import {
   measurePriorTouch,
   priorHyperparameters,
 } from "../app/client/eo-priors.ts";
-import { CHANNEL_WARRANT, buildFoldLedger, groundingDemand } from "../app/client/eo-warrant.ts";
+import { CHANNEL_GROUNDING, buildFoldLedger, groundingDemand } from "../app/client/eo-grounding.ts";
 
 test("ordinary prose does not touch the induced prior", () => {
   const touch = measurePriorTouch(
@@ -51,12 +51,12 @@ test("the step never scales with how many stacks were found", () => {
   assert.equal(one.maxPassagesDelta, many.maxPassagesDelta);
 });
 
-test("priors is declared canWarrant:false alongside every other paraphrase channel", () => {
-  assert.equal(CHANNEL_WARRANT.priors.canWarrant, false);
-  assert.equal(CHANNEL_WARRANT.priors.demandsCheck, false);
+test("priors is declared canGround:false alongside every other paraphrase channel", () => {
+  assert.equal(CHANNEL_GROUNDING.priors.canGround, false);
+  assert.equal(CHANNEL_GROUNDING.priors.demandsCheck, false);
 });
 
-test("priors alone never demands grounding, but is always forbidden as warrant", () => {
+test("priors alone never demands grounding, but is always forbidden as a ground", () => {
   const ledger = buildFoldLedger({
     priors: { stacksFound: 2, maxPassagesDelta: 1, giver: "test" },
   });

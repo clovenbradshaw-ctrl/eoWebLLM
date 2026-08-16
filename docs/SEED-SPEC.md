@@ -18,7 +18,7 @@ The engine already says it in `eoreader6/SEED.md`:
 
 > The system may perceive anything. It may speak only of what changed the ground.
 
-The app already says it in `app/client/eo-warrant.ts`:
+The app already says it in `app/client/eo-grounding.ts`:
 
 > mechanical, auditable signals are exhausted before a model is asked to judge
 > anything.
@@ -130,7 +130,7 @@ never exceeds `maxSteps` — so no single call ever holds more than the horizon.
 
 ### Δ3 — The horizon law: the mouth budget
 
-**Where:** `app/client/eo-warrant.ts` (new primitive), `app/client/eo-task-plan.ts`
+**Where:** `app/client/eo-grounding.ts` (new primitive), `app/client/eo-task-plan.ts`
 (use it).
 
 **What:** `foldToMouth(ranked, { k })` — the same mouth the engine already has
@@ -185,7 +185,7 @@ controller is a coherent cube cell.
 - **It does not add a coordination prompt.** There is no "here is everything
   so far, what next" call anywhere in the deltas. `getMessagesWithMemory`'s
   PAST DISCOURSE fold stays a bounded paraphrase that can orient but cannot
-  warrant (`CHANNEL_WARRANT.discourse`).
+  ground (`CHANNEL_GROUNDING.discourse`).
 - **It does not turn the gates into model judges.** Acceptance stays
   mechanical where the repo made it mechanical; the model proposes wording,
   the controller decides legality, and refusal produces a held gap that is
@@ -200,7 +200,7 @@ node --experimental-strip-types --test \
   scripts/test-task-controller-recursion.mjs \
   scripts/test-horizon-law.mjs \
   scripts/test-lift.mjs \
-  scripts/test-warrant.mjs
+  scripts/test-grounding.mjs
 ```
 
 All green, all the time. A delta that breaks the run is not a delta.
