@@ -447,21 +447,21 @@ to exceed what the same words got from material the turn never touched.
 
 Measured on 16MB of ALPR search records, a row offered only its own immediate
 neighbours — same document, same subject, not its source — was falsely
-warranted **35% of the time**, with runs of 53–68 shared tokens against nulls
+grounded **35% of the time**, with runs of 53–68 shared tokens against nulls
 of 47–51. Adjacent rows share dates, formats and repeated values, so the
 score was large, the random null was large, and the margin between them
 survived. The check passed and the answer was wrong.
 
 Dropping terms that appear in more than half the corpus raised paraphrase
 robustness (40% → 77% correct at one word in three removed) and moved the
-false-warrant rate by two points, because the null fell with the score. The
+false-grounding rate by two points, because the null fell with the score. The
 defect was never the scoring. **The null was asking the wrong question.**
 "Does this passage beat an unrelated one" is answered yes by nearly anything.
 The question that decides a citation is "does this passage beat the best
 *other* passage in the corpus" — so the null must be drawn from where a
 competitor would actually be, by retrieval on the sentence itself. When the
 true source is not among the passages offered, it turns up as the rival,
-outscores them, and the claim is refused. False warrants went to **0%** on
+outscores them, and the claim is refused. False grounds went to **0%** on
 rows and 0% on prose, with no loss on true positives; heavy paraphrase now
 refuses more often, which is the trade this kind of system should take.
 
