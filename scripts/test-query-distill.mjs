@@ -94,7 +94,7 @@ test(
       "completely unchanged. For Japanese the consequence is worse than a " +
       "passthrough — fetchWikipedia is hardcoded to en.wikipedia.org, which " +
       "returns ZERO hits for the Japanese sentence, so the turn gets no " +
-      "grounding material and the warrant ledger reports 'consulted and came " +
+      "grounding material and the fold ledger reports 'consulted and came " +
       "back empty' to the reader as a finding about their own evidence. " +
       "Routing to ja.wikipedia.org does not fix it: the undistilled sentence " +
       "matches エッセイ/書いて/ください and returns a musician, a novel, a " +

@@ -1,7 +1,7 @@
 # Citey terrain feedback spec — leveraging all nine readings
 
 A living design doc, companion to [`citey-structured-grounding.md`](citey-structured-grounding.md),
-which stays the authority on warrant/build status. This doc answers a
+which stays the authority on grounding/build status. This doc answers a
 narrower question: given everything a *reading* (an admitted source, run
 through eoreader6) actually produces — all nine Domain × Grain terrains, not
 just the citation chip — what should Citey *do* with each one as feedback,
@@ -24,7 +24,7 @@ reading is — a single point, a named figure against ground, or a pattern
 across many figures). Field sits at Structure × Ground for a reason: it's
 the most zoomed-in, least-interpreted reading there is — raw bytes, no
 structure imposed yet beyond "this span exists." That's exactly why it's
-the only terrain that can warrant a claim (§0 of the companion doc). Every
+the only terrain that can ground a claim (§0 of the companion doc). Every
 other cell adds either more structure or more interpretation on top of
 Field, and Citey's rule is the same for all eight of them: use the reading,
 never launder it into a citation.
@@ -32,7 +32,7 @@ never launder it into a citation.
 ## 0. The rule this whole spec obeys
 
 Restated from the companion doc because every section below leans on it:
-**only Field can warrant.** Everything else is a *reading* — evidence that
+**only Field can ground.** Everything else is a *reading* — evidence that
 something is worth checking, never evidence that it's true. Citey's feedback
 on a non-Field terrain must always be phrased as a pointer ("this comes up
 elsewhere," "here's how it's framed differently," "the corpus's tone shifted
@@ -42,7 +42,7 @@ says so explicitly.
 
 ## 1. Per-terrain feedback
 
-### Field (Structure × Ground) — built, warrant-bearing
+### Field (Structure × Ground) — built, grounding-bearing
 
 **Data source:** `readSpan`/`documentText`/`searchSpans` (`corpus.js`),
 byte-addressed.
@@ -52,7 +52,7 @@ byte-addressed.
 
 **Nothing to add.** This is the baseline every other section measures
 itself against — the one terrain where "leverage more" would mean
-weakening the warrant, not strengthening the feedback. Spec deliberately
+weakening the grounding, not strengthening the feedback. Spec deliberately
 stops here.
 
 ### Entity (Existence × Figure) — built, orientation-only

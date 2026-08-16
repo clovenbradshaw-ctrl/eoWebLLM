@@ -6,7 +6,7 @@ import {
 } from "../../client/eo-hypergraph";
 import { resolveDocLabel, type TerrainCardProps } from "./types";
 
-// Link — one relation's own detail. eo-warrant.ts's canWarrant firewall:
+// Link — one relation's own detail. eo-grounding.ts's canGround firewall:
 // hypergraph (which is what a Link IS) is kind:"paraphrase" by
 // construction — a Link can orient a reader toward the right passage, it
 // can never itself be the citation. This card says so, plainly, rather

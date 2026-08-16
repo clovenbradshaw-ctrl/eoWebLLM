@@ -8,12 +8,12 @@ verified in running code, not inferred from docs.
 ## 0. The one thing this whole design turns on
 
 Entity/Link/Kind/Network are navigation and orientation, never evidence.
-`app/client/eo-warrant.ts` enforces this by construction: it defines 8
-warrant channels, each typed `external / conversational / paraphrase /
-normative / internal`, with a `canWarrant` flag. Only **corpus** (source
+`app/client/eo-grounding.ts` enforces this by construction: it defines 8
+grounding channels, each typed `external / conversational / paraphrase /
+normative / internal`, with a `canGround` flag. Only **corpus** (source
 bytes, byte-addressed), **web**, **file**, and **desk** (verbatim stated
-facts) can warrant a factual claim. **`hypergraph`** — the entire
-Entity/Link/Network layer — is typed `kind: "paraphrase"`, `canWarrant:
+facts) can ground a factual claim. **`hypergraph`** — the entire
+Entity/Link/Network layer — is typed `kind: "paraphrase"`, `canGround:
 false`, by construction. It can orient, it can never be the evidence.
 
 A Link is a *discovered* relation (vocabulary matched, recurrence-gated),
@@ -21,7 +21,7 @@ one interpretive step removed from the bytes. Byte-addressed spans are the
 only thing that's actually checkable. So the terrain ladder gives Citey two
 different jobs, not one:
 
-- **Field** (byte-addressed span) is the atomic warrant unit. Every
+- **Field** (byte-addressed span) is the atomic grounding unit. Every
   citation chip in chat prose bottoms out here, full stop.
 - **Entity / Kind / Link / Network / Atmosphere / Lens / Paradigm** are
   navigation and research artifacts — they help a reader find and
@@ -34,7 +34,7 @@ different jobs, not one:
 
 | Piece | Where | What it does |
 |---|---|---|
-| Warrant/channel model | `app/client/eo-warrant.ts` | 8 channels, `canWarrant` flag, mechanical System1/System2 routing (`routeTurn`, `reviewDraft`), monotone `escalate()` — a later stage can only raise the route, never lower it |
+| Grounding/channel model | `app/client/eo-grounding.ts` | 8 channels, `canGround` flag, mechanical System1/System2 routing (`routeTurn`, `reviewDraft`), monotone `escalate()` — a later stage can only raise the route, never lower it |
 | Hypergraph wiring | `app/client/eo-hypergraph.ts` | One `eoreader.createSession()` per chat session (or per project, via `hypergraphScopeId`) — admits both uploaded sources and every conversation turn into a running belief graph. NAVIGATE (mechanical) → THOUGHT (one bounded background call, only when navigation found something) |
 | Self-facts | `eo-hypergraph.ts`'s `admitSelfFacts` | User-stated facts injected via `injectPrior` with a named giver, never re-derived — canonicalizes onto the same graph nodes ordinary extraction finds |
 | Citation law (prompted) | `instruction-set/020-core-citation-law.md` | `[n]` brackets tied to numbered passages surfaced *this turn* |
@@ -88,9 +88,9 @@ duplicate nodes produces clusters that look meaningful and aren't.
 
 ## 4. Terrain → artifact type
 
-| Terrain | Status | Artifact | Warrant role |
+| Terrain | Status | Artifact | Grounding role |
 |---|---|---|---|
-| Field | built | Span viewer (`field-card.tsx`) — the citation chip target | **Bears warrant** (`corpus` channel) |
+| Field | built | Span viewer (`field-card.tsx`) — the citation chip target | **Bears grounding** (`corpus` channel) |
 | Entity | built | Profile card (`entity-card.tsx`): mentions, first/last seen, edges | Orientation only |
 | Link | built | Relation card (`link-card.tsx`): subject–verb–object, weight, seen-range, expand-to-spans | Orientation only |
 | Network | built | Force-directed graph view (`network-card.tsx`, d3-force) | Orientation only |

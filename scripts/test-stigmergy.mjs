@@ -37,7 +37,7 @@ import {
 
 const FOLDS = [
   { id: "core-citation-law", title: "Citation Law" },
-  { id: "core-warrant", title: "What Carries a Claim" },
+  { id: "core-grounding", title: "What Carries a Claim" },
   { id: "citation-audit", title: "Auditing and Provenance" },
   { id: "source-scope", title: "Source Scope and Pools" },
   { id: "confidence-scale", title: "Confidence Scale" },
@@ -58,8 +58,8 @@ test("readSteer matches prose against the closed set, by id or title", () => {
     readSteer("I think the Citation Law should have been in force here.", FOLDS),
     ["core-citation-law"],
   );
-  assert.deepEqual(readSteer("core-warrant, and source-scope", FOLDS), [
-    "core-warrant",
+  assert.deepEqual(readSteer("core-grounding, and source-scope", FOLDS), [
+    "core-grounding",
     "source-scope",
   ]);
 });
@@ -76,7 +76,7 @@ test("readSteer ignores everything it cannot resolve, including invented rules",
 });
 
 test("readSteer does not match a fold id embedded inside a longer word", () => {
-  assert.deepEqual(readSteer("core-warranty paperwork", FOLDS), []);
+  assert.deepEqual(readSteer("core-citation-lawyer paperwork", FOLDS), []);
 });
 
 // ── Additive ──────────────────────────────────────────────────────────────
@@ -112,9 +112,9 @@ test("every unfolded fold carries the reason that pulled it in", () => {
 // ── Decaying ──────────────────────────────────────────────────────────────
 
 test("a mark evaporates on schedule and stops steering on its own", () => {
-  const t = mark(emptyTrace(), "core-warrant", 1);
-  assert.equal(strengthOf(t, "core-warrant", 1), 1);
-  assert.ok(Math.abs(strengthOf(t, "core-warrant", 2) - EVAPORATION) < 1e-9);
+  const t = mark(emptyTrace(), "core-grounding", 1);
+  assert.equal(strengthOf(t, "core-grounding", 1), 1);
+  assert.ok(Math.abs(strengthOf(t, "core-grounding", 2) - EVAPORATION) < 1e-9);
 
   // Far enough out it is gone entirely, not merely small.
   const gone = evaporate(t, 20);
@@ -127,9 +127,9 @@ test("a mark evaporates on schedule and stops steering on its own", () => {
 
 test("reinforcement accumulates but is capped, so no fold steers forever", () => {
   let t = emptyTrace();
-  for (let turn = 1; turn <= 30; turn++) t = mark(t, "core-warrant", turn);
+  for (let turn = 1; turn <= 30; turn++) t = mark(t, "core-grounding", turn);
   assert.ok(
-    strengthOf(t, "core-warrant", 30) <= MARK_CEILING,
+    strengthOf(t, "core-grounding", 30) <= MARK_CEILING,
     "a fold marked on thirty consecutive turns must not outweigh everything forever",
   );
 });
@@ -143,7 +143,7 @@ test("a repeatedly-marked fold outranks a once-marked one", () => {
 });
 
 test("evaporate is pure — the original trace is never mutated", () => {
-  const t = mark(emptyTrace(), "core-warrant", 1);
+  const t = mark(emptyTrace(), "core-grounding", 1);
   const before = JSON.stringify(t);
   evaporate(t, 10);
   steerUnfold(t, { surfacedIds: new Set(), turn: 10 });
@@ -181,7 +181,7 @@ test("a model that returns nothing usable leaves the next turn untouched", () =>
 
 test("a trail forms, steers, and fades over a run of turns", () => {
   let t = emptyTrace();
-  const surfaced = new Set(["core-warrant"]);
+  const surfaced = new Set(["core-grounding"]);
 
   // Turns 1-3: the answer keeps making citation mistakes the signal-matched
   // gate never catches, because the reader never says the word "citation".

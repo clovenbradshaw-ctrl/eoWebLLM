@@ -11,7 +11,7 @@ past the session that made it.
 
 ## L1 — A reasoning panel discloses; it does not sit on the page
 
-Thinking, Plan, and Warrant are all built on the same `TracePanel` shell in
+Thinking, Plan, and Grounding are all built on the same `TracePanel` shell in
 `app/components/chat.tsx`, styled by `.trace-panel` in `chat.module.scss`,
 and the whole point of that shell is to look like Claude's own
 extended-thinking display: collapsed, it is a single dim line of text with a
@@ -23,7 +23,7 @@ around it, not more.
 
 This got built wrong twice. The first version gave `.trace-panel` a
 permanent `border`, `background: var(--gray)`, and `padding` — regardless of
-whether the `<details>` was open or closed — so every Plan and every Warrant
+whether the `<details>` was open or closed — so every Plan and every Grounding
 sat on the transcript as a shaded card whether or not anyone had asked to
 look inside. A comment right above the rule even claimed it was "styled like
 Claude's extended-thinking display," which was aspirational, not true: real
@@ -39,7 +39,7 @@ opened the thing.
 carries a `border`, a `background`, or padding that makes it read as a card
 rather than a line of text, that's this law being violated again, not a
 harmless restyle. Any new collapsible reasoning surface — not just Thinking,
-Plan, and Warrant — should be built on `TracePanel` rather than growing its
+Plan, and Grounding — should be built on `TracePanel` rather than growing its
 own box, so this stays enforced by construction instead of by memory.
 
 ---
@@ -273,9 +273,9 @@ shown), (b) fabricating a budget figure ("$1.136 billion, a 17.4% increase"
 against a source that said $1,022,900,000 and +$210,600,000), and separately,
 in the climb-response prompt (corrected 2026-08-13: this lives in
 `app/store/chat.ts`'s `climbedNav`/`buildThoughtUserPrompt` call, not in
-`eo-warrant.ts` — that file has never contained a climb-response prompt or
-`containsPromptScaffold`; `eo-warrant.ts`'s actual job is deciding grounding-
-warrant from fold-ledger arithmetic, a different concern), echoing the
+`eo-grounding.ts` — that file has never contained a climb-response prompt or
+`containsPromptScaffold`; `eo-grounding.ts`'s actual job is deciding
+grounding from fold-ledger arithmetic, a different concern), echoing the
 prompt's own closing instruction back as if it were an answer rather than
 either a verdict or the literal sentinel it was told to emit
 (`containsPromptScaffold`, imported into `chat.ts` from
@@ -427,3 +427,52 @@ the same way `admitHypergraphSource` now does. A cap that just drops the
 excess is the right shape only for passes where the excess genuinely isn't
 needed (e.g. `eo-source-ingest.ts`'s binary-structure entropy scan on a
 source that turned out to be text-readable).
+
+---
+
+## L8 — A null is the hardest available comparison, never a convenient one
+
+L5 says a compliance-critical fact is computed, not requested. This is the
+law about *how* you compute it when the computation is a judgment — and it
+was earned the same way L5 was, by shipping the easy version first and
+measuring it.
+
+The case: attaching a source address to a sentence mechanically, because the
+model would not write one (L5's own finding, reproduced on two models four
+times apart in size — zero addresses across six turns of tabular material).
+The mechanism scored the sentence against each passage the turn had been
+given, and attached the best one **if it beat a null**. The null was built by
+striding the corpus at random. It looked principled: the observed score had
+to exceed what the same words got from material the turn never touched.
+
+Measured on 16MB of ALPR search records, a row offered only its own immediate
+neighbours — same document, same subject, not its source — was falsely
+grounded **35% of the time**, with runs of 53–68 shared tokens against nulls
+of 47–51. Adjacent rows share dates, formats and repeated values, so the
+score was large, the random null was large, and the margin between them
+survived. The check passed and the answer was wrong.
+
+Dropping terms that appear in more than half the corpus raised paraphrase
+robustness (40% → 77% correct at one word in three removed) and moved the
+false-grounding rate by two points, because the null fell with the score. The
+defect was never the scoring. **The null was asking the wrong question.**
+"Does this passage beat an unrelated one" is answered yes by nearly anything.
+The question that decides a citation is "does this passage beat the best
+*other* passage in the corpus" — so the null must be drawn from where a
+competitor would actually be, by retrieval on the sentence itself. When the
+true source is not among the passages offered, it turns up as the rival,
+outscores them, and the claim is refused. False grounds went to **0%** on
+rows and 0% on prose, with no loss on true positives; heavy paraphrase now
+refuses more often, which is the trade this kind of system should take.
+
+**The check for a future pass:** if a mechanism decides something by
+comparing an observation against a null, ask what the null is made of. A null
+sampled at random, or from a uniform prior, or from "everything else"
+measures whether the signal exists at all — which is rarely the question. If
+the decision is *which* candidate, the null has to contain the candidates
+that could plausibly win, or the margin it produces is an artifact of how far
+away the comparison was. The same reasoning is why
+`eoreader6/READING-POLICY.md` A9 says "one null is not a null", and why a
+Born null in that repo is a *conditional* null distribution rather than a
+flat one. A convenient null does not fail loudly; it produces confident,
+well-formed, wrong answers at a rate nobody looks for.

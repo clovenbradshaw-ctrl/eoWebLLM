@@ -1199,7 +1199,7 @@
 // purpose: the reader should see one class of thing with distinctions inside
 // it, not four unrelated badges.
 
-// "stated" — the reader said it. The desk channel warrants (eo-warrant.ts),
+// "stated" — the reader said it. The desk channel grounds (eo-grounding.ts),
 // so this is backed, and a solid underline says so without claiming a source.
 .eo-chip-stated {
   background: transparent;
@@ -1220,7 +1220,7 @@
   border-bottom: 1px dotted var(--dim, var(--light-gray));
 }
 
-// "bleed" — carried only by a channel that cannot warrant. The one of the
+// "bleed" — carried only by a channel that cannot ground it. The one of the
 // four that earns a colour, because it is the one a reader cannot infer from
 // context: it looks grounded from inside the prompt and rests on a paraphrase
 // whose source is gone. Still not a pill — it is a warning about provenance,
@@ -1248,7 +1248,7 @@
 //     turn actually gathered.
 //   - caution (discourse/hypergraph): the atom's wording resembles a
 //     paraphrase this turn's prompt carried — the exact channels
-//     eo-warrant.ts marks canWarrant:false. Colored to flag the specific
+//     eo-grounding.ts marks canGround:false. Colored to flag the specific
 //     risk, dashed (not solid) so it never reads as "confirmed."
 // Plain "owned" (no attribution) and "internal" keep the original neutral
 // dashed underline — same tooltip discipline, no color implies no channel

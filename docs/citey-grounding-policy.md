@@ -3,7 +3,7 @@
 A living design doc — states what's true now and what is proposed, and marks
 which is which. Companion to
 [`citey-structured-grounding.md`](citey-structured-grounding.md) (the
-warrant/channel model and build status) and
+grounding/channel model and build status) and
 [`citey-terrain-feedback-spec.md`](citey-terrain-feedback-spec.md) (per-terrain
 feedback). This doc answers a different question: **when does Citey go
 looking, what does he look in, and what is he permitted to say about what he
@@ -80,7 +80,7 @@ came up empty."
 
 | Gate | Where | What it actually asks |
 |---|---|---|
-| A | `routeTurn` (`eo-warrant.ts`) | "was material folded away this turn?" — about the turn, not the claim |
+| A | `routeTurn` (`eo-grounding.ts`) | "was material folded away this turn?" — about the turn, not the claim |
 | B | `hasExplicitSearchIntent` + `planTools` | "did the reader ask for a search?" — decided before the answer exists |
 | C | `extractAtoms` | "is this token a number or a capitalized word?" |
 | D | `chat.ts:3459` | "what state is the span in?" — mixes state and kind |
@@ -120,7 +120,7 @@ The mapping is near-direct:
 |---|---|
 | instruction folds | evidence candidates (corpus passages, web results) |
 | `signals` lexical match | the claim's own atom tokens |
-| `weight` | channel warrant rank — corpus above web |
+| `weight` | channel grounding rank — corpus above web |
 | budget → surfaced | the mouth (`foldToMouth`, k = 7) |
 | folded but NAMED | "here is what I did not check, by name" |
 
@@ -205,7 +205,7 @@ team; retrieval handed it the NFL team. No prompt change can fix this.
 3. **Stop discarding disambiguation.** The DDG call passes `skip_disambig=1`,
    throwing away the one signal that says the term is ambiguous.
 4. **The hypergraph is the policy-legal orienting channel for this.** It is
-   `canWarrant: false`, which bars it from being evidence — but disambiguation
+   `canGround: false`, which bars it from being evidence — but disambiguation
    is not evidence, it is orientation, which is precisely what §0 of the
    companion doc says the hypergraph is *for*. Using session entities to
    disambiguate a query is the one hypergraph use that is fully compliant.
@@ -236,8 +236,8 @@ reason to deliberate; it may never discover a reason to stop."*
 
 There is something better available under this repo's own laws. A reader's
 ruling on "should this have been checked?" is a stated fact with a named
-giver — exactly the shape `eo-warrant.ts` gives the `desk` channel
-(*conversational, `canWarrant: true`, "holds, word for word, facts the reader
+giver — exactly the shape `eo-grounding.ts` gives the `desk` channel
+(*conversational, `canGround: true`, "holds, word for word, facts the reader
 already stated"*), and exactly what `eo-hypergraph.ts`'s `admitSelfFacts`
 already injects via `injectPrior` with a named giver, *"never re-derived."*
 
@@ -288,7 +288,7 @@ Each of these was reproduced headless; none is speculative.
   `state === "checking" || atomKind === "name"` — a disjunction of a state and a
   kind, so a `contradicted` name is re-resolved while an `echoed` number never
   is. And `chat.ts:3512-3514` overwrites `clause`/`sourceTitle`/`sourceUrl`
-  *before* the `if (c.judged)` guard, so a corpus-warranted name silently
+  *before* the `if (c.judged)` guard, so a corpus-grounded name silently
   acquires an unrelated web URL as its provenance.
 
 ## 7. Backends

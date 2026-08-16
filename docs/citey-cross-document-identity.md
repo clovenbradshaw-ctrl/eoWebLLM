@@ -20,7 +20,7 @@ readings pointing at something outside themselves.
 So `A::Smith ≡ B::Smith` is **a third assertion, belonging to neither
 universe.** It is not found in A, not found in B, and not established by the
 fact that both spell it the same way. It is a claim about two readings, and by
-P2 it needs its own warrant like any other claim.
+P2 it needs its own grounding like any other claim.
 
 This is why string keying is not a shortcut but a category error. It answers a
 question about the world by comparing two documents' *spelling conventions*.
@@ -117,7 +117,7 @@ records — `MNPD` and `Metro Nashville Police Department` as two separate nodes
 
 **It is solvable by looking it up.** And a looked-up definition is not
 inference — it is a source that *states* the identity, which makes the binding
-citable rather than guessed. `web` is `canWarrant: true` in `eo-warrant.ts`, so
+citable rather than guessed. `web` is `canGround: true` in `eo-grounding.ts`, so
 this satisfies P2 rather than bending it:
 
 > MNPD ≡ Metro Nashville Police Department — asserted by ⟨source⟩, span ⟨n–m⟩
@@ -132,11 +132,11 @@ This also retires a hardcoded workaround. `eo-citation-check.ts`'s
 version of exactly this problem, and English-only besides. Lookup generalises
 it and removes a language-bound closed set (II.20).
 
-**Sources are not interchangeable, and the distinction is warrant-relevant:** an
+**Sources are not interchangeable, and the distinction is grounding-relevant:** an
 encyclopedia entry asserts a fact about a specific referent; a dictionary
 asserts a fact about a *word*. "MNPD stands for…" is a lexical claim; "the
 Metro Nashville Police Department is the agency that…" is a referential one.
-Both can warrant a binding, and the report should say which was used.
+Both can ground a binding, and the report should say which was used.
 
 **And lookup must run through `pickReferent`'s corroboration gate, not around
 it.** Searching "Elizabeth" and taking the top result is the failure that test
@@ -145,7 +145,7 @@ neighbour graph decides among them, or declines.
 
 ## 3. The policy
 
-**I1 — Identity across sources is a claim, and needs warrant.** Not a key, not
+**I1 — Identity across sources is a claim, and needs grounding.** Not a key, not
 an optimisation. It gets the same discipline as any other claim.
 
 **I2 — Superposition is the default, and it is permanent.** Candidate bindings
@@ -199,7 +199,7 @@ one this doc exists for:
 | `pickReferent` — cross-universe alignment with corroboration + disconfirmation | **exists**, `eoreader4.2`, legacy and frozen (I.2) — a migration, like eochat's search |
 | Web/dictionary lookup to supply candidates | **shipping now** — the relay landed this session |
 | `identityByConsequence` — arrival-shape consistency | **exists** in `eoreader6`, **not exported** through `packages/host/index.js` |
-| Binding as a typed, warranted, revisable record | **not built** — the real work |
+| Binding as a typed, grounded, revisable record | **not built** — the real work |
 | Per-source scoping in `diffLinkViews` | **not built**, small |
 
 `identityByConsequence` is in the same position `kinds.js` is: real, working,

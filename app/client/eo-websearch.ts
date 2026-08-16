@@ -72,7 +72,7 @@ function withTimeout(ms: number): AbortSignal {
 // and the consequence is worse than a passthrough, because fetchWikipedia
 // below is hardcoded to en.wikipedia.org. The Japanese sentence returns ZERO
 // hits there, so the DDG fallback runs, returns empty too, and the turn gets
-// no grounding material at all — which the warrant ledger reads as
+// no grounding material at all — which the fold ledger reads as
 // checkedEmpty and reports to the reader as "consulted and came back empty."
 // The reader is told their own answer is unconfirmed, for a reason that lives
 // entirely in this function. Routing to ja.wikipedia.org does not fix it
@@ -94,7 +94,9 @@ function cleanSubjectPhrase(s: string): string {
     .replace(/^(?:an?|the)\s+/i, "");
   // "a 5 page essay about dolphins" — the length belongs to the request, not
   // to the subject, and searching for "dolphins 5 pages" finds nothing.
-  t = t.replace(/\s+(?:of\s+)?\d+\s*(?:pages?|paragraphs?|words?)$/i, "").trim();
+  t = t
+    .replace(/\s+(?:of\s+)?\d+\s*(?:pages?|paragraphs?|words?)$/i, "")
+    .trim();
   return t;
 }
 
@@ -109,7 +111,10 @@ export function distillQuery(raw: string): string {
   q = q.replace(/,\s*(?:after|then|once|using|while|by|and)\s+[^.]*\.?$/i, "");
   q = q
     .replace(/\s+please[.!?]*$/i, "")
-    .replace(/^\s*(?:please|can you|could you|would you|do you think you can)\s+/i, "");
+    .replace(
+      /^\s*(?:please|can you|could you|would you|do you think you can)\s+/i,
+      "",
+    );
 
   // A deliverable framing names the ARTIFACT first and the subject after
   // "about"/"on". This is the rule whose absence produced Larry Csonka.
@@ -281,7 +286,10 @@ export function decodeDdgRedirect(url: string): string {
  *  page with no network (scripts/test-ddg-parse.mjs). Regexes are eochat's. */
 export function parseDuckDuckGoHtml(
   html: string,
-  { numResults = 4, maxChars = 6000 }: { numResults?: number; maxChars?: number } = {},
+  {
+    numResults = 4,
+    maxChars = 6000,
+  }: { numResults?: number; maxChars?: number } = {},
 ): WebSearchResult[] {
   const src = String(html || "");
   const anchors = [

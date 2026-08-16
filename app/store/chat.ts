@@ -24,8 +24,8 @@ import {
   buildRecordSystemMessage,
   buildSummaryUpdatePrompt,
   buildFoldPrompt,
-  buildWarrantRecord,
-  addWarrantRecord,
+  buildGroundingRecord,
+  addGroundingRecord,
   parseFold,
   updateSummaryWithFold,
   advanceSummaryFold,
@@ -159,11 +159,11 @@ import {
   groundingDemand,
   reviewDraft,
   routeTurn,
-  warrantLogLine,
+  groundingLogLine,
   type FoldLedger,
   type GroundingDemand,
   type TurnRoute,
-} from "../client/eo-warrant";
+} from "../client/eo-grounding";
 
 // The lift registry: validated operator-compositions that recur become
 // citeable units. In-memory for now; persistence is the caller's, per the
@@ -269,7 +269,7 @@ export type ChatMessage = RequestMessage & {
   planTrace?: PlanTrace;
   // Which system produced this message. A turn's first assistant message is
   // the System-1 draft; any further message in the same turn is System 2 by
-  // construction (see classifyResponseSet in eo-warrant.ts).
+  // construction (see classifyResponseSet in eo-grounding.ts).
   system?: ThinkingSystem;
   // Groups every message one turn produced, so a turn that answered in three
   // utterances still reads as one turn.
@@ -278,10 +278,10 @@ export type ChatMessage = RequestMessage & {
   // "correction". Set on System 2 messages only: a reader should never have to
   // guess why a second message appeared.
   responseKind?: string;
-  // The turn's warrant decision (see eo-warrant.ts): what could have carried a
+  // The turn's grounding decision (see eo-grounding.ts): what could have carried a
   // claim this turn, what was folded away, and why the turn routed the way it
   // did. Attached to the message it governed, one step from the artifact.
-  warrantTrace?: WarrantTrace;
+  groundingTrace?: GroundingTrace;
   // What this message's own admission into the hypergraph moved (see
   // eo-hypergraph.ts's HypergraphMovement) — computed at admission time
   // either way, but historically only ever turned into a prose EOT-log
@@ -326,7 +326,7 @@ export interface PlanTrace {
   finalViolations: { type: string; severity: string; detail: string }[];
 }
 
-export interface WarrantTrace {
+export interface GroundingTrace {
   system: ThinkingSystem;
   /** True when the route was reached without asking the model anything. */
   mechanical: boolean;
@@ -376,10 +376,10 @@ export type EoLogKind =
   // law (L2e, "absence is auditable") carried over: a miss at any stage is
   // a visible record, not a silent fallthrough.
   | "prior-art"
-  // The warrant decision: what could carry a claim this turn, what was folded
+  // The grounding decision: what could carry a claim this turn, what was folded
   // away, and which system the turn routed to. Its own kind because it is the
   // line a reader checks when an answer looks ungrounded.
-  | "warrant"
+  | "grounding"
   // The full hypergraph navigation eoreader6 ran this turn — every span,
   // node, and edge it considered, not just the bounded slice (if any) that
   // made it into a thought block. The model sees the bounded slice; a
@@ -388,7 +388,7 @@ export type EoLogKind =
   // The DEFINE/EVALUATE/RECONCILE decision (eo-holonic-plan.ts) — already
   // attached per-message as planTrace, but that dies with the message the
   // moment it scrolls out of view. This is the same line, in the one place
-  // "warrant" and "hypergraph" already put their own per-turn decisions so a
+  // "grounding" and "hypergraph" already put their own per-turn decisions so a
   // reader can find every turn's shape without reopening each message.
   | "plan"
   // The priors channel (eo-priors.ts): whether the induced prior touched
@@ -441,7 +441,7 @@ export interface ChatSession {
    * model call in front of an answer the reader is watching an empty box for
    * (LAWS.md L1 — no dead air). Turn N leaves it; turn N+1 reads it.
    *
-   * Warranted as `focus` in eo-warrant.ts: paraphrase, canWarrant false. It
+   * Covered as `focus` in eo-grounding.ts: paraphrase, canGround false. It
    * steers retrieval and may never ground anything.
    */
   eoFocus?: string;
@@ -584,13 +584,13 @@ const EO_FOLD_TIMEOUT_MS = 30000;
 
 // Drop priority for eoEnforceContextBudget's `required` (system-block)
 // bucket. Replaces pure push-order FIFO, which had the actual importance
-// of these blocks backwards: warrant (routing/audit metadata) was pushed
+// of these blocks backwards: grounding (routing/audit metadata) was pushed
 // first and so was dropped FIRST under real budget pressure, while a
 // user's own stated name (self-facts) — the least acceptable thing to
 // silently lose — sat mid-order with no special protection. Higher value
 // = kept longer / dropped later.
 const EO_BLOCK_PRIORITY = {
-  PROTECTED: 40, // warrant, self-facts — last resort only
+  PROTECTED: 40, // grounding, self-facts — last resort only
   DESK: 30, // conversation "desk" verbatim backstop
   CONTEXT: 20, // web, file — this turn's situational context
   SURF: 10, // corpus, hypergraph, math — cheapest to lose
@@ -627,7 +627,7 @@ const EO_ROUTER_TIMEOUT_MS = 75000;
 // How many recent messages the focus resolver reads. Small on purpose: it is
 // answering "what is this about right now", and a long window makes an old
 // subject compete with the current one. Bounded the same way every other
-// window here is (eo-warrant.ts's foldToMouth).
+// window here is (eo-grounding.ts's foldToMouth).
 const EO_FOCUS_TURNS = 6;
 
 // Prose in, prose out. No JSON is asked for — a small local model is not
@@ -796,7 +796,7 @@ async function eoJudgeClaim(
 interface EoGateOutcome {
   systemMessage: string | null;
   logText: string | null;
-  /** Counts the warrant ledger reads (see eo-warrant.ts). */
+  /** Counts the fold ledger reads (see eo-grounding.ts). */
   stats: { active: number; folded: number; crowdedOut: number; gap: boolean };
 }
 
@@ -970,7 +970,7 @@ function eoEnforceContextBudget(
 ): {
   messages: RequestMessage[];
   logText: string;
-  // What the clamp had to lose. The warrant ledger reads these: material the
+  // What the clamp had to lose. The fold ledger reads these: material the
   // clamp dropped is material whose provenance this turn cannot account for.
   dropped: number;
   truncated: boolean;
@@ -1048,11 +1048,11 @@ function eoEnforceContextBudget(
   return { messages: kept, logText, dropped: droppedCount, truncated };
 }
 
-function eoWarrantTrace(
+function eoGroundingTrace(
   ledger: FoldLedger,
   demand: GroundingDemand,
   route: TurnRoute,
-): WarrantTrace {
+): GroundingTrace {
   return {
     system: route.system,
     mechanical: route.mechanical,
@@ -1350,7 +1350,7 @@ async function eoRunSystem2(input: {
   );
   if (resolvedFindings.length) {
     get().pushEoLog(
-      "warrant",
+      "grounding",
       `system 2: surprise re-surf resolved ${resolvedFindings.length} finding(s) — ` +
         `grounding note suppressed for ${resolvedFindings
           .map((f) => `"${f.text}"`)
@@ -1438,14 +1438,14 @@ async function eoRunSystem2(input: {
           ])
         ) {
           get().pushEoLog(
-            "warrant",
+            "grounding",
             `system 2: resolved response echoed its own prompt — mechanical fallback`,
           );
           return fallback;
         }
         if (anchor && !text.includes(anchor)) {
           get().pushEoLog(
-            "warrant",
+            "grounding",
             `system 2: resolved response did not carry the material's own figure ${anchor} — mechanical fallback`,
           );
           return fallback;
@@ -1544,7 +1544,7 @@ async function eoRunSystem2(input: {
         if (!run.context) return null;
         const raw = await background(
           withRulesInForce(
-            "Synthesize the bounded task results below into one warranted addition to an answer the reader already has. Do not repeat what the answer already said. Distinguish direct support from inference, name any live alternative, and preserve an unresolved gap rather than filling it. Never mention tasks, planning, or that you were given results.",
+            "Synthesize the bounded task results below into one grounded addition to an answer the reader already has. Do not repeat what the answer already said. Distinguish direct support from inference, name any live alternative, and preserve an unresolved gap rather than filling it. Never mention tasks, planning, or that you were given results.",
           ),
           `${run.context}\n\nThe answer already given:\n${draft.slice(0, 1500)}`,
         );
@@ -1617,7 +1617,7 @@ async function eoRunSystem2(input: {
             ])
           ) {
             get().pushEoLog(
-              "warrant",
+              "grounding",
               `system 2: climb response echoed its own prompt — dropped`,
             );
             return null;
@@ -1630,7 +1630,7 @@ async function eoRunSystem2(input: {
 
   if (earned.length > EO_MAX_SYSTEM2_RESPONSES) {
     get().pushEoLog(
-      "warrant",
+      "grounding",
       `system 2: ${earned.length} responses earned, capped at ${EO_MAX_SYSTEM2_RESPONSES} — dropped ${earned
         .slice(EO_MAX_SYSTEM2_RESPONSES)
         .map((e) => e.kind)
@@ -1650,7 +1650,7 @@ async function eoRunSystem2(input: {
           model: modelConfig.model,
         }),
       );
-      get().pushEoLog("warrant", `system 2: emitted a ${item.kind} response`);
+      get().pushEoLog("grounding", `system 2: emitted a ${item.kind} response`);
     } catch (err) {
       get().pushEoLog(
         "error",
@@ -2042,7 +2042,7 @@ export const useChatStore = createPersistStore(
       },
 
       // See app/client/eo-conversation-mind.ts's own header: eoLog (above) is
-      // a human-readable audit trail — its warrant/hypergraph lines are
+      // a human-readable audit trail — its grounding/hypergraph lines are
       // STRINGS, a summary of a turn's structured state that does not survive
       // the turn. This is the structured, foldable state itself: whether this
       // turn continues an existing thread (shared source ids, existence-
@@ -2088,14 +2088,14 @@ export const useChatStore = createPersistStore(
       // to make room. So System 2 can now speak again instead.
       //
       // Every such message is System 2 by construction (classifyResponseSet in
-      // eo-warrant.ts), carries the same turnId as the draft, and names why it
+      // eo-grounding.ts), carries the same turnId as the draft, and names why it
       // exists — a reader must never wonder where a second message came from.
       appendTurnResponse(input: {
         turnId: string;
         content: string;
         responseKind: string;
         model?: Model;
-        warrantTrace?: WarrantTrace;
+        groundingTrace?: GroundingTrace;
         groundingReport?: GroundingReport;
       }) {
         const message = createMessage({
@@ -2105,7 +2105,7 @@ export const useChatStore = createPersistStore(
           system: "system2",
           turnId: input.turnId,
           responseKind: input.responseKind,
-          warrantTrace: input.warrantTrace,
+          groundingTrace: input.groundingTrace,
           groundingReport: input.groundingReport,
         });
         get().updateCurrentSession((session) => {
@@ -2723,7 +2723,7 @@ export const useChatStore = createPersistStore(
         // The priors channel (eo-priors.ts): measured against the question,
         // BEFORE retrieveCorpus runs, so its only possible effect is a
         // hyperparameter set ahead of the surf — never a look at what the
-        // surf found. See eo-warrant.ts's CHANNEL_WARRANT.priors: this may
+        // surf found. See eo-grounding.ts's CHANNEL_GROUNDING.priors: this may
         // widen or narrow the passage cutoff and nothing else, and it is
         // never handed to the model as text.
         const priorsTouch = measurePriorTouch(userContent.trim());
@@ -2887,7 +2887,7 @@ export const useChatStore = createPersistStore(
         // reader already has an answer to read.
         //
         // What replaces them here is the part that has to run first and can:
-        // the warrant ledger. It is arithmetic over counts this turn already
+        // the fold ledger. It is arithmetic over counts this turn already
         // produced, so it costs nothing, cannot time out, and cannot be talked
         // out of firing by a model having a bad day (LAWS.md L11c).
 
@@ -3058,15 +3058,15 @@ export const useChatStore = createPersistStore(
             [userMessage],
           );
 
-        // What the clamp has to lose is itself a warrant fact — material it
+        // What the clamp has to lose is itself a grounding fact — material it
         // dropped is material this turn cannot account for — so the clamp runs
         // once to find out, the ledger reads the result, and the clamp runs
-        // again over the turn with the warrant block added. Both passes are
+        // again over the turn with the grounding block added. Both passes are
         // pure arithmetic over token counts; the second is the one that ships.
         const dryRun = eoEnforceContextBudget(
           buildMessages(extraSystemBlocks),
           contextWindow,
-          "chat turn (pre-warrant)",
+          "chat turn (pre-grounding)",
         );
 
         const sourcesReadable = sources.filter(
@@ -3105,16 +3105,19 @@ export const useChatStore = createPersistStore(
         });
         const demand = groundingDemand(ledger);
         const preRoute = routeTurn(ledger, demand);
-        get().pushEoLog("warrant", warrantLogLine(ledger, demand, preRoute));
+        get().pushEoLog(
+          "grounding",
+          groundingLogLine(ledger, demand, preRoute),
+        );
 
-        // buildWarrantBlock's banner-and-bracket-tag rendering (e.g. "[rules]
+        // buildGroundingBlock's banner-and-bracket-tag rendering (e.g. "[rules]
         // 7 in force, 24 folded to fingerprints") used to be spliced into the
         // system prompt here. Dropped from what the model actually sees — a
         // small local model has nowhere near the margin to both track that
         // notation AND answer in prose, and format in is format out: prose
         // out asks for prose in. The ledger/demand/route arithmetic behind it
-        // still runs and still drives routing and the warrantTrace panel
-        // (see eoWarrantTrace below) — only the literal block text sent to
+        // still runs and still drives routing and the groundingTrace panel
+        // (see eoGroundingTrace below) — only the literal block text sent to
         // the model is gone.
         const budgetResult = eoEnforceContextBudget(
           buildMessages(extraSystemBlocks),
@@ -3531,7 +3534,7 @@ export const useChatStore = createPersistStore(
                   }));
                 }
                 get().pushEoLog(
-                  "warrant",
+                  "grounding",
                   groundingReport.clean
                     ? // "clean" and "nothing was examined" are different
                       // results and must not render alike (V4/L2e). The report
@@ -3573,14 +3576,14 @@ export const useChatStore = createPersistStore(
                   botMessage.groundsReport = parallel;
                   for (const d of parallel.disagreements)
                     get().pushEoLog(
-                      "warrant",
+                      "grounding",
                       `grounds disagree on "${d.text}" — carried by ${d.supportedBy.join(", ")}, absent from ${d.absentFrom.join(", ")}`,
                     );
                   // A void names its bound. Logging the count alone was the
                   // unbounded version — a shrug, not an assertion (II.9).
                   for (const v of parallel.unsupportedEverywhere)
                     get().pushEoLog(
-                      "warrant",
+                      "grounding",
                       `void: "${v.text}" not found in ${parallel.grounds
                         .filter((g) => g.examined)
                         .map(
@@ -3644,7 +3647,7 @@ export const useChatStore = createPersistStore(
                   }
                 : null;
               let turnRoute = escalate(preRoute, draftRoute, defineRoute);
-              botMessage.warrantTrace = eoWarrantTrace(
+              botMessage.groundingTrace = eoGroundingTrace(
                 ledger,
                 demand,
                 turnRoute,
@@ -3676,7 +3679,7 @@ export const useChatStore = createPersistStore(
                     extra.probeRoute,
                     classifyResponseSet(1 + extra.emitted.length),
                   );
-                  botMessage.warrantTrace = eoWarrantTrace(
+                  botMessage.groundingTrace = eoGroundingTrace(
                     ledger,
                     demand,
                     turnRoute,
@@ -3693,7 +3696,7 @@ export const useChatStore = createPersistStore(
               }
 
               get().pushEoLog(
-                "warrant",
+                "grounding",
                 `route: ${turnRoute.system} (${turnRoute.stage}, ${turnRoute.mechanical ? "mechanical" : "model-raised"}) — ${turnRoute.reasons[0] ?? ""}`,
               );
 
@@ -3710,9 +3713,9 @@ export const useChatStore = createPersistStore(
                 for (const c of ledger.channels)
                   if (c.checkedEmpty)
                     open.push(`${c.channel} was consulted and came back empty`);
-                const record = buildWarrantRecord({
+                const record = buildGroundingRecord({
                   turn: turnIndex,
-                  // The gist is a handle for the turn, not its warrant, so it
+                  // The gist is a handle for the turn, not its grounding, so it
                   // is taken mechanically off the front of the answer rather
                   // than paid for with a model call. The refs below are what
                   // actually carry it.
@@ -3725,7 +3728,7 @@ export const useChatStore = createPersistStore(
                   open,
                 });
                 get().updateCurrentSession((session) => {
-                  session.eoSummary = addWarrantRecord(
+                  session.eoSummary = addGroundingRecord(
                     session.eoSummary,
                     record,
                   );
@@ -3935,7 +3938,7 @@ export const useChatStore = createPersistStore(
                       }
                     });
                     get().pushEoLog(
-                      "warrant",
+                      "grounding",
                       `grounding: ${checks.length} span(s) resolved, ${contradicted} contradicted` +
                         (truncated
                           ? ` (${truncated.dropped} more left unresolved)`
@@ -3988,7 +3991,7 @@ export const useChatStore = createPersistStore(
       },
 
       // Returns the assembled turn AND the surf's own accounting, because the
-      // warrant ledger (eo-warrant.ts) is built out of exactly the numbers the
+      // fold ledger (eo-grounding.ts) is built out of exactly the numbers the
       // gate produced here — how many rules are in force, how many stayed
       // folded, how many matched and did not fit. Recomputing them at the call
       // site would be a second gate run that could disagree with this one.
@@ -3998,7 +4001,7 @@ export const useChatStore = createPersistStore(
 
         const out: ChatMessage[] = [];
 
-        // 0. Keep the latest warrant-aware surf for routing and audit, but do
+        // 0. Keep the latest grounding-aware surf for routing and audit, but do
         // not spend the visible answer's context on its verbose rule bodies.
         // The reader gets their folded discourse and material first. An
         const gate = eoBuildInstructionBlock(
@@ -4016,7 +4019,7 @@ export const useChatStore = createPersistStore(
         // rather than only check it afterward -- so this block, when the
         // gate produces one, actually joins the prompt (tagged DESK: more
         // durable than this-turn situational context, below the protected
-        // warrant/self-facts tier). See eoBuildProjectInstructionBlock.
+        // grounding/self-facts tier). See eoBuildProjectInstructionBlock.
         const project = session.projectId
           ? get().projects.find((p) => p.id === session.projectId)
           : undefined;
@@ -4059,7 +4062,7 @@ export const useChatStore = createPersistStore(
         // when phase 2 (the model call that sets .topic) fails and falls
         // back to advanceSummaryFold (eo-discourse.ts), which does not set
         // .topic — and buildSummarySystemMessage returns null whenever
-        // .topic is unset. Gating on existence alone let the warrant ledger
+        // .topic is unset. Gating on existence alone let the fold ledger
         // and its EOT log line claim "summary in prompt" on turns where
         // getMessagesWithMemory never actually pushed anything for it.
         const summaryEligible =

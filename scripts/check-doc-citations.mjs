@@ -3,7 +3,7 @@
 // file/function citations in LAWS.md and eoreader6's NEXT-*.md planning
 // docs still point at something real.
 //
-// Built after an audit found LAWS.md citing an `eo-warrant.ts` prompt that
+// Built after an audit found LAWS.md citing an `eo-grounding.ts` prompt that
 // lives in `app/store/chat.ts` instead — a real citation attributed to the
 // wrong file. A doc that asserts a canonical file is itself a load-bearing
 // artifact people build the next feature on top of, so its claims need the

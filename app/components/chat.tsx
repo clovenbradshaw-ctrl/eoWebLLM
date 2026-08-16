@@ -41,7 +41,7 @@ import {
   Model,
   ModelClient,
   type PlanTrace,
-  type WarrantTrace,
+  type GroundingTrace,
 } from "../store";
 
 import {
@@ -908,7 +908,7 @@ export function ChatActions(props: {
 }
 
 // Shared shell for every collapsible reasoning trace (thinking, plan,
-// warrant, ...), styled like Claude's extended-thinking display: a small
+// grounding, ...), styled like Claude's extended-thinking display: a small
 // clock while the step is still running, a checkmark + "Done" once it has
 // resolved, and an italic muted-gray body so the trace reads as scratch
 // work rather than part of the answer. Collapsed, this must stay a plain
@@ -1077,12 +1077,12 @@ function PlanPanel(props: { trace: PlanTrace }) {
   );
 }
 
-// The warrant decision (see WarrantTrace in store/chat.ts, eo-warrant.ts):
+// The grounding decision (see GroundingTrace in store/chat.ts, eo-grounding.ts):
 // what could have carried a claim this turn, what was folded away unread, and
 // why the turn routed to System 1 or System 2. This is the panel a reader
 // opens when an answer looks ungrounded — it says, in the turn's own numbers,
 // whether anything outside the model bore on the question at all.
-function WarrantPanel(props: { trace: WarrantTrace; id?: string }) {
+function GroundingPanel(props: { trace: GroundingTrace; id?: string }) {
   const t = props.trace;
   const headline =
     t.system === "system2"
@@ -1096,8 +1096,8 @@ function WarrantPanel(props: { trace: WarrantTrace; id?: string }) {
       label={
         <>
           <Scales size={13} className={styles["trace-panel-glyph"]} />
-          Warrant — {t.system === "system2" ? "System 2" : "System 1"} ·{" "}
-          {headline}
+          Grounding decision —{" "}
+          {t.system === "system2" ? "System 2" : "System 1"} · {headline}
         </>
       }
       running={false}
@@ -1153,12 +1153,12 @@ function WarrantPanel(props: { trace: WarrantTrace; id?: string }) {
 // Citey, surfaced only when it has something to say — one unresolved span
 // per message (contradicted takes priority over an owned span), in plain
 // language, never DEF/EVA/REC vocabulary. The full record this is a teaser
-// for already exists as WarrantPanel below; clicking here opens and scrolls
+// for already exists as GroundingPanel below; clicking here opens and scrolls
 // to it rather than duplicating its content.
 function CiteyNote(props: {
   spans?: GroundingSpan[];
   citations?: CitationEntry[];
-  warrantPanelId: string;
+  groundingPanelId: string;
 }) {
   const flagged = props.spans?.find(
     (s) =>
@@ -1181,7 +1181,7 @@ function CiteyNote(props: {
       role="button"
       tabIndex={0}
       onClick={() => {
-        const panel = document.getElementById(props.warrantPanelId);
+        const panel = document.getElementById(props.groundingPanelId);
         if (!panel) return;
         (panel as HTMLDetailsElement).open = true;
         panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -1528,9 +1528,9 @@ function ChatInner() {
   const [eotFoldEntity, setEotFoldEntity] = useState<string | null>(null);
   // Which terrain the terminal is showing -- "log" is the existing running
   // event feed; "graph" is the belief graph + tier stack; "history" is a
-  // turn-by-turn scrubber over what each message's own warrant/plan/
-  // grounding traces looked like when it was live -- all three sit
-  // alongside each other, none replacing another.
+  // turn-by-turn scrubber over what each message's own grounding, plan,
+  // and per-claim grounding traces looked like when it was live -- all
+  // three sit alongside each other, none replacing another.
   const [eotTerminalTab, setEotTerminalTab] = useState<
     "log" | "graph" | "history"
   >("log");
@@ -2615,7 +2615,7 @@ function ChatInner() {
                         : "")
                     }
                     onClick={() => setEotTerminalTab("history")}
-                    title="Scrub to an earlier turn and see exactly what it warranted, planned, and moved when it was live"
+                    title="Scrub to an earlier turn and see exactly what it grounded, planned, and moved when it was live"
                   >
                     History
                   </div>
@@ -2772,8 +2772,8 @@ function ChatInner() {
                     return (
                       <div className={styles["eot-panel-empty"]}>
                         EOT — no messages yet this session. History replays each
-                        message&apos;s own warrant, plan, and grounding traces
-                        exactly as they looked when it was sent.
+                        message&apos;s own grounding, plan, and per-claim
+                        citation traces exactly as they looked when it was sent.
                       </div>
                     );
                   }
@@ -2814,13 +2814,13 @@ function ChatInner() {
                         {preview.length > 200 ? "…" : ""}
                       </div>
 
-                      {msg.warrantTrace ? (
-                        <WarrantPanel trace={msg.warrantTrace} />
+                      {msg.groundingTrace ? (
+                        <GroundingPanel trace={msg.groundingTrace} />
                       ) : (
                         msg.role === "assistant" && (
                           <div className={styles["eot-panel-empty"]}>
-                            Warrant — not recorded: sent before this was
-                            tracked.
+                            Grounding decision — not recorded: sent before this
+                            was tracked.
                           </div>
                         )
                       )}
@@ -3449,16 +3449,16 @@ function ChatInner() {
                                       {`\u{2696} Grounding check · ${message.responseKind.replace(/-/g, " ")}`}
                                     </div>
                                   )}
-                                  {/* Warrant/Plan trace panels hidden per feedback — the
-                                  per-message "Warrant — System 1..." / "Plan — ..."
+                                  {/* Grounding/Plan trace panels hidden per feedback — the
+                                  per-message "Grounding decision — System 1..." / "Plan — ..."
                                   lines above the reply. Data is still collected
-                                  (message.warrantTrace/planTrace); CiteyNote's
+                                  (message.groundingTrace/planTrace); CiteyNote's
                                   click-to-open still no-ops safely without a
                                   rendered panel. Re-enable by uncommenting below.
-                              {!isUser && message.warrantTrace && (
-                                <WarrantPanel
-                                  trace={message.warrantTrace}
-                                  id={`warrant-${message.id ?? i}`}
+                              {!isUser && message.groundingTrace && (
+                                <GroundingPanel
+                                  trace={message.groundingTrace}
+                                  id={`grounding-${message.id ?? i}`}
                                 />
                               )}
                               {!isUser && message.planTrace && (
@@ -3539,7 +3539,7 @@ function ChatInner() {
                                       <CiteyNote
                                         spans={shiftedGroundingSpans}
                                         citations={message.groundingCitations}
-                                        warrantPanelId={`warrant-${message.id ?? i}`}
+                                        groundingPanelId={`grounding-${message.id ?? i}`}
                                       />
                                     )}
                                 </>

@@ -2,7 +2,7 @@
 // grounding layers, not for any one of them.
 //
 // Every other grounding test in this directory checks one module in isolation:
-// test-eo-grounding-spans.mjs checks buildGroundingSpans, test-warrant.mjs
+// test-eo-grounding-spans.mjs checks buildGroundingSpans, test-grounding.mjs
 // checks the ledger arithmetic. All of them pass. The defects pinned below live
 // BETWEEN those modules — a state decided by one function, a citation list
 // decided by a second, a verdict written by a third, and a chip rendered from a
@@ -17,7 +17,7 @@
 //   4. resolveSpans -> in-place mutation, chat.ts:3506
 //
 // The structural reason they cannot be reconciled is that GroundingSpan carries
-// no channel: eo-warrant.ts's warrant model ("only corpus/web/file/desk may
+// no channel: eo-grounding.ts's grounding model ("only corpus/web/file/desk may
 // carry a claim") is computed per TURN and never reaches the ATOM. So the rule
 // in docs/citey-structured-grounding.md §0 is written in one file and enforced
 // in none.
@@ -37,7 +37,7 @@
 //
 //   - chat.ts's resolve-mutation block: app/store/chat.ts pulls in the web-llm
 //     engine and OPFS, so a node --test file cannot load it. Same standing as
-//     test-warrant-scenario.mjs pinning EO_HISTORY_TURNS by hand.
+//     test-grounding-scenario.mjs pinning EO_HISTORY_TURNS by hand.
 //   - grounding-chip.tsx's citability predicate: that module imports
 //     unist-util-visit at the top level, so it cannot load without node_modules
 //     (this suite otherwise runs against a bare checkout).
@@ -173,7 +173,7 @@ test("more evidence never lowers a span's grade", () => {
   // The four states that replaced "owned" all sit on the same rung: they say
   // different things about WHY an atom is unsourced, not different things
   // about how well-backed it is. "stated" is the exception — the desk
-  // warrants — so it ranks with echoed.
+  // grounds it — so it ranks with echoed.
   const RANK = {
     contradicted: 0,
     bleed: 1,
@@ -323,14 +323,14 @@ test(
 );
 
 test(
-  "I3 — a corpus-warranted span never has its provenance replaced by a web result",
+  "I3 — a corpus-grounded span never has its provenance replaced by a web result",
   {
     todo:
       "D3: chat.ts:3459 selects on `state === 'checking' || atomKind === 'name'`, " +
       "so a name already sourced against corpus bytes is re-searched on the web; " +
       "chat.ts:3512-3514 then writes clause/sourceTitle/sourceUrl BEFORE the " +
       "`if (c.judged)` guard, so the span keeps its corpus citation index while " +
-      "acquiring an unrelated web URL. That is orientation laundered into warrant " +
+      "acquiring an unrelated web URL. That is orientation laundered into grounding " +
       "— docs/citey-structured-grounding.md §0.",
   },
   async () => {
@@ -366,7 +366,7 @@ test(
     assert.equal(
       name.sourceUrl,
       undefined,
-      `corpus-warranted span acquired web provenance: ${name.sourceUrl}`,
+      `corpus-grounded span acquired web provenance: ${name.sourceUrl}`,
     );
   },
 );

@@ -183,7 +183,7 @@ export function tryDecodeText(
 //
 // This mirrors eo-corpus.ts::retrieveCorpus/formatCorpusContext on purpose
 // (same queryTerms tokenizer, same present/surfaced framing for the eo-log
-// and the warrant ledger's "file" channel) rather than inventing a second
+// and the fold ledger's "file" channel) rather than inventing a second
 // shape for what is, structurally, the same kind of turn-time fold.
 
 import { queryTerms } from "./eo-corpus";

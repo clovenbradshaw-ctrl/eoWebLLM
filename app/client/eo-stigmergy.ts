@@ -41,7 +41,7 @@
 // race on its own merits. This is deliberate and it is the same shape
 // eo-gate.ts's System 2 already uses for R8 ("matched but did not fit" folds
 // are pulled back in against a raised ceiling), and the same monotone
-// discipline eo-warrant.ts's escalate() enforces: a later stage may find a
+// discipline eo-grounding.ts's escalate() enforces: a later stage may find a
 // reason to include, never a reason to exclude.
 //
 // Scoring marks INTO the ordinary budget race would break that: raising a
@@ -50,7 +50,7 @@
 // letting the caller raise the ceiling, keeps "additive" literally true.
 //
 // This module has no value imports, so it runs under `node --test` without a
-// browser (see scripts/test-stigmergy.mjs) — same discipline as eo-warrant.ts.
+// browser (see scripts/test-stigmergy.mjs) — same discipline as eo-grounding.ts.
 
 /** How much of a mark survives one turn without reinforcement. */
 export const EVAPORATION = 0.6;
@@ -227,7 +227,9 @@ export function steerUnfold(
   const decayed = evaporate(trace, turn);
   const candidates = decayed.marks
     .filter((m) => !surfacedIds.has(m.foldId))
-    .sort((a, b) => b.strength - a.strength || a.foldId.localeCompare(b.foldId));
+    .sort(
+      (a, b) => b.strength - a.strength || a.foldId.localeCompare(b.foldId),
+    );
 
   const taken = candidates.slice(0, Math.max(0, max));
   return {
