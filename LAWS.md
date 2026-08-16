@@ -427,3 +427,52 @@ the same way `admitHypergraphSource` now does. A cap that just drops the
 excess is the right shape only for passes where the excess genuinely isn't
 needed (e.g. `eo-source-ingest.ts`'s binary-structure entropy scan on a
 source that turned out to be text-readable).
+
+---
+
+## L8 — A null is the hardest available comparison, never a convenient one
+
+L5 says a compliance-critical fact is computed, not requested. This is the
+law about *how* you compute it when the computation is a judgment — and it
+was earned the same way L5 was, by shipping the easy version first and
+measuring it.
+
+The case: attaching a source address to a sentence mechanically, because the
+model would not write one (L5's own finding, reproduced on two models four
+times apart in size — zero addresses across six turns of tabular material).
+The mechanism scored the sentence against each passage the turn had been
+given, and attached the best one **if it beat a null**. The null was built by
+striding the corpus at random. It looked principled: the observed score had
+to exceed what the same words got from material the turn never touched.
+
+Measured on 16MB of ALPR search records, a row offered only its own immediate
+neighbours — same document, same subject, not its source — was falsely
+warranted **35% of the time**, with runs of 53–68 shared tokens against nulls
+of 47–51. Adjacent rows share dates, formats and repeated values, so the
+score was large, the random null was large, and the margin between them
+survived. The check passed and the answer was wrong.
+
+Dropping terms that appear in more than half the corpus raised paraphrase
+robustness (40% → 77% correct at one word in three removed) and moved the
+false-warrant rate by two points, because the null fell with the score. The
+defect was never the scoring. **The null was asking the wrong question.**
+"Does this passage beat an unrelated one" is answered yes by nearly anything.
+The question that decides a citation is "does this passage beat the best
+*other* passage in the corpus" — so the null must be drawn from where a
+competitor would actually be, by retrieval on the sentence itself. When the
+true source is not among the passages offered, it turns up as the rival,
+outscores them, and the claim is refused. False warrants went to **0%** on
+rows and 0% on prose, with no loss on true positives; heavy paraphrase now
+refuses more often, which is the trade this kind of system should take.
+
+**The check for a future pass:** if a mechanism decides something by
+comparing an observation against a null, ask what the null is made of. A null
+sampled at random, or from a uniform prior, or from "everything else"
+measures whether the signal exists at all — which is rarely the question. If
+the decision is *which* candidate, the null has to contain the candidates
+that could plausibly win, or the margin it produces is an artifact of how far
+away the comparison was. The same reasoning is why
+`eoreader6/READING-POLICY.md` A9 says "one null is not a null", and why a
+Born null in that repo is a *conditional* null distribution rather than a
+flat one. A convenient null does not fail loudly; it produces confident,
+well-formed, wrong answers at a rate nobody looks for.
