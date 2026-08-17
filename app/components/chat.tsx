@@ -969,6 +969,7 @@ function ThinkingPanel(props: {
   thinking: string;
   open: boolean;
   elapsedSeconds?: number;
+  onViewPrompt?: () => void;
 }) {
   const label = props.open
     ? "Thinking…"
@@ -985,6 +986,24 @@ function ThinkingPanel(props: {
       >
         {props.thinking.trim()}
       </div>
+      {props.onViewPrompt && (
+        <div style={{ marginTop: "8px" }}>
+          <a
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              props.onViewPrompt?.();
+            }}
+            style={{
+              fontSize: "12px",
+              fontFamily: "var(--font-mono, monospace)",
+              opacity: 0.7,
+            }}
+          >
+            View exact prompt JSON →
+          </a>
+        </div>
+      )}
     </TracePanel>
   );
 }
@@ -3412,6 +3431,12 @@ function ChatInner() {
                                       thinking={thinking}
                                       open={thinkingOpen}
                                       elapsedSeconds={thinkingSeconds}
+                                      onViewPrompt={
+                                        message.debugRequest
+                                          ? () =>
+                                              setOpenPromptTraceId(message.id)
+                                          : undefined
+                                      }
                                     />
                                   )}
                                   {!isUser && message.calculatorVerified && (
